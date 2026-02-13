@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "./drivers/types.js";
 import { Logger } from "./logger.js";
+import { groError, asError, errorLogFields } from "./errors.js";
 
 /**
  * Session persistence for gro.
@@ -93,8 +94,9 @@ export function loadSession(id: string): { messages: ChatMessage[]; meta: Sessio
     const messages = JSON.parse(readFileSync(msgPath, "utf-8"));
     const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
     return { messages, meta };
-  } catch (e: any) {
-    Logger.warn(`Failed to load session ${id}: ${e.message}`);
+  } catch (e: unknown) {
+    const ge = groError("session_error", `Failed to load session ${id}: ${asError(e).message}`, { cause: e });
+    Logger.warn(ge.message, errorLogFields(ge));
     return null;
   }
 }

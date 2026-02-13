@@ -11,6 +11,9 @@ import urllib.request
 import urllib.error
 
 
+TIMEOUT = 60
+
+
 def load_config_value(key):
     config_file = os.environ.get("GRO_CONFIG_FILE", "")
     if not config_file or not os.path.exists(config_file):
@@ -18,6 +21,8 @@ def load_config_value(key):
     with open(config_file) as f:
         for line in f:
             line = line.strip()
+            if not line or line.startswith("#"):
+                continue
             if line.startswith(f"{key}="):
                 return line.split("=", 1)[1]
     return ""
@@ -54,7 +59,7 @@ def main():
     )
 
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()
@@ -63,6 +68,9 @@ def main():
             print(f"gro/openai: {err.get('error', {}).get('message', error_body)}", file=sys.stderr)
         except json.JSONDecodeError:
             print(f"gro/openai: HTTP {e.code}: {error_body[:200]}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"gro/openai: network error: {e.reason}", file=sys.stderr)
         sys.exit(1)
 
     content = data.get("choices", [{}])[0].get("message", {}).get("content", "")

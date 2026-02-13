@@ -9,12 +9,15 @@ import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types.
 
 export interface AnthropicDriverConfig {
   apiKey: string;
+  baseUrl?: string;
   model?: string;
   maxTokens?: number;
   timeoutMs?: number;
 }
 
 export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
+  const base = (cfg.baseUrl ?? "https://api.anthropic.com").replace(/\/+$/, "");
+  const endpoint = `${base}/v1/messages`;
   const model = cfg.model ?? "claude-sonnet-4-20250514";
   const maxTokens = cfg.maxTokens ?? 4096;
   const timeoutMs = cfg.timeoutMs ?? 2 * 60 * 60 * 1000;
@@ -56,7 +59,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
     };
 
     try {
-      const res = await timedFetch("https://api.anthropic.com/v1/messages", {
+      const res = await timedFetch(endpoint, {
         method: "POST",
         headers,
         body: JSON.stringify(body),

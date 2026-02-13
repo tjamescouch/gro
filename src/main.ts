@@ -255,9 +255,9 @@ function defaultModel(provider: string): string {
 
 function defaultBaseUrl(provider: string): string {
   switch (provider) {
-    case "openai": return "https://api.openai.com";
+    case "openai": return process.env.OPENAI_BASE_URL || "https://api.openai.com";
     case "local": return "http://127.0.0.1:11434";
-    default: return "https://api.anthropic.com";
+    default: return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
   }
 }
 
@@ -316,11 +316,11 @@ function createDriverForModel(
 ): ChatDriver {
   switch (provider) {
     case "anthropic":
-      if (!apiKey) {
-        Logger.error("gro: ANTHROPIC_API_KEY not set");
+      if (!apiKey && baseUrl === "https://api.anthropic.com") {
+        Logger.error("gro: ANTHROPIC_API_KEY not set (set ANTHROPIC_BASE_URL for proxy mode)");
         process.exit(1);
       }
-      return makeAnthropicDriver({ apiKey, model });
+      return makeAnthropicDriver({ apiKey: apiKey || "proxy-managed", model, baseUrl });
 
     case "openai":
       if (!apiKey) {

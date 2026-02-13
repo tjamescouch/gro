@@ -1,5 +1,6 @@
 import type { ChatDriver, ChatMessage } from "../drivers/types.js";
 import { AgentMemory } from "./agent-memory.js";
+import { saveSession, loadSession, ensureGroDir } from "../session.js";
 
 /**
  * AdvancedMemory — swim-lane summarization with token budgeting.
@@ -11,6 +12,8 @@ import { AgentMemory } from "./agent-memory.js";
 export class AdvancedMemory extends AgentMemory {
   private readonly driver: ChatDriver;
   private readonly model: string;
+  private readonly summarizerDriver: ChatDriver;
+  private readonly summarizerModel: string;
 
   private readonly contextTokens: number;
   private readonly reserveHeaderTokens: number;
@@ -25,6 +28,8 @@ export class AdvancedMemory extends AgentMemory {
   constructor(args: {
     driver: ChatDriver;
     model: string;
+    summarizerDriver?: ChatDriver;
+    summarizerModel?: string;
     systemPrompt?: string;
     contextTokens?: number;
     reserveHeaderTokens?: number;
@@ -39,6 +44,8 @@ export class AdvancedMemory extends AgentMemory {
     super(args.systemPrompt);
     this.driver = args.driver;
     this.model = args.model;
+    this.summarizerDriver = args.summarizerDriver ?? args.driver;
+    this.summarizerModel = args.summarizerModel ?? args.model;
 
     this.contextTokens = Math.max(2048, Math.floor(args.contextTokens ?? 8192));
     this.reserveHeaderTokens = Math.max(0, Math.floor(args.reserveHeaderTokens ?? 1200));
@@ -51,12 +58,21 @@ export class AdvancedMemory extends AgentMemory {
     this.keepRecentTools = Math.max(0, Math.floor(args.keepRecentTools ?? 3));
   }
 
-  async load(_id: string): Promise<void> {
-    // TODO: load from persistence
+  async load(id: string): Promise<void> {
+    const session = loadSession(id);
+    if (session) {
+      this.messagesBuffer = session.messages;
+    }
   }
 
-  async save(_id: string): Promise<void> {
-    // TODO: save to persistence
+  async save(id: string): Promise<void> {
+    ensureGroDir();
+    saveSession(id, this.messagesBuffer, {
+      id,
+      provider: "unknown",
+      model: this.model,
+      createdAt: new Date().toISOString(),
+    });
   }
 
   protected async onAfterAdd(): Promise<void> {
@@ -241,7 +257,7 @@ export class AdvancedMemory extends AgentMemory {
       content: `${header}\n\nTranscript:\n${acc}`,
     };
 
-    const out = await this.driver.chat([sys, usr], { model: this.model });
+    const out = await this.summarizerDriver.chat([sys, usr], { model: this.summarizerModel });
     return String((out as any)?.text ?? "").trim();
   }
 }

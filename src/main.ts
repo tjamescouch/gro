@@ -570,9 +570,8 @@ async function interactive(
     if (!input) { rl.prompt(); return; }
     if (input === "exit" || input === "quit") { rl.close(); return; }
 
-    await memory.add({ role: "user", from: "User", content: input });
-
     try {
+      await memory.add({ role: "user", from: "User", content: input });
       await executeTurn(driver, memory, mcp, cfg);
     } catch (e: unknown) {
       const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
@@ -583,8 +582,8 @@ async function interactive(
     if (cfg.sessionPersistence) {
       try {
         await memory.save(sessionId);
-      } catch (e: any) {
-        Logger.error(C.red(`session save failed: ${e.message}`));
+      } catch (e: unknown) {
+        Logger.error(C.red(`session save failed: ${asError(e).message}`));
       }
     }
 
@@ -600,8 +599,8 @@ async function interactive(
     if (cfg.sessionPersistence) {
       try {
         await memory.save(sessionId);
-      } catch (e: any) {
-        Logger.error(C.red(`session save failed: ${e.message}`));
+      } catch (e: unknown) {
+        Logger.error(C.red(`session save failed: ${asError(e).message}`));
       }
     }
     await mcp.disconnectAll();

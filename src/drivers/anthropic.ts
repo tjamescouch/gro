@@ -5,6 +5,7 @@
 import { Logger } from "../logger.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
+import { groError, asError, errorLogFields } from "../errors.js";
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types.js";
 
 export interface AnthropicDriverConfig {
@@ -96,9 +97,15 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
       }
 
       return { text, toolCalls };
-    } catch (e: any) {
-      Logger.error("Anthropic driver error:", e.message);
-      throw e;
+    } catch (e: unknown) {
+      const ge = groError("provider_error", `Anthropic driver error: ${asError(e).message}`, {
+        provider: "anthropic",
+        model: resolvedModel,
+        retryable: false,
+        cause: e,
+      });
+      Logger.error("Anthropic driver error:", errorLogFields(ge));
+      throw ge;
     }
   }
 

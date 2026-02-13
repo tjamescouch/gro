@@ -18,6 +18,7 @@ import { SimpleMemory } from "./memory/simple-memory.js";
 import { AdvancedMemory } from "./memory/advanced-memory.js";
 import { McpManager } from "./mcp/index.js";
 import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
+import { groError, asError, isGroError, errorLogFields } from "./errors.js";
 import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput } from "./drivers/types.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
@@ -67,8 +68,9 @@ function loadMcpServers(mcpConfigPaths: string[]): Record<string, McpServerConfi
         if (typeof servers === "object") {
           Object.assign(merged, servers);
         }
-      } catch (e: any) {
-        Logger.warn(`Failed to parse MCP config ${p}: ${e.message}`);
+      } catch (e: unknown) {
+        const ge = groError("config_error", `Failed to parse MCP config ${p}: ${asError(e).message}`, { cause: e });
+        Logger.warn(ge.message, errorLogFields(ge));
       }
     }
     return merged;
@@ -89,8 +91,9 @@ function loadMcpServers(mcpConfigPaths: string[]): Record<string, McpServerConfi
           Logger.debug(`Loaded MCP config from ${path}`);
           return parsed.mcpServers;
         }
-      } catch (e: any) {
-        Logger.debug(`Failed to parse ${path}: ${e.message}`);
+      } catch (e: unknown) {
+        const ge = groError("config_error", `Failed to parse ${path}: ${asError(e).message}`, { cause: e });
+        Logger.debug(ge.message, errorLogFields(ge));
       }
     }
   }
@@ -185,8 +188,9 @@ function loadConfig(): GroConfig {
   if (flags.systemPromptFile) {
     try {
       systemPrompt = readFileSync(flags.systemPromptFile, "utf-8").trim();
-    } catch (e: any) {
-      Logger.error(`Failed to read system prompt file: ${e.message}`);
+    } catch (e: unknown) {
+      const ge = groError("config_error", `Failed to read system prompt file: ${asError(e).message}`, { cause: e });
+      Logger.error(ge.message, errorLogFields(ge));
       process.exit(1);
     }
   }
@@ -197,8 +201,9 @@ function loadConfig(): GroConfig {
     try {
       const extra = readFileSync(flags.appendSystemPromptFile, "utf-8").trim();
       systemPrompt = systemPrompt ? `${systemPrompt}\n\n${extra}` : extra;
-    } catch (e: any) {
-      Logger.error(`Failed to read append system prompt file: ${e.message}`);
+    } catch (e: unknown) {
+      const ge = groError("config_error", `Failed to read append system prompt file: ${asError(e).message}`, { cause: e });
+      Logger.error(ge.message, errorLogFields(ge));
       process.exit(1);
     }
   }
@@ -453,8 +458,13 @@ async function executeTurn(
       let result: string;
       try {
         result = await mcp.callTool(fnName, fnArgs);
-      } catch (e: any) {
-        result = `Error: ${e.message}`;
+      } catch (e: unknown) {
+        const ge = groError("tool_error", `Tool "${fnName}" failed: ${asError(e).message}`, {
+          retryable: false,
+          cause: e,
+        });
+        Logger.error("Tool execution error:", errorLogFields(ge));
+        result = `Error: ${ge.message}`;
       }
 
       // Feed tool result back into memory
@@ -564,8 +574,9 @@ async function interactive(
 
     try {
       await executeTurn(driver, memory, mcp, cfg);
-    } catch (e: any) {
-      Logger.error(C.red(`error: ${e.message}`));
+    } catch (e: unknown) {
+      const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
+      Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
     }
 
     // Auto-save after each turn
@@ -667,7 +678,8 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  Logger.error("gro:", e.message || e);
+main().catch((e: unknown) => {
+  const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
+  Logger.error("gro:", errorLogFields(ge));
   process.exit(1);
 });

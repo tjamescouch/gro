@@ -708,6 +708,11 @@ for (const sig of ["SIGTERM", "SIGHUP"] as const) {
   });
 }
 
+// Catch unhandled promise rejections (e.g. background summarization)
+process.on("unhandledRejection", (reason: unknown) => {
+  Logger.error(C.red(`unhandled rejection: ${asError(reason).message}`));
+});
+
 main().catch((e: unknown) => {
   Logger.error("gro:", asError(e).message);
   process.exit(1);

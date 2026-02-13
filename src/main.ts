@@ -19,7 +19,7 @@ import { AdvancedMemory } from "./memory/advanced-memory.js";
 import { McpManager } from "./mcp/index.js";
 import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
 import type { McpServerConfig } from "./mcp/index.js";
-import type { ChatDriver, ChatOutput } from "./drivers/types.js";
+import type { ChatDriver, ChatMessage, ChatOutput } from "./drivers/types.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
 
 const VERSION = "0.3.1";
@@ -425,10 +425,15 @@ async function executeTurn(
     });
 
     // Accumulate text
-    if (output.text) {
-      finalText += output.text;
-      await memory.add({ role: "assistant", from: "Assistant", content: output.text });
+    if (output.text) finalText += output.text;
+
+    // Store assistant message — must include tool_calls when present
+    // so OpenAI sees the required assistant→tool message sequence.
+    const assistantMsg: ChatMessage = { role: "assistant", from: "Assistant", content: output.text || "" };
+    if (output.toolCalls.length > 0) {
+      (assistantMsg as any).tool_calls = output.toolCalls;
     }
+    await memory.add(assistantMsg);
 
     // No tool calls — we're done
     if (output.toolCalls.length === 0) break;

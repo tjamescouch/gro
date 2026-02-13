@@ -252,9 +252,9 @@ function defaultModel(provider: string): string {
 
 function defaultBaseUrl(provider: string): string {
   switch (provider) {
-    case "openai": return "https://api.openai.com";
+    case "openai": return process.env.OPENAI_BASE_URL || "https://api.openai.com";
     case "local": return "http://127.0.0.1:11434";
-    default: return "https://api.anthropic.com";
+    default: return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
   }
 }
 
@@ -264,6 +264,15 @@ function resolveApiKey(provider: string): string {
     case "anthropic": return process.env.ANTHROPIC_API_KEY || "";
     default: return "";
   }
+}
+
+/** When using a proxy (non-default base URL), API key isn't required — the proxy injects it. */
+function isUsingProxy(provider: string, baseUrl: string): boolean {
+  const defaults: Record<string, string> = {
+    openai: "https://api.openai.com",
+    anthropic: "https://api.anthropic.com",
+  };
+  return baseUrl !== (defaults[provider] ?? "");
 }
 
 function usage(): void {
@@ -311,20 +320,22 @@ function createDriverForModel(
   apiKey: string,
   baseUrl: string,
 ): ChatDriver {
+  const proxy = isUsingProxy(provider, baseUrl);
+
   switch (provider) {
     case "anthropic":
-      if (!apiKey) {
-        Logger.error("gro: ANTHROPIC_API_KEY not set");
+      if (!apiKey && !proxy) {
+        Logger.error("gro: ANTHROPIC_API_KEY not set (set it or use ANTHROPIC_BASE_URL for proxy)");
         process.exit(1);
       }
-      return makeAnthropicDriver({ apiKey, model, baseUrl });
+      return makeAnthropicDriver({ apiKey: apiKey || "proxy-managed", model, baseUrl });
 
     case "openai":
-      if (!apiKey) {
-        Logger.error("gro: OPENAI_API_KEY not set");
+      if (!apiKey && !proxy) {
+        Logger.error("gro: OPENAI_API_KEY not set (set it or use OPENAI_BASE_URL for proxy)");
         process.exit(1);
       }
-      return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
+      return makeStreamingOpenAiDriver({ baseUrl, model, apiKey: apiKey || "proxy-managed" });
 
     case "local":
       return makeStreamingOpenAiDriver({ baseUrl, model });

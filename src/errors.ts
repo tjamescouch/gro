@@ -56,12 +56,13 @@ export function groError(
  */
 export function asError(e: unknown): Error {
   if (e instanceof Error) return e;
-  if (typeof e === "string") return new Error(e);
+  if (typeof e === "string") return new Error(e.slice(0, 1024));
   if (e === null || e === undefined) return new Error("Unknown error");
   try {
-    return new Error(String(e));
+    const s = String(e);
+    return new Error(s.length > 1024 ? s.slice(0, 1024) + "..." : s);
   } catch {
-    return new Error("Unknown error");
+    return new Error("Unknown error (unstringifiable)");
   }
 }
 

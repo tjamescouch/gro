@@ -323,11 +323,11 @@ function createDriverForModel(
       return makeAnthropicDriver({ apiKey: apiKey || "proxy-managed", model, baseUrl });
 
     case "openai":
-      if (!apiKey) {
-        Logger.error("gro: OPENAI_API_KEY not set");
+      if (!apiKey && baseUrl === "https://api.openai.com") {
+        Logger.error("gro: OPENAI_API_KEY not set (set OPENAI_BASE_URL for proxy mode)");
         process.exit(1);
       }
-      return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
+      return makeStreamingOpenAiDriver({ baseUrl, model, apiKey: apiKey || undefined });
 
     case "local":
       return makeStreamingOpenAiDriver({ baseUrl, model });

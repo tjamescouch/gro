@@ -317,7 +317,7 @@ function createDriverForModel(
         Logger.error("gro: ANTHROPIC_API_KEY not set");
         process.exit(1);
       }
-      return makeAnthropicDriver({ apiKey, model });
+      return makeAnthropicDriver({ apiKey, model, baseUrl });
 
     case "openai":
       if (!apiKey) {

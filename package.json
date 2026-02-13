@@ -5,10 +5,11 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run src/main.ts",
-    "build": "bun build src/main.ts --outdir dist --target bun",
-    "test": "bun test",
-    "test:node": "npx tsx --test tests/*.test.ts"
+    "start": "npx tsx src/main.ts",
+    "build": "npx tsc && cp package.json dist/",
+    "build:bun": "bun build src/main.ts --outdir dist --target bun",
+    "test": "npx tsx --test tests/*.test.ts",
+    "test:bun": "bun test"
   },
   "devDependencies": {
     "@types/node": "^25.2.3",
@@ -16,6 +17,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0"
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "isexe": "^4.0.0"
   }
 }

@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# gro — provider-agnostic LLM CLI
+# usage: gro [options] "prompt"
+#        echo "text" | gro -p [options]
+#        gro config set <key> <value>
+#        gro config get [key]
+
+CONFIG_DIR="${HOME}/.config/gro"
+CONFIG_FILE="${CONFIG_DIR}/config"
+
+# --- config ---
+
+config_get() {
+  local key="${1:-}"
+  if [[ -z "$key" ]]; then
+    [[ -f "$CONFIG_FILE" ]] && cat "$CONFIG_FILE" || echo "(no config)"
+    return
+  fi
+  if [[ -f "$CONFIG_FILE" ]]; then
+    grep "^${key}=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- || echo "(not set)"
+  else
+    echo "(not set)"
+  fi
+}
+
+config_set() {
+  local key="$1" value="$2"
+  mkdir -p "$CONFIG_DIR"
+  if [[ -f "$CONFIG_FILE" ]] && grep -q "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$CONFIG_FILE"
+  else
+    echo "${key}=${value}" >> "$CONFIG_FILE"
+  fi
+  echo "${key}=${value}"
+}
+
+load_config_value() {
+  local key="$1" default="${2:-}"
+  if [[ -f "$CONFIG_FILE" ]]; then
+    local val
+    val=$(grep "^${key}=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2-)
+    echo "${val:-$default}"
+  else
+    echo "$default"
+  fi
+}
+
+# --- provider: claude ---
+
+complete_claude() {
+  local prompt="$1" model="$2" system_prompt="$3"
+
+  # try CLI first
+  if command -v claude &>/dev/null; then
+    local args=(-p)
+    [[ -n "$model" ]] && args+=(--model "$model")
+    [[ -n "$system_prompt" ]] && args+=(--system-prompt "$system_prompt")
+    echo "$prompt" | claude "${args[@]}"
+    return
+  fi
+
+  # fallback to HTTP API
+  local api_key="${ANTHROPIC_API_KEY:-$(load_config_value anthropic.api-key)}"
+  if [[ -z "$api_key" ]]; then
+    echo "gro: claude — neither \`claude\` CLI nor ANTHROPIC_API_KEY available" >&2
+    return 1
+  fi
+
+  model="${model:-claude-sonnet-4-20250514}"
+
+  local body
+  if [[ -n "$system_prompt" ]]; then
+    body=$(jq -nc \
+      --arg model "$model" \
+      --arg prompt "$prompt" \
+      --arg sys "$system_prompt" \
+      '{model: $model, max_tokens: 4096, system: $sys, messages: [{role: "user", content: $prompt}]}')
+  else
+    body=$(jq -nc \
+      --arg model "$model" \
+      --arg prompt "$prompt" \
+      '{model: $model, max_tokens: 4096, messages: [{role: "user", content: $prompt}]}')
+  fi
+
+  curl -sS https://api.anthropic.com/v1/messages \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: ${api_key}" \
+    -H "anthropic-version: 2023-06-01" \
+    -d "$body" \
+  | jq -r '.content[0].text // error(.error.message // "empty response")'
+}
+
+# --- provider: openai ---
+
+complete_openai() {
+  local prompt="$1" model="$2" system_prompt="$3"
+
+  local api_key="${OPENAI_API_KEY:-$(load_config_value openai.api-key)}"
+  if [[ -z "$api_key" ]]; then
+    echo "gro: openai — OPENAI_API_KEY not set" >&2
+    return 1
+  fi
+
+  model="${model:-gpt-4o}"
+
+  local body
+  if [[ -n "$system_prompt" ]]; then
+    body=$(jq -nc \
+      --arg model "$model" \
+      --arg prompt "$prompt" \
+      --arg sys "$system_prompt" \
+      '{model: $model, messages: [{role: "system", content: $sys}, {role: "user", content: $prompt}]}')
+  else
+    body=$(jq -nc \
+      --arg model "$model" \
+      --arg prompt "$prompt" \
+      '{model: $model, messages: [{role: "user", content: $prompt}]}')
+  fi
+
+  curl -sS https://api.openai.com/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${api_key}" \
+    -d "$body" \
+  | jq -r '.choices[0].message.content // error(.error.message // "empty response")'
+}
+
+# --- provider: gemini ---
+
+complete_gemini() {
+  local prompt="$1" model="$2" system_prompt="$3"
+
+  local api_key="${GEMINI_API_KEY:-$(load_config_value gemini.api-key)}"
+  if [[ -z "$api_key" ]]; then
+    echo "gro: gemini — GEMINI_API_KEY not set" >&2
+    return 1
+  fi
+
+  model="${model:-gemini-2.0-flash}"
+
+  local body
+  if [[ -n "$system_prompt" ]]; then
+    body=$(jq -nc \
+      --arg prompt "$prompt" \
+      --arg sys "$system_prompt" \
+      '{systemInstruction: {parts: [{text: $sys}]}, contents: [{role: "user", parts: [{text: $prompt}]}]}')
+  else
+    body=$(jq -nc \
+      --arg prompt "$prompt" \
+      '{contents: [{role: "user", parts: [{text: $prompt}]}]}')
+  fi
+
+  curl -sS "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${api_key}" \
+    -H "Content-Type: application/json" \
+    -d "$body" \
+  | jq -r '.candidates[0].content.parts[0].text // error(.error.message // "empty response")'
+}
+
+# --- model inference ---
+
+infer_provider() {
+  local model="$1"
+  case "$model" in
+    gpt-*|o1-*|o3-*|chatgpt-*) echo "openai" ;;
+    claude-*|sonnet*|haiku*|opus*) echo "claude" ;;
+    gemini-*) echo "gemini" ;;
+    *) echo "" ;;
+  esac
+}
+
+# --- usage ---
+
+usage() {
+  cat <<'USAGE'
+gro — provider-agnostic LLM CLI
+
+usage:
+  gro [options] "prompt"
+  echo "prompt" | gro -p [options]
+  gro config set <key> <value>
+  gro config get [key]
+
+options:
+  -P, --provider   claude | openai | gemini (default: claude)
+  -m, --model      model name (auto-infers provider if obvious)
+  --system-prompt  system prompt text
+  -p               pipe mode (read prompt from stdin)
+  --dry-run        show what would be called without calling it
+  -h, --help       show this help
+
+examples:
+  gro "explain quicksort"
+  gro -P openai -m gpt-4o "explain quicksort"
+  gro -m gemini-2.0-flash "hello"
+  echo "summarize this" | gro -p --system-prompt "Be concise"
+  gro config set default-provider openai
+USAGE
+}
+
+# --- main ---
+
+main() {
+  local provider="" model="" system_prompt="" pipe=false dry_run=false
+  local -a positional=()
+
+  # handle config subcommand
+  if [[ "${1:-}" == "config" ]]; then
+    shift
+    local subcmd="${1:-get}"
+    shift || true
+    case "$subcmd" in
+      set) config_set "$@" ;;
+      get) config_get "$@" ;;
+      *) echo "gro config: unknown subcommand '$subcmd'" >&2; return 1 ;;
+    esac
+    return
+  fi
+
+  # parse flags
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -P|--provider) provider="$2"; shift 2 ;;
+      -m|--model) model="$2"; shift 2 ;;
+      --system-prompt) system_prompt="$2"; shift 2 ;;
+      -p) pipe=true; shift ;;
+      --dry-run) dry_run=true; shift ;;
+      -h|--help) usage; return 0 ;;
+      -*) echo "gro: unknown flag '$1'" >&2; return 1 ;;
+      *) positional+=("$1"); shift ;;
+    esac
+  done
+
+  # resolve prompt
+  local prompt=""
+  if [[ ${#positional[@]} -gt 0 ]]; then
+    prompt="${positional[*]}"
+  fi
+  if $pipe || [[ -z "$prompt" && ! -t 0 ]]; then
+    prompt=$(cat)
+  fi
+  if [[ -z "$prompt" ]]; then
+    echo "gro: no prompt provided" >&2
+    usage >&2
+    return 1
+  fi
+
+  # resolve provider
+  if [[ -z "$provider" && -n "$model" ]]; then
+    provider=$(infer_provider "$model")
+  fi
+  if [[ -z "$provider" ]]; then
+    provider=$(load_config_value default-provider "claude")
+  fi
+
+  # dry run
+  if $dry_run; then
+    echo "provider: $provider"
+    echo "model: ${model:-(default)}"
+    echo "system-prompt: ${system_prompt:-(none)}"
+    if (( ${#prompt} > 80 )); then
+      echo "prompt: ${prompt:0:80}..."
+    else
+      echo "prompt: ${prompt}"
+    fi
+    return 0
+  fi
+
+  # dispatch
+  case "$provider" in
+    claude)  complete_claude  "$prompt" "$model" "$system_prompt" ;;
+    openai)  complete_openai  "$prompt" "$model" "$system_prompt" ;;
+    gemini)  complete_gemini  "$prompt" "$model" "$system_prompt" ;;
+    *) echo "gro: unknown provider '$provider' (available: claude, openai, gemini)" >&2; return 1 ;;
+  esac
+}
+
+main "$@"

@@ -8,6 +8,23 @@ import { timedFetch } from "../utils/timed-fetch.js";
 import { groError, asError, isGroError, errorLogFields } from "../errors.js";
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types.js";
 
+const MAX_RETRIES = 3;
+const RETRY_BASE_MS = 1000;
+
+function isRetryable(status: number): boolean {
+  return status === 429 || status === 502 || status === 503 || status === 529;
+}
+
+function retryDelay(attempt: number): number {
+  const base = RETRY_BASE_MS * Math.pow(2, attempt);
+  const jitter = Math.random() * base * 0.5;
+  return base + jitter;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export interface AnthropicDriverConfig {
   apiKey: string;
   baseUrl?: string;
@@ -63,17 +80,25 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
     let requestId: string | undefined;
 
     try {
-      const res = await timedFetch(endpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        where: "driver:anthropic",
-        timeoutMs,
-      });
+      let res!: Response;
+      for (let attempt = 0; ; attempt++) {
+        res = await timedFetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          where: "driver:anthropic",
+          timeoutMs,
+        });
 
-      requestId = res.headers.get("request-id") ?? undefined;
+        if (res.ok) break;
 
-      if (!res.ok) {
+        if (isRetryable(res.status) && attempt < MAX_RETRIES) {
+          const delay = retryDelay(attempt);
+          Logger.warn(`Anthropic ${res.status}, retry ${attempt + 1}/${MAX_RETRIES} in ${Math.round(delay)}ms`);
+          await sleep(delay);
+          continue;
+        }
+
         const text = await res.text().catch(() => "");
         const ge = groError("provider_error", `Anthropic API failed (${res.status}): ${text}`, {
           provider: "anthropic",

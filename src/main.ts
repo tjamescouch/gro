@@ -581,16 +581,28 @@ async function interactive(
 
     // Auto-save after each turn
     if (cfg.sessionPersistence) {
-      await memory.save(sessionId);
+      try {
+        await memory.save(sessionId);
+      } catch (e: any) {
+        Logger.error(C.red(`session save failed: ${e.message}`));
+      }
     }
 
     process.stdout.write("\n");
     rl.prompt();
   });
 
+  rl.on("error", (e: Error) => {
+    Logger.error(C.red(`readline error: ${e.message}`));
+  });
+
   rl.on("close", async () => {
     if (cfg.sessionPersistence) {
-      await memory.save(sessionId);
+      try {
+        await memory.save(sessionId);
+      } catch (e: any) {
+        Logger.error(C.red(`session save failed: ${e.message}`));
+      }
     }
     await mcp.disconnectAll();
     Logger.info(C.gray(`\ngoodbye. session: ${sessionId}`));
@@ -678,8 +690,15 @@ async function main() {
   }
 }
 
-main().catch((e: unknown) => {
-  const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
-  Logger.error("gro:", errorLogFields(ge));
+// Graceful shutdown on signals
+for (const sig of ["SIGTERM", "SIGHUP"] as const) {
+  process.on(sig, () => {
+    Logger.info(C.gray(`\nreceived ${sig}, shutting down...`));
+    process.exit(0);
+  });
+}
+
+main().catch((e) => {
+  Logger.error("gro:", e.message || e);
   process.exit(1);
 });

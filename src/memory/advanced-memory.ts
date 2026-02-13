@@ -1,5 +1,6 @@
 import type { ChatDriver, ChatMessage } from "../drivers/types.js";
 import { AgentMemory } from "./agent-memory.js";
+import { loadSession, saveSession, ensureGroDir } from "../session.js";
 
 /**
  * AdvancedMemory — swim-lane summarization with token budgeting.
@@ -51,12 +52,18 @@ export class AdvancedMemory extends AgentMemory {
     this.keepRecentTools = Math.max(0, Math.floor(args.keepRecentTools ?? 3));
   }
 
-  async load(_id: string): Promise<void> {
-    // TODO: load from persistence
+  async load(id: string): Promise<void> {
+    const session = loadSession(id);
+    if (session) {
+      this.messagesBuffer.splice(0, this.messagesBuffer.length, ...session.messages);
+    }
   }
 
-  async save(_id: string): Promise<void> {
-    // TODO: save to persistence
+  async save(id: string): Promise<void> {
+    ensureGroDir();
+    saveSession(id, this.messagesBuffer, {
+      model: this.model,
+    });
   }
 
   protected async onAfterAdd(): Promise<void> {

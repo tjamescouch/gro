@@ -2,8 +2,11 @@
  * Tests for AgentMemory, SimpleMemory, and AdvancedMemory.
  */
 
-import { test, describe } from "node:test";
+import { test, describe, before, after } from "node:test";
 import assert from "node:assert";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import type { ChatDriver, ChatMessage, ChatOutput } from "../src/drivers/types.js";
 import { SimpleMemory } from "../src/memory/simple-memory.js";
 import { AdvancedMemory } from "../src/memory/advanced-memory.js";
@@ -182,5 +185,72 @@ describe("AdvancedMemory", () => {
     });
     await mem.add(msg("user", "still works"));
     assert.strictEqual(mem.messages().length, 1);
+  });
+});
+
+describe("Memory persistence", () => {
+  const tmpDir = path.join(os.tmpdir(), `gro-memory-persist-test-${Date.now()}`);
+  const origCwd = process.cwd();
+
+  before(() => {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    process.chdir(tmpDir);
+  });
+
+  after(() => {
+    process.chdir(origCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("SimpleMemory save/load round-trip", async () => {
+    const mem = new SimpleMemory("Be helpful.");
+    await mem.add(msg("user", "Hello"));
+    await mem.add(msg("assistant", "Hi there!"));
+    await mem.save("simple-persist-1");
+
+    // Load into a fresh instance
+    const mem2 = new SimpleMemory();
+    await mem2.load("simple-persist-1");
+    const msgs = mem2.messages();
+    assert.strictEqual(msgs.length, 3);
+    assert.strictEqual(msgs[0].role, "system");
+    assert.strictEqual(msgs[0].content, "Be helpful.");
+    assert.strictEqual(msgs[1].content, "Hello");
+    assert.strictEqual(msgs[2].content, "Hi there!");
+  });
+
+  test("AdvancedMemory save/load round-trip", async () => {
+    const mem = new AdvancedMemory({
+      driver: mockDriver(),
+      model: "test-model",
+      systemPrompt: "Critical rule.",
+      contextTokens: 100_000,
+    });
+    await mem.add(msg("user", "First question"));
+    await mem.add(msg("assistant", "First answer"));
+    await mem.save("advanced-persist-1");
+
+    // Load into a fresh instance
+    const mem2 = new AdvancedMemory({
+      driver: mockDriver(),
+      model: "test-model",
+      contextTokens: 100_000,
+    });
+    await mem2.load("advanced-persist-1");
+    const msgs = mem2.messages();
+    assert.strictEqual(msgs.length, 3);
+    assert.strictEqual(msgs[0].content, "Critical rule.");
+    assert.strictEqual(msgs[1].content, "First question");
+    assert.strictEqual(msgs[2].content, "First answer");
+  });
+
+  test("load with nonexistent session leaves buffer unchanged", async () => {
+    const mem = new SimpleMemory("Keep me.");
+    await mem.add(msg("user", "existing"));
+    await mem.load("does-not-exist-xyz");
+    const msgs = mem.messages();
+    assert.strictEqual(msgs.length, 2);
+    assert.strictEqual(msgs[0].content, "Keep me.");
+    assert.strictEqual(msgs[1].content, "existing");
   });
 });

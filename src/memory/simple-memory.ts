@@ -1,5 +1,6 @@
 import type { ChatMessage } from "../drivers/types.js";
 import { AgentMemory } from "./agent-memory.js";
+import { loadSession, saveSession, ensureGroDir } from "../session.js";
 
 /**
  * SimpleMemory — unbounded message buffer.
@@ -11,7 +12,16 @@ export class SimpleMemory extends AgentMemory {
     super(systemPrompt);
   }
 
-  async load(_id: string): Promise<void> {}
-  async save(_id: string): Promise<void> {}
+  async load(id: string): Promise<void> {
+    const session = loadSession(id);
+    if (session) {
+      this.messagesBuffer.splice(0, this.messagesBuffer.length, ...session.messages);
+    }
+  }
+
+  async save(id: string): Promise<void> {
+    ensureGroDir();
+    saveSession(id, this.messagesBuffer, {});
+  }
   protected async onAfterAdd(): Promise<void> {}
 }

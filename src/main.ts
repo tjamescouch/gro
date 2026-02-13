@@ -514,15 +514,12 @@ async function singleShot(
     await memory.save(sessionId);
   }
 
-  if (!text) {
-    Logger.error("gro: empty response");
-    process.exit(1);
-  }
-
-  if (cfg.outputFormat === "json") {
-    process.stdout.write(formatOutput(text, "json") + "\n");
-  } else if (!text.endsWith("\n")) {
-    process.stdout.write("\n");
+  if (text) {
+    if (cfg.outputFormat === "json") {
+      process.stdout.write(formatOutput(text, "json") + "\n");
+    } else if (!text.endsWith("\n")) {
+      process.stdout.write("\n");
+    }
   }
 }
 

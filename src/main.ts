@@ -475,9 +475,9 @@ async function singleShot(
   driver: ChatDriver,
   mcp: McpManager,
   sessionId: string,
+  positionalArgs?: string[],
 ): Promise<void> {
-  const args = process.argv.slice(2).filter((a: string) => !a.startsWith("-"));
-  let prompt = args.join(" ").trim();
+  let prompt = (positionalArgs || []).join(" ").trim();
 
   if (!prompt && !process.stdin.isTTY) {
     const chunks: Uint8Array[] = [];
@@ -656,7 +656,7 @@ async function main() {
     if (cfg.interactive && positional.length === 0) {
       await interactive(cfg, driver, mcp, sessionId);
     } else {
-      await singleShot(cfg, driver, mcp, sessionId);
+      await singleShot(cfg, driver, mcp, sessionId, positional);
       await mcp.disconnectAll();
     }
   } catch (e: any) {

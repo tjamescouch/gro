@@ -104,7 +104,7 @@ export class McpManager {
     for (const server of this.servers.values()) {
       const tool = server.tools.find(t => t.name === name);
       if (tool) {
-        const result = await server.client.callTool({ name, arguments: args });
+        const result = await server.client.callTool({ name, arguments: args }, undefined, { timeout: 5 * 60 * 1000 });
         // Extract text content from result
         if (Array.isArray(result.content)) {
           return result.content

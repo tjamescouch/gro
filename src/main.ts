@@ -583,8 +583,8 @@ async function interactive(
     if (cfg.sessionPersistence) {
       try {
         await memory.save(sessionId);
-      } catch (e: any) {
-        Logger.error(C.red(`session save failed: ${e.message}`));
+      } catch (e: unknown) {
+        Logger.error(C.red(`session save failed: ${asError(e).message}`));
       }
     }
 
@@ -600,8 +600,8 @@ async function interactive(
     if (cfg.sessionPersistence) {
       try {
         await memory.save(sessionId);
-      } catch (e: any) {
-        Logger.error(C.red(`session save failed: ${e.message}`));
+      } catch (e: unknown) {
+        Logger.error(C.red(`session save failed: ${asError(e).message}`));
       }
     }
     await mcp.disconnectAll();
@@ -684,7 +684,7 @@ async function main() {
       await singleShot(cfg, driver, mcp, sessionId, positional);
       await mcp.disconnectAll();
     }
-  } catch (e: any) {
+  } catch (e: unknown) {
     await mcp.disconnectAll();
     throw e;
   }
@@ -698,7 +698,7 @@ for (const sig of ["SIGTERM", "SIGHUP"] as const) {
   });
 }
 
-main().catch((e) => {
-  Logger.error("gro:", e.message || e);
+main().catch((e: unknown) => {
+  Logger.error("gro:", asError(e).message);
   process.exit(1);
 });

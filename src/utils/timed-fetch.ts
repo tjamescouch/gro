@@ -1,3 +1,5 @@
+import { asError } from "../errors.js";
+
 /** Wrap fetch with timeout and location context for debugging. */
 export async function timedFetch(
   url: string,
@@ -14,9 +16,10 @@ export async function timedFetch(
       timer = setTimeout(() => controller!.abort(), timeoutMs);
     }
     return await fetch(url, rest);
-  } catch (e: any) {
+  } catch (e: unknown) {
+    const wrapped = asError(e);
     const err = new Error(
-      `[fetch timeout] ${where ?? ""} ${url} -> ${e?.name || "Error"}: ${e?.message || e}`
+      `[fetch timeout] ${where ?? ""} ${url} -> ${wrapped.name}: ${wrapped.message}`
     );
     (err as any).cause = e;
     throw err;

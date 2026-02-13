@@ -3,6 +3,7 @@
  * Works with OpenAI, Anthropic (via proxy), LM Studio, Ollama, etc.
  */
 import { Logger } from "../logger.js";
+import { asError } from "../errors.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types.js";
@@ -242,9 +243,10 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
         .map(([, v]) => v);
 
       return { text: fullText, reasoning: fullReasoning || undefined, toolCalls };
-    } catch (e: any) {
-      if (e?.name === "AbortError") Logger.debug("timeout(stream)", { ms: defaultTimeout });
-      throw e;
+    } catch (e: unknown) {
+      const wrapped = asError(e);
+      if (wrapped.name === "AbortError") Logger.debug("timeout(stream)", { ms: defaultTimeout });
+      throw wrapped;
     } finally {
       clearTimeout(timer);
       if (userSignal) userSignal.removeEventListener("abort", linkAbort);

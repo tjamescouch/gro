@@ -517,11 +517,21 @@ async function singleShot(
 
   await memory.add({ role: "user", from: "User", content: prompt });
 
-  const text = await executeTurn(driver, memory, mcp, cfg);
+  let text: string | undefined;
+  try {
+    text = await executeTurn(driver, memory, mcp, cfg);
+  } catch (e: unknown) {
+    const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
+    Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
+  }
 
-  // Save session
+  // Save session (even on error — preserve conversation state)
   if (cfg.sessionPersistence) {
-    await memory.save(sessionId);
+    try {
+      await memory.save(sessionId);
+    } catch (e: unknown) {
+      Logger.error(C.red(`session save failed: ${asError(e).message}`));
+    }
   }
 
   if (text) {

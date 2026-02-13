@@ -160,9 +160,8 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
             const prev = toolByIndex.get(idx) ?? {
               id: "", type: "function", function: { name: "", arguments: "" }
             };
-            const d = item?.delta ?? {};
-            if (typeof d.id === "string" && d.id) prev.id = d.id;
-            if (typeof d.type === "string" && d.type) (prev as any).type = d.type;
+            if (typeof item.id === "string" && item.id) prev.id = item.id;
+            if (typeof item.type === "string" && item.type) (prev as any).type = item.type;
             const f = item?.function ?? {};
             if (typeof f.name === "string" && f.name) prev.function.name += f.name;
             if (typeof f.arguments === "string" && f.arguments) prev.function.arguments += f.arguments;

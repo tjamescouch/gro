@@ -32,6 +32,7 @@ interface GroConfig {
   contextTokens: number;
   interactive: boolean;
   maxToolRounds: number;
+  summarizerModel: string | null;
   mcpServers: Record<string, McpServerConfig>;
 }
 
@@ -71,6 +72,7 @@ function loadConfig(): GroConfig {
     else if (args[i] === "--system-prompt") { flags.systemPrompt = args[++i]; }
     else if (args[i] === "--context-tokens") { flags.contextTokens = args[++i]; }
     else if (args[i] === "--max-tool-rounds") { flags.maxToolRounds = args[++i]; }
+    else if (args[i] === "--summarizer-model") { flags.summarizerModel = args[++i]; }
     else if (args[i] === "-i" || args[i] === "--interactive") { flags.interactive = "true"; }
     else if (args[i] === "--no-mcp") { flags.noMcp = "true"; }
     else if (args[i] === "-h" || args[i] === "--help") { usage(); process.exit(0); }
@@ -90,6 +92,7 @@ function loadConfig(): GroConfig {
     contextTokens: parseInt(flags.contextTokens || "8192"),
     interactive: flags.interactive === "true" || (positional.length === 0 && process.stdin.isTTY === true),
     maxToolRounds: parseInt(flags.maxToolRounds || "10"),
+    summarizerModel: flags.summarizerModel || null,
     mcpServers,
   };
 }
@@ -148,6 +151,7 @@ options:
   --system-prompt     system prompt text
   --context-tokens    context window budget (default: 8192)
   --max-tool-rounds   max tool call rounds per turn (default: 10)
+  --summarizer-model  model for context summarization (default: same as --model)
   --no-mcp            disable MCP server connections
   -i, --interactive   interactive conversation mode
   -h, --help          show this help`);
@@ -157,40 +161,39 @@ options:
 // Driver factory
 // ---------------------------------------------------------------------------
 
-function createDriver(cfg: GroConfig): ChatDriver {
-  switch (cfg.provider) {
+function createDriverForModel(
+  provider: "openai" | "anthropic" | "local",
+  model: string,
+  apiKey: string,
+  baseUrl: string,
+): ChatDriver {
+  switch (provider) {
     case "anthropic":
-      if (!cfg.apiKey) {
+      if (!apiKey) {
         Logger.error("gro: ANTHROPIC_API_KEY not set");
         process.exit(1);
       }
-      return makeAnthropicDriver({
-        apiKey: cfg.apiKey,
-        model: cfg.model,
-      });
+      return makeAnthropicDriver({ apiKey, model });
 
     case "openai":
-      if (!cfg.apiKey) {
+      if (!apiKey) {
         Logger.error("gro: OPENAI_API_KEY not set");
         process.exit(1);
       }
-      return makeStreamingOpenAiDriver({
-        baseUrl: cfg.baseUrl,
-        model: cfg.model,
-        apiKey: cfg.apiKey,
-      });
+      return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
 
     case "local":
-      return makeStreamingOpenAiDriver({
-        baseUrl: cfg.baseUrl,
-        model: cfg.model,
-      });
+      return makeStreamingOpenAiDriver({ baseUrl, model });
 
     default:
-      Logger.error(`gro: unknown provider "${cfg.provider}"`);
+      Logger.error(`gro: unknown provider "${provider}"`);
       process.exit(1);
   }
   throw new Error("unreachable");
+}
+
+function createDriver(cfg: GroConfig): ChatDriver {
+  return createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl);
 }
 
 // ---------------------------------------------------------------------------
@@ -199,9 +202,26 @@ function createDriver(cfg: GroConfig): ChatDriver {
 
 function createMemory(cfg: GroConfig, driver: ChatDriver): AgentMemory {
   if (cfg.interactive) {
+    let summarizerDriver: ChatDriver | undefined;
+    let summarizerModel: string | undefined;
+
+    if (cfg.summarizerModel) {
+      summarizerModel = cfg.summarizerModel;
+      const summarizerProvider = inferProvider(undefined, summarizerModel);
+      summarizerDriver = createDriverForModel(
+        summarizerProvider,
+        summarizerModel,
+        resolveApiKey(summarizerProvider),
+        defaultBaseUrl(summarizerProvider),
+      );
+      Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
+    }
+
     return new AdvancedMemory({
       driver,
       model: cfg.model,
+      summarizerDriver,
+      summarizerModel,
       systemPrompt: cfg.systemPrompt || undefined,
       contextTokens: cfg.contextTokens,
     });
@@ -361,7 +381,7 @@ async function main() {
 
   const args = process.argv.slice(2);
   const positional: string[] = [];
-  const flagsWithValues = ["--provider", "-P", "--model", "-m", "--base-url", "--system-prompt", "--context-tokens", "--max-tool-rounds"];
+  const flagsWithValues = ["--provider", "-P", "--model", "-m", "--base-url", "--system-prompt", "--context-tokens", "--max-tool-rounds", "--summarizer-model"];
   for (let i = 0; i < args.length; i++) {
     if (args[i].startsWith("-")) {
       if (flagsWithValues.includes(args[i])) i++;

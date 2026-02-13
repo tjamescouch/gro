@@ -5,6 +5,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Logger } from "../logger.js";
+import { groError, asError, errorLogFields } from "../errors.js";
 
 export interface McpServerConfig {
   command: string;
@@ -41,8 +42,12 @@ export class McpManager {
     Logger.debug(`Connecting to ${entries.length} MCP server(s)...`);
 
     await Promise.all(
-      entries.map(([name, cfg]) => this.connectOne(name, cfg).catch(e => {
-        Logger.warn(`MCP server "${name}" failed to connect: ${e.message}`);
+      entries.map(([name, cfg]) => this.connectOne(name, cfg).catch((e: unknown) => {
+        const ge = groError("mcp_error", `MCP server "${name}" failed to connect: ${asError(e).message}`, {
+          retryable: true,
+          cause: e,
+        });
+        Logger.warn(ge.message, errorLogFields(ge));
       }))
     );
   }

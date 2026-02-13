@@ -5,6 +5,7 @@
 import { Logger } from "../logger.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
+import { groError, asError, isGroError, errorLogFields } from "../errors.js";
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types.js";
 
 export interface AnthropicDriverConfig {
@@ -58,6 +59,9 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
       "anthropic-version": "2023-06-01",
     };
 
+    const RETRYABLE_STATUS = new Set([429, 503, 529]);
+    let requestId: string | undefined;
+
     try {
       const res = await timedFetch(endpoint, {
         method: "POST",
@@ -67,9 +71,19 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
         timeoutMs,
       });
 
+      requestId = res.headers.get("request-id") ?? undefined;
+
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(`Anthropic API failed (${res.status}): ${text}`);
+        const ge = groError("provider_error", `Anthropic API failed (${res.status}): ${text}`, {
+          provider: "anthropic",
+          model: resolvedModel,
+          request_id: requestId,
+          retryable: RETRYABLE_STATUS.has(res.status),
+          cause: new Error(text),
+        });
+        Logger.error("Anthropic driver error:", errorLogFields(ge));
+        throw ge;
       }
 
       const data = await res.json() as any;
@@ -96,9 +110,17 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
       }
 
       return { text, toolCalls };
-    } catch (e: any) {
-      Logger.error("Anthropic driver error:", e.message);
-      throw e;
+    } catch (e: unknown) {
+      if (isGroError(e)) throw e; // already wrapped above
+      const ge = groError("provider_error", `Anthropic driver error: ${asError(e).message}`, {
+        provider: "anthropic",
+        model: resolvedModel,
+        request_id: requestId,
+        retryable: false,
+        cause: e,
+      });
+      Logger.error("Anthropic driver error:", errorLogFields(ge));
+      throw ge;
     }
   }
 

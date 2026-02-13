@@ -22,7 +22,7 @@ import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatOutput } from "./drivers/types.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 
 // ---------------------------------------------------------------------------
 // Config

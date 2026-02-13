@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# gro — provider-agnostic LLM CLI
+# thin dispatcher that routes to provider adapter scripts
+
+GRO_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG_DIR="${HOME}/.config/gro"
+CONFIG_FILE="${CONFIG_DIR}/config"
+
+# --- config helpers ---
+
+config_get() {
+  local key="${1:-}"
+  if [[ -z "$key" ]]; then
+    [[ -f "$CONFIG_FILE" ]] && cat "$CONFIG_FILE" || echo "(no config)"
+    return
+  fi
+  if [[ -f "$CONFIG_FILE" ]]; then
+    grep "^${key}=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- || echo "(not set)"
+  else
+    echo "(not set)"
+  fi
+}
+
+config_set() {
+  local key="$1" value="$2"
+  mkdir -p "$CONFIG_DIR"
+  if [[ -f "$CONFIG_FILE" ]] && grep -q "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$CONFIG_FILE"
+  else
+    echo "${key}=${value}" >> "$CONFIG_FILE"
+  fi
+  echo "${key}=${value}"
+}
+
+load_config_value() {
+  local key="$1" default="${2:-}"
+  if [[ -f "$CONFIG_FILE" ]]; then
+    local val
+    val=$(grep "^${key}=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2-)
+    echo "${val:-$default}"
+  else
+    echo "$default"
+  fi
+}
+
+# --- model inference ---
+
+infer_provider() {
+  local model="$1"
+  case "$model" in
+    gpt-*|o1-*|o3-*|o4-*|chatgpt-*) echo "openai" ;;
+    claude-*|sonnet*|haiku*|opus*)    echo "claude" ;;
+    gemini-*)                         echo "gemini" ;;
+    *)                                echo "" ;;
+  esac
+}
+
+# --- usage ---
+
+usage() {
+  cat <<'USAGE'
+gro — provider-agnostic LLM CLI
+
+usage:
+  gro [options] "prompt"
+  echo "prompt" | gro -p [options]
+  gro config set <key> <value>
+  gro config get [key]
+
+options:
+  -P, --provider   claude | openai | gemini (default: claude)
+  -m, --model      model name (auto-infers provider if obvious)
+  --system-prompt  system prompt text
+  -p               pipe mode (read prompt from stdin)
+  --dry-run        show resolved provider/model without calling
+  -h, --help       show this help
+
+examples:
+  gro "explain quicksort"
+  gro -P openai -m gpt-4o "explain quicksort"
+  gro -m gemini-2.0-flash "hello"
+  echo "summarize this" | gro -p --system-prompt "Be concise"
+  gro config set default-provider openai
+USAGE
+}
+
+# --- main ---
+
+main() {
+  local provider="" model="" system_prompt="" pipe=false dry_run=false
+  local -a positional=()
+
+  # config subcommand
+  if [[ "${1:-}" == "config" ]]; then
+    shift
+    local subcmd="${1:-get}"
+    shift || true
+    case "$subcmd" in
+      set) config_set "$@" ;;
+      get) config_get "$@" ;;
+      *) echo "gro config: unknown subcommand '$subcmd'" >&2; return 1 ;;
+    esac
+    return
+  fi
+
+  # parse flags
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -P|--provider)    provider="$2"; shift 2 ;;
+      -m|--model)       model="$2"; shift 2 ;;
+      --system-prompt)  system_prompt="$2"; shift 2 ;;
+      -p)               pipe=true; shift ;;
+      --dry-run)        dry_run=true; shift ;;
+      -h|--help)        usage; return 0 ;;
+      -*)               echo "gro: unknown flag '$1'" >&2; return 1 ;;
+      *)                positional+=("$1"); shift ;;
+    esac
+  done
+
+  # resolve prompt
+  local prompt=""
+  if [[ ${#positional[@]} -gt 0 ]]; then
+    prompt="${positional[*]}"
+  fi
+  if $pipe || [[ -z "$prompt" && ! -t 0 ]]; then
+    prompt=$(cat)
+  fi
+  if [[ -z "$prompt" ]]; then
+    echo "gro: no prompt provided" >&2
+    usage >&2
+    return 1
+  fi
+
+  # resolve provider
+  if [[ -z "$provider" && -n "$model" ]]; then
+    provider=$(infer_provider "$model")
+  fi
+  if [[ -z "$provider" ]]; then
+    provider=$(load_config_value default-provider "claude")
+  fi
+
+  # resolve model from config if not specified
+  if [[ -z "$model" ]]; then
+    model=$(load_config_value "${provider}.model" "")
+  fi
+
+  # dry run
+  if $dry_run; then
+    echo "provider: $provider"
+    echo "model: ${model:-(default)}"
+    echo "system-prompt: ${system_prompt:-(none)}"
+    if (( ${#prompt} > 80 )); then
+      echo "prompt: ${prompt:0:80}..."
+    else
+      echo "prompt: ${prompt}"
+    fi
+    return 0
+  fi
+
+  # find adapter
+  local adapter=""
+  for ext in sh py; do
+    if [[ -x "${GRO_DIR}/providers/${provider}.${ext}" ]]; then
+      adapter="${GRO_DIR}/providers/${provider}.${ext}"
+      break
+    fi
+  done
+
+  if [[ -z "$adapter" ]]; then
+    echo "gro: no adapter found for provider '${provider}'" >&2
+    echo "expected: ${GRO_DIR}/providers/${provider}.{sh,py}" >&2
+    return 1
+  fi
+
+  # dispatch — adapter contract:
+  #   stdin: prompt text
+  #   env: GRO_MODEL, GRO_SYSTEM_PROMPT, GRO_CONFIG_FILE
+  #   stdout: completion text
+  export GRO_MODEL="$model"
+  export GRO_SYSTEM_PROMPT="$system_prompt"
+  export GRO_CONFIG_FILE="$CONFIG_FILE"
+
+  echo "$prompt" | "$adapter"
+}
+
+main "$@"

@@ -1,0 +1,103 @@
+/**
+ * Anthropic Messages API driver.
+ * Direct HTTP — no SDK dependency.
+ */
+import { Logger } from "../logger.js";
+import { rateLimiter } from "../utils/rate-limiter.js";
+import { timedFetch } from "../utils/timed-fetch.js";
+import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types.js";
+
+export interface AnthropicDriverConfig {
+  apiKey: string;
+  model?: string;
+  maxTokens?: number;
+  timeoutMs?: number;
+}
+
+export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
+  const model = cfg.model ?? "claude-sonnet-4-20250514";
+  const maxTokens = cfg.maxTokens ?? 4096;
+  const timeoutMs = cfg.timeoutMs ?? 2 * 60 * 60 * 1000;
+
+  async function chat(messages: ChatMessage[], opts?: any): Promise<ChatOutput> {
+    await rateLimiter.limit("llm-ask", 1);
+
+    const onToken: ((t: string) => void) | undefined = opts?.onToken;
+    const resolvedModel = opts?.model ?? model;
+
+    // Separate system messages from conversation
+    let systemPrompt: string | undefined;
+    const apiMessages: { role: string; content: string }[] = [];
+
+    for (const m of messages) {
+      if (m.role === "system") {
+        systemPrompt = systemPrompt ? systemPrompt + "\n" + m.content : m.content;
+      } else {
+        apiMessages.push({ role: m.role, content: m.content });
+      }
+    }
+
+    const body: any = {
+      model: resolvedModel,
+      max_tokens: maxTokens,
+      messages: apiMessages,
+    };
+    if (systemPrompt) body.system = systemPrompt;
+
+    // Tools support
+    if (Array.isArray(opts?.tools) && opts.tools.length) {
+      body.tools = opts.tools;
+    }
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "x-api-key": cfg.apiKey,
+      "anthropic-version": "2023-06-01",
+    };
+
+    try {
+      const res = await timedFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        where: "driver:anthropic",
+        timeoutMs,
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Anthropic API failed (${res.status}): ${text}`);
+      }
+
+      const data = await res.json() as any;
+
+      let text = "";
+      const toolCalls: ChatToolCall[] = [];
+
+      for (const block of data.content ?? []) {
+        if (block.type === "text") {
+          text += block.text;
+          if (onToken) {
+            try { onToken(block.text); } catch {}
+          }
+        } else if (block.type === "tool_use") {
+          toolCalls.push({
+            id: block.id,
+            type: "function",
+            function: {
+              name: block.name,
+              arguments: JSON.stringify(block.input),
+            },
+          });
+        }
+      }
+
+      return { text, toolCalls };
+    } catch (e: any) {
+      Logger.error("Anthropic driver error:", e.message);
+      throw e;
+    }
+  }
+
+  return { chat };
+}

@@ -22,6 +22,7 @@ import { groError, asError, isGroError, errorLogFields } from "./errors.js";
 import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput } from "./drivers/types.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
+import { bashToolDefinition, executeBash } from "./tools/bash.js";
 
 const VERSION = "0.3.1";
 
@@ -41,6 +42,7 @@ interface GroConfig {
   maxToolRounds: number;
   persistent: boolean;
   maxIdleNudges: number;
+  bash: boolean;
   summarizerModel: string | null;
   outputFormat: "text" | "json" | "stream-json";
   continueSession: boolean;
@@ -140,6 +142,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--append-system-prompt-file") { flags.appendSystemPromptFile = args[++i]; }
     else if (arg === "--context-tokens") { flags.contextTokens = args[++i]; }
     else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
+    else if (arg === "--bash") { flags.bash = "true"; }
     else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
     else if (arg === "--max-idle-nudges") { flags.maxIdleNudges = args[++i]; }
     else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet
@@ -231,6 +234,7 @@ function loadConfig(): GroConfig {
     maxToolRounds: parseInt(flags.maxToolRounds || "10"),
     persistent: flags.persistent === "true",
     maxIdleNudges: parseInt(flags.maxIdleNudges || "3"),
+    bash: flags.bash === "true",
     summarizerModel: flags.summarizerModel || null,
     outputFormat: (flags.outputFormat as GroConfig["outputFormat"]) || "text",
     continueSession: flags.continue === "true",
@@ -299,6 +303,7 @@ options:
   --context-tokens       context window budget (default: 8192)
   --max-turns            max agentic rounds per turn (default: 10)
   --max-tool-rounds      alias for --max-turns
+  --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
   --max-idle-nudges      max consecutive nudges before giving up (default: 3)
   --summarizer-model     model for context summarization (default: same as --model)
@@ -424,6 +429,7 @@ async function executeTurn(
   cfg: GroConfig,
 ): Promise<string> {
   const tools = mcp.getToolDefinitions();
+  if (cfg.bash) tools.push(bashToolDefinition());
   let finalText = "";
 
   const onToken = cfg.outputFormat === "stream-json"
@@ -491,7 +497,11 @@ async function executeTurn(
 
       let result: string;
       try {
-        result = await mcp.callTool(fnName, fnArgs);
+        if (fnName === "bash" && cfg.bash) {
+          result = executeBash(fnArgs);
+        } else {
+          result = await mcp.callTool(fnName, fnArgs);
+        }
       } catch (e: unknown) {
         const ge = groError("tool_error", `Tool "${fnName}" failed: ${asError(e).message}`, {
           retryable: false,

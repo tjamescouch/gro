@@ -23,6 +23,7 @@ import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput } from "./drivers/types.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
+import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.js";
 
 const VERSION = "0.3.1";
 
@@ -429,6 +430,7 @@ async function executeTurn(
   cfg: GroConfig,
 ): Promise<string> {
   const tools = mcp.getToolDefinitions();
+  tools.push(agentpatchToolDefinition());
   if (cfg.bash) tools.push(bashToolDefinition());
   let finalText = "";
 
@@ -497,7 +499,9 @@ async function executeTurn(
 
       let result: string;
       try {
-        if (fnName === "bash" && cfg.bash) {
+        if (fnName === "apply_patch") {
+          result = executeAgentpatch(fnArgs);
+        } else if (fnName === "bash" && cfg.bash) {
           result = executeBash(fnArgs);
         } else {
           result = await mcp.callTool(fnName, fnArgs);

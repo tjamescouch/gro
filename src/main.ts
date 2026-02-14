@@ -26,6 +26,10 @@ import { bashToolDefinition, executeBash } from "./tools/bash.js";
 
 const VERSION = "0.3.1";
 
+// Wake notes: a runner-global file that is prepended to the system prompt on process start
+// so agents reliably see dev workflow + memory pointers on wake.
+const WAKE_NOTES_DEFAULT_PATH = join(process.env.HOME || "", ".claude", "WAKE.md");
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -36,6 +40,8 @@ interface GroConfig {
   baseUrl: string;
   apiKey: string;
   systemPrompt: string;
+  wakeNotes: string;
+  wakeNotesEnabled: boolean;
   contextTokens: number;
   interactive: boolean;
   print: boolean;
@@ -140,6 +146,8 @@ function loadConfig(): GroConfig {
     else if (arg === "--system-prompt-file") { flags.systemPromptFile = args[++i]; }
     else if (arg === "--append-system-prompt") { flags.appendSystemPrompt = args[++i]; }
     else if (arg === "--append-system-prompt-file") { flags.appendSystemPromptFile = args[++i]; }
+    else if (arg === "--wake-notes") { flags.wakeNotes = args[++i]; }
+    else if (arg === "--no-wake-notes") { flags.noWakeNotes = "true"; }
     else if (arg === "--context-tokens") { flags.contextTokens = args[++i]; }
     else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
     else if (arg === "--bash") { flags.bash = "true"; }
@@ -192,6 +200,22 @@ function loadConfig(): GroConfig {
 
   // Resolve system prompt
   let systemPrompt = flags.systemPrompt || "";
+
+  // Inject wake notes by default (runner-global), unless explicitly disabled.
+  // This ensures the model always sees workflow + memory pointers on wake.
+  const wakeNotesPath = flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH;
+  const wakeNotesEnabled = flags.noWakeNotes !== "true";
+  if (wakeNotesEnabled && wakeNotesPath && existsSync(wakeNotesPath)) {
+    try {
+      const wake = readFileSync(wakeNotesPath, "utf-8").trim();
+      if (wake) systemPrompt = systemPrompt ? `${wake}
+
+${systemPrompt}` : wake;
+    } catch (e) {
+      // Non-fatal: if wake notes can't be read, proceed without them.
+      Logger.warn(`Failed to read wake notes at ${wakeNotesPath}: ${asError(e).message}`);
+    }
+  }
   if (flags.systemPromptFile) {
     try {
       systemPrompt = readFileSync(flags.systemPromptFile, "utf-8").trim();
@@ -228,6 +252,8 @@ function loadConfig(): GroConfig {
     baseUrl: flags.baseUrl || defaultBaseUrl(provider),
     apiKey,
     systemPrompt,
+    wakeNotes: flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH,
+    wakeNotesEnabled: flags.noWakeNotes !== "true",
     contextTokens: parseInt(flags.contextTokens || "8192"),
     interactive: interactiveMode,
     print: printMode,
@@ -300,6 +326,8 @@ options:
   --system-prompt-file   read system prompt from file
   --append-system-prompt append to system prompt
   --append-system-prompt-file  append system prompt from file
+  --wake-notes           path to wake notes file (default: ~/.claude/WAKE.md)
+  --no-wake-notes        disable auto-prepending wake notes
   --context-tokens       context window budget (default: 8192)
   --max-turns            max agentic rounds per turn (default: 10)
   --max-tool-rounds      alias for --max-turns

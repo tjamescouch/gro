@@ -2,6 +2,8 @@
 
 Provider-agnostic LLM runtime with context management.
 
+Note: Repo uses feature/* branches for agent work; main is protected.
+
 Single-agent, headless, no terminal UI. Reads a prompt from argv or stdin, manages conversation state, outputs completion to stdout. Connects to MCP servers for tools.
 
 Supersets the `claude` CLI flags for drop-in compatibility.

@@ -8,6 +8,16 @@ GRO_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_DIR="${HOME}/.config/gro"
 CONFIG_FILE="${CONFIG_DIR}/config"
 
+
+# --- BRANCH WORKFLOW (IMPORTANT) ---
+#
+# If you're running gro inside the agent runner repos (e.g. as an AgentChat agent),
+# do NOT commit to main. Create/switch to a feature/* branch before making changes.
+# This is required for automation that only pushes non-main branches.
+#
+# Example:
+#   git checkout -b feature/my-task
+#
 # --- config helpers ---
 
 config_get() {

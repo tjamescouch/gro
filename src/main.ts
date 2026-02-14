@@ -11,6 +11,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { Logger, C } from "./logger.js";
 import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
 import { makeAnthropicDriver } from "./drivers/anthropic.js";
@@ -129,6 +130,13 @@ function loadConfig(): GroConfig {
   const positional: string[] = [];
   const mcpConfigPaths: string[] = [];
 
+  // Wake file: global startup instructions injected into the system prompt.
+  // This is intentionally runner-level (not per-repo) so agents reliably see
+  // the same rules on boot.
+  const defaultWakeFile = join(homedir(), ".claude", "WAKE.md");
+  let wakeFile: string | null = defaultWakeFile;
+  let disableWake = false;
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
@@ -140,6 +148,8 @@ function loadConfig(): GroConfig {
     else if (arg === "--system-prompt-file") { flags.systemPromptFile = args[++i]; }
     else if (arg === "--append-system-prompt") { flags.appendSystemPrompt = args[++i]; }
     else if (arg === "--append-system-prompt-file") { flags.appendSystemPromptFile = args[++i]; }
+    else if (arg === "--wake-file") { wakeFile = args[++i]; }
+    else if (arg === "--no-wake") { disableWake = true; }
     else if (arg === "--context-tokens") { flags.contextTokens = args[++i]; }
     else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
     else if (arg === "--bash") { flags.bash = "true"; }
@@ -214,6 +224,19 @@ function loadConfig(): GroConfig {
       process.exit(1);
     }
   }
+
+  // Default wake injection: prepend runner-global WAKE.md unless explicitly disabled.
+  // Soft dependency: if missing, warn and continue.
+  if (!disableWake && wakeFile) {
+    try {
+      const wake = readFileSync(wakeFile, "utf-8").trim();
+      if (wake) systemPrompt = systemPrompt ? `${wake}\n\n${systemPrompt}` : wake;
+    } catch (e: unknown) {
+      Logger.warn(`Wake file not found/readable (${wakeFile}); continuing without it`);
+    }
+  }
+
+
 
   // Mode resolution: -p forces non-interactive, -i forces interactive
   // Default: interactive if TTY and no prompt given
@@ -300,6 +323,8 @@ options:
   --system-prompt-file   read system prompt from file
   --append-system-prompt append to system prompt
   --append-system-prompt-file  append system prompt from file
+  --wake-file           wake file to prepend to system prompt (default: ~/.claude/WAKE.md)
+  --no-wake             disable wake file injection
   --context-tokens       context window budget (default: 8192)
   --max-turns            max agentic rounds per turn (default: 10)
   --max-tool-rounds      alias for --max-turns

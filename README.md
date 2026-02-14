@@ -212,3 +212,7 @@ npm test
 ## License
 
 MIT
+
+## Boot
+
+For agents: see [`_base.md`](./_base.md).

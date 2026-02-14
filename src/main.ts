@@ -39,6 +39,8 @@ interface GroConfig {
   interactive: boolean;
   print: boolean;
   maxToolRounds: number;
+  persistent: boolean;
+  maxIdleNudges: number;
   summarizerModel: string | null;
   outputFormat: "text" | "json" | "stream-json";
   continueSession: boolean;
@@ -138,6 +140,8 @@ function loadConfig(): GroConfig {
     else if (arg === "--append-system-prompt-file") { flags.appendSystemPromptFile = args[++i]; }
     else if (arg === "--context-tokens") { flags.contextTokens = args[++i]; }
     else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
+    else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
+    else if (arg === "--max-idle-nudges") { flags.maxIdleNudges = args[++i]; }
     else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet
     else if (arg === "--max-budget-usd") { flags.maxBudgetUsd = args[++i]; } // accepted, not used yet
     else if (arg === "--summarizer-model") { flags.summarizerModel = args[++i]; }
@@ -225,6 +229,8 @@ function loadConfig(): GroConfig {
     interactive: interactiveMode,
     print: printMode,
     maxToolRounds: parseInt(flags.maxToolRounds || "10"),
+    persistent: flags.persistent === "true",
+    maxIdleNudges: parseInt(flags.maxIdleNudges || "3"),
     summarizerModel: flags.summarizerModel || null,
     outputFormat: (flags.outputFormat as GroConfig["outputFormat"]) || "text",
     continueSession: flags.continue === "true",
@@ -293,6 +299,8 @@ options:
   --context-tokens       context window budget (default: 8192)
   --max-turns            max agentic rounds per turn (default: 10)
   --max-tool-rounds      alias for --max-turns
+  --persistent           nudge model to keep using tools instead of exiting
+  --max-idle-nudges      max consecutive nudges before giving up (default: 3)
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string
@@ -423,6 +431,7 @@ async function executeTurn(
     : (t: string) => process.stdout.write(t);
 
   let brokeCleanly = false;
+  let idleNudges = 0;
   for (let round = 0; round < cfg.maxToolRounds; round++) {
     const output: ChatOutput = await driver.chat(memory.messages(), {
       model: cfg.model,
@@ -441,8 +450,32 @@ async function executeTurn(
     }
     await memory.add(assistantMsg);
 
-    // No tool calls — we're done
-    if (output.toolCalls.length === 0) { brokeCleanly = true; break; }
+    // No tool calls — either we're done, or we need to nudge the model
+    if (output.toolCalls.length === 0) {
+      if (!cfg.persistent || tools.length === 0) {
+        brokeCleanly = true;
+        break;
+      }
+
+      // Persistent mode: nudge the model to resume tool use
+      idleNudges++;
+      if (idleNudges > cfg.maxIdleNudges) {
+        Logger.debug(`Persistent mode: ${idleNudges} consecutive idle responses — giving up`);
+        brokeCleanly = true;
+        break;
+      }
+
+      Logger.debug(`Persistent mode: model stopped calling tools (nudge ${idleNudges}/${cfg.maxIdleNudges})`);
+      await memory.add({
+        role: "user",
+        from: "System",
+        content: "[SYSTEM] You stopped calling tools. You are a persistent agent — you MUST continue your tool loop. Call agentchat_listen now to resume listening for messages. Do not respond with text only.",
+      });
+      continue;
+    }
+
+    // Model used tools — reset idle nudge counter
+    idleNudges = 0;
 
     // Process tool calls
     for (const tc of output.toolCalls) {

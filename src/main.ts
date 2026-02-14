@@ -605,11 +605,21 @@ async function singleShot(
 
   await memory.add({ role: "user", from: "User", content: prompt });
 
-  const text = await executeTurn(driver, memory, mcp, cfg);
+  let text: string | undefined;
+  try {
+    text = await executeTurn(driver, memory, mcp, cfg);
+  } catch (e: unknown) {
+    const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
+    Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
+  }
 
-  // Save session
+  // Save session (even on error — preserve conversation state)
   if (cfg.sessionPersistence) {
-    await memory.save(sessionId);
+    try {
+      await memory.save(sessionId);
+    } catch (e: unknown) {
+      Logger.error(C.red(`session save failed: ${asError(e).message}`));
+    }
   }
 
   if (text) {
@@ -671,8 +681,8 @@ async function interactive(
     if (cfg.sessionPersistence) {
       try {
         await memory.save(sessionId);
-      } catch (e: any) {
-        Logger.error(C.red(`session save failed: ${e.message}`));
+      } catch (e: unknown) {
+        Logger.error(C.red(`session save failed: ${asError(e).message}`));
       }
     }
 
@@ -688,8 +698,8 @@ async function interactive(
     if (cfg.sessionPersistence) {
       try {
         await memory.save(sessionId);
-      } catch (e: any) {
-        Logger.error(C.red(`session save failed: ${e.message}`));
+      } catch (e: unknown) {
+        Logger.error(C.red(`session save failed: ${asError(e).message}`));
       }
     }
     await mcp.disconnectAll();
@@ -772,7 +782,7 @@ async function main() {
       await singleShot(cfg, driver, mcp, sessionId, positional);
       await mcp.disconnectAll();
     }
-  } catch (e: any) {
+  } catch (e: unknown) {
     await mcp.disconnectAll();
     throw e;
   }
@@ -786,7 +796,12 @@ for (const sig of ["SIGTERM", "SIGHUP"] as const) {
   });
 }
 
-main().catch((e) => {
-  Logger.error("gro:", e.message || e);
+// Catch unhandled promise rejections (e.g. background summarization)
+process.on("unhandledRejection", (reason: unknown) => {
+  Logger.error(C.red(`unhandled rejection: ${asError(reason).message}`));
+});
+
+main().catch((e: unknown) => {
+  Logger.error("gro:", asError(e).message);
   process.exit(1);
 });

@@ -2,9 +2,15 @@
 
 Provider-agnostic LLM runtime with context management.
 
-Single-agent, headless, no terminal UI. Reads a prompt from argv or stdin, manages conversation state, outputs completion to stdout. Connects to MCP servers for tools.
+`gro` is a headless (no TUI) CLI that runs a single agent loop against an LLM provider, persists sessions to disk, and can connect to MCP servers for tool-use.
 
-Supersets the `claude` CLI flags for drop-in compatibility.
+- Works as a **one-shot** prompt runner or an **interactive** agent loop
+- **Provider-agnostic** (Anthropic / OpenAI / local OpenAI-compatible)
+- **Session persistence** to `.gro/context/<session-id>/...`
+- **Context management** via background summarization
+- **MCP support** (discovers Claude Code MCP servers by default)
+
+Repo note: agent work happens on `feature/*` branches; `main` is protected.
 
 ## Install
 
@@ -18,6 +24,29 @@ npx tsc
 Requires [Bun](https://bun.sh) or Node.js 18+.
 
 ## Quick start
+
+## Repo workflow (IMPORTANT)
+
+This repo is often worked on by multiple agents with an automation bot.
+
+- **Never commit on `main`.**
+- Always create a **feature branch** and commit there.
+- **Do not `git push` manually** (automation will sync your local commits).
+
+Example:
+
+```bash
+git checkout main
+git pull --ff-only
+git checkout -b feature/my-change
+
+# edit files
+git add -A
+git commit -m "<message>"
+
+# no git push
+```
+
 
 ```sh
 # One-shot prompt (Anthropic by default)
@@ -36,6 +65,12 @@ node dist/main.js -m gpt-4o "hello"
 
 # Local model via Ollama
 node dist/main.js -m llama3 "hello"
+```
+
+Tip: during development you can run directly from TypeScript:
+
+```sh
+npx tsx src/main.ts -i
 ```
 
 ## Providers
@@ -73,6 +108,8 @@ The provider is auto-inferred from the model name. `-m claude-sonnet-4-20250514`
 -V, --version          show version
 -h, --help             show help
 ```
+
+Run `node dist/main.js --help` to see the full, up-to-date CLI.
 
 ## Session persistence
 
@@ -114,6 +151,18 @@ node dist/main.js --mcp-config ./my-mcp-servers.json "use the filesystem tool to
 
 Disable MCP with `--no-mcp`.
 
+### Config discovery
+
+By default, gro attempts to discover MCP servers from Claude Code’s config:
+
+- `~/.claude/settings.json` → `mcpServers`
+
+You can also provide an explicit config file or JSON string via `--mcp-config`.
+
+### Tool availability
+
+Tools available to the model depend on which MCP servers you have configured and which are reachable.
+
 ## Claude CLI compatibility
 
 gro accepts all `claude` CLI flags. Unsupported flags produce a warning and are ignored — nothing crashes.
@@ -146,6 +195,19 @@ src/
     rate-limiter.ts          # Per-lane FIFO rate limiter
     timed-fetch.ts           # Fetch with timeout
 ```
+
+## Development
+
+```sh
+npm install
+npm run build
+npm test
+```
+
+### Safe git workflow
+
+- Never commit directly to `main`
+- Create a `feature/*` branch for changes
 
 ## License
 

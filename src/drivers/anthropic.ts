@@ -5,25 +5,9 @@
 import { Logger } from "../logger.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
+import { MAX_RETRIES, isRetryable, retryDelay, sleep } from "../utils/retry.js";
 import { groError, asError, isGroError, errorLogFields } from "../errors.js";
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types.js";
-
-const MAX_RETRIES = 3;
-const RETRY_BASE_MS = 1000;
-
-function isRetryable(status: number): boolean {
-  return status === 429 || status === 502 || status === 503 || status === 529;
-}
-
-function retryDelay(attempt: number): number {
-  const base = RETRY_BASE_MS * Math.pow(2, attempt);
-  const jitter = Math.random() * base * 0.5;
-  return base + jitter;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export interface AnthropicDriverConfig {
   apiKey: string;

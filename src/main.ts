@@ -24,8 +24,13 @@ import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput } from "./drivers/types.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
+import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.js";
 
 const VERSION = "0.3.1";
+
+// Wake notes: a runner-global file that is prepended to the system prompt on process start
+// so agents reliably see dev workflow + memory pointers on wake.
+const WAKE_NOTES_DEFAULT_PATH = join(process.env.HOME || "", ".claude", "WAKE.md");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -37,6 +42,8 @@ interface GroConfig {
   baseUrl: string;
   apiKey: string;
   systemPrompt: string;
+  wakeNotes: string;
+  wakeNotesEnabled: boolean;
   contextTokens: number;
   interactive: boolean;
   print: boolean;
@@ -148,8 +155,8 @@ function loadConfig(): GroConfig {
     else if (arg === "--system-prompt-file") { flags.systemPromptFile = args[++i]; }
     else if (arg === "--append-system-prompt") { flags.appendSystemPrompt = args[++i]; }
     else if (arg === "--append-system-prompt-file") { flags.appendSystemPromptFile = args[++i]; }
-    else if (arg === "--wake-file") { wakeFile = args[++i]; }
-    else if (arg === "--no-wake") { disableWake = true; }
+    else if (arg === "--wake-notes") { flags.wakeNotes = args[++i]; }
+    else if (arg === "--no-wake-notes") { flags.noWakeNotes = "true"; }
     else if (arg === "--context-tokens") { flags.contextTokens = args[++i]; }
     else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
     else if (arg === "--bash") { flags.bash = "true"; }
@@ -202,6 +209,22 @@ function loadConfig(): GroConfig {
 
   // Resolve system prompt
   let systemPrompt = flags.systemPrompt || "";
+
+  // Inject wake notes by default (runner-global), unless explicitly disabled.
+  // This ensures the model always sees workflow + memory pointers on wake.
+  const wakeNotesPath = flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH;
+  const wakeNotesEnabled = flags.noWakeNotes !== "true";
+  if (wakeNotesEnabled && wakeNotesPath && existsSync(wakeNotesPath)) {
+    try {
+      const wake = readFileSync(wakeNotesPath, "utf-8").trim();
+      if (wake) systemPrompt = systemPrompt ? `${wake}
+
+${systemPrompt}` : wake;
+    } catch (e) {
+      // Non-fatal: if wake notes can't be read, proceed without them.
+      Logger.warn(`Failed to read wake notes at ${wakeNotesPath}: ${asError(e).message}`);
+    }
+  }
   if (flags.systemPromptFile) {
     try {
       systemPrompt = readFileSync(flags.systemPromptFile, "utf-8").trim();
@@ -251,12 +274,14 @@ function loadConfig(): GroConfig {
     baseUrl: flags.baseUrl || defaultBaseUrl(provider),
     apiKey,
     systemPrompt,
+    wakeNotes: flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH,
+    wakeNotesEnabled: flags.noWakeNotes !== "true",
     contextTokens: parseInt(flags.contextTokens || "8192"),
     interactive: interactiveMode,
     print: printMode,
     maxToolRounds: parseInt(flags.maxToolRounds || "10"),
     persistent: flags.persistent === "true",
-    maxIdleNudges: parseInt(flags.maxIdleNudges || "3"),
+    maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
     bash: flags.bash === "true",
     summarizerModel: flags.summarizerModel || null,
     outputFormat: (flags.outputFormat as GroConfig["outputFormat"]) || "text",
@@ -323,14 +348,14 @@ options:
   --system-prompt-file   read system prompt from file
   --append-system-prompt append to system prompt
   --append-system-prompt-file  append system prompt from file
-  --wake-file           wake file to prepend to system prompt (default: ~/.claude/WAKE.md)
-  --no-wake             disable wake file injection
+  --wake-notes           path to wake notes file (default: ~/.claude/WAKE.md)
+  --no-wake-notes        disable auto-prepending wake notes
   --context-tokens       context window budget (default: 8192)
   --max-turns            max agentic rounds per turn (default: 10)
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
-  --max-idle-nudges      max consecutive nudges before giving up (default: 3)
+  --max-idle-nudges      max consecutive nudges before giving up (default: 10)
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string
@@ -454,6 +479,7 @@ async function executeTurn(
   cfg: GroConfig,
 ): Promise<string> {
   const tools = mcp.getToolDefinitions();
+  tools.push(agentpatchToolDefinition());
   if (cfg.bash) tools.push(bashToolDefinition());
   let finalText = "";
 
@@ -522,7 +548,9 @@ async function executeTurn(
 
       let result: string;
       try {
-        if (fnName === "bash" && cfg.bash) {
+        if (fnName === "apply_patch") {
+          result = executeAgentpatch(fnArgs);
+        } else if (fnName === "bash" && cfg.bash) {
           result = executeBash(fnArgs);
         } else {
           result = await mcp.callTool(fnName, fnArgs);
@@ -598,11 +626,21 @@ async function singleShot(
 
   await memory.add({ role: "user", from: "User", content: prompt });
 
-  const text = await executeTurn(driver, memory, mcp, cfg);
+  let text: string | undefined;
+  try {
+    text = await executeTurn(driver, memory, mcp, cfg);
+  } catch (e: unknown) {
+    const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
+    Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
+  }
 
-  // Save session
+  // Save session (even on error — preserve conversation state)
   if (cfg.sessionPersistence) {
-    await memory.save(sessionId);
+    try {
+      await memory.save(sessionId);
+    } catch (e: unknown) {
+      Logger.error(C.red(`session save failed: ${asError(e).message}`));
+    }
   }
 
   if (text) {
@@ -651,9 +689,8 @@ async function interactive(
     if (!input) { rl.prompt(); return; }
     if (input === "exit" || input === "quit") { rl.close(); return; }
 
-    await memory.add({ role: "user", from: "User", content: input });
-
     try {
+      await memory.add({ role: "user", from: "User", content: input });
       await executeTurn(driver, memory, mcp, cfg);
     } catch (e: unknown) {
       const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
@@ -664,8 +701,8 @@ async function interactive(
     if (cfg.sessionPersistence) {
       try {
         await memory.save(sessionId);
-      } catch (e: any) {
-        Logger.error(C.red(`session save failed: ${e.message}`));
+      } catch (e: unknown) {
+        Logger.error(C.red(`session save failed: ${asError(e).message}`));
       }
     }
 
@@ -681,8 +718,8 @@ async function interactive(
     if (cfg.sessionPersistence) {
       try {
         await memory.save(sessionId);
-      } catch (e: any) {
-        Logger.error(C.red(`session save failed: ${e.message}`));
+      } catch (e: unknown) {
+        Logger.error(C.red(`session save failed: ${asError(e).message}`));
       }
     }
     await mcp.disconnectAll();
@@ -765,7 +802,7 @@ async function main() {
       await singleShot(cfg, driver, mcp, sessionId, positional);
       await mcp.disconnectAll();
     }
-  } catch (e: any) {
+  } catch (e: unknown) {
     await mcp.disconnectAll();
     throw e;
   }
@@ -779,7 +816,12 @@ for (const sig of ["SIGTERM", "SIGHUP"] as const) {
   });
 }
 
-main().catch((e) => {
-  Logger.error("gro:", e.message || e);
+// Catch unhandled promise rejections (e.g. background summarization)
+process.on("unhandledRejection", (reason: unknown) => {
+  Logger.error(C.red(`unhandled rejection: ${asError(reason).message}`));
+});
+
+main().catch((e: unknown) => {
+  Logger.error("gro:", asError(e).message);
   process.exit(1);
 });

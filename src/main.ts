@@ -11,6 +11,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { Logger, C } from "./logger.js";
 import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
 import { makeAnthropicDriver } from "./drivers/anthropic.js";
@@ -136,6 +137,13 @@ function loadConfig(): GroConfig {
   const positional: string[] = [];
   const mcpConfigPaths: string[] = [];
 
+  // Wake file: global startup instructions injected into the system prompt.
+  // This is intentionally runner-level (not per-repo) so agents reliably see
+  // the same rules on boot.
+  const defaultWakeFile = join(homedir(), ".claude", "WAKE.md");
+  let wakeFile: string | null = defaultWakeFile;
+  let disableWake = false;
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
@@ -239,6 +247,19 @@ ${systemPrompt}` : wake;
       process.exit(1);
     }
   }
+
+  // Default wake injection: prepend runner-global WAKE.md unless explicitly disabled.
+  // Soft dependency: if missing, warn and continue.
+  if (!disableWake && wakeFile) {
+    try {
+      const wake = readFileSync(wakeFile, "utf-8").trim();
+      if (wake) systemPrompt = systemPrompt ? `${wake}\n\n${systemPrompt}` : wake;
+    } catch (e: unknown) {
+      Logger.warn(`Wake file not found/readable (${wakeFile}); continuing without it`);
+    }
+  }
+
+
 
   // Mode resolution: -p forces non-interactive, -i forces interactive
   // Default: interactive if TTY and no prompt given

@@ -422,6 +422,7 @@ async function executeTurn(
     ? (t: string) => process.stdout.write(JSON.stringify({ type: "token", token: t }) + "\n")
     : (t: string) => process.stdout.write(t);
 
+  let brokeCleanly = false;
   for (let round = 0; round < cfg.maxToolRounds; round++) {
     const output: ChatOutput = await driver.chat(memory.messages(), {
       model: cfg.model,
@@ -441,7 +442,7 @@ async function executeTurn(
     await memory.add(assistantMsg);
 
     // No tool calls — we're done
-    if (output.toolCalls.length === 0) break;
+    if (output.toolCalls.length === 0) { brokeCleanly = true; break; }
 
     // Process tool calls
     for (const tc of output.toolCalls) {
@@ -476,6 +477,18 @@ async function executeTurn(
         name: fnName,
       });
     }
+  }
+
+  // If we exhausted maxToolRounds (loop didn't break via no-tool-calls),
+  // give the model one final turn with no tools so it can produce a closing response.
+  if (!brokeCleanly && tools.length > 0) {
+    Logger.debug("Max tool rounds reached — final turn with no tools");
+    const finalOutput: ChatOutput = await driver.chat(memory.messages(), {
+      model: cfg.model,
+      onToken,
+    });
+    if (finalOutput.text) finalText += finalOutput.text;
+    await memory.add({ role: "assistant", from: "Assistant", content: finalOutput.text || "" });
   }
 
   return finalText;

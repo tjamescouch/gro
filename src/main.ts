@@ -668,9 +668,8 @@ async function interactive(
     if (!input) { rl.prompt(); return; }
     if (input === "exit" || input === "quit") { rl.close(); return; }
 
-    await memory.add({ role: "user", from: "User", content: input });
-
     try {
+      await memory.add({ role: "user", from: "User", content: input });
       await executeTurn(driver, memory, mcp, cfg);
     } catch (e: unknown) {
       const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });

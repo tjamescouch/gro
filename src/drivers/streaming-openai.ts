@@ -6,6 +6,7 @@ import { Logger } from "../logger.js";
 import { asError } from "../errors.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
+import { MAX_RETRIES, isRetryable, retryDelay, sleep } from "../utils/retry.js";
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types.js";
 
 export interface OpenAiDriverConfig {
@@ -39,23 +40,6 @@ class YieldBudget {
       await yieldToLoop();
     }
   }
-}
-
-const MAX_RETRIES = 3;
-const RETRY_BASE_MS = 1000;
-
-function isRetryable(status: number): boolean {
-  return status === 429 || status === 502 || status === 503 || status === 529;
-}
-
-function retryDelay(attempt: number): number {
-  const base = RETRY_BASE_MS * Math.pow(2, attempt);
-  const jitter = Math.random() * base * 0.5;
-  return base + jitter;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
@@ -206,19 +190,23 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
 
       if (body && typeof body.getReader === "function") {
         const reader = body.getReader();
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          await yb.maybe((value as Uint8Array)?.byteLength ?? 0);
-          let sepIdx: number;
-          while ((sepIdx = buf.indexOf("\n\n")) !== -1) {
-            const rawEvent = buf.slice(0, sepIdx).trim();
-            buf = buf.slice(sepIdx + 2);
-            if (rawEvent) await pumpEvent(rawEvent);
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            await yb.maybe((value as Uint8Array)?.byteLength ?? 0);
+            let sepIdx: number;
+            while ((sepIdx = buf.indexOf("\n\n")) !== -1) {
+              const rawEvent = buf.slice(0, sepIdx).trim();
+              buf = buf.slice(sepIdx + 2);
+              if (rawEvent) await pumpEvent(rawEvent);
+            }
           }
+          if (buf.trim()) await pumpEvent(buf.trim());
+        } finally {
+          reader.cancel().catch(() => {});
         }
-        if (buf.trim()) await pumpEvent(buf.trim());
       } else if (body && typeof body[Symbol.asyncIterator] === "function") {
         for await (const chunk of body as AsyncIterable<Uint8Array>) {
           buf += decoder.decode(chunk, { stream: true });

@@ -260,7 +260,7 @@ ${systemPrompt}` : wake;
     print: printMode,
     maxToolRounds: parseInt(flags.maxToolRounds || "10"),
     persistent: flags.persistent === "true",
-    maxIdleNudges: parseInt(flags.maxIdleNudges || "3"),
+    maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
     bash: flags.bash === "true",
     summarizerModel: flags.summarizerModel || null,
     outputFormat: (flags.outputFormat as GroConfig["outputFormat"]) || "text",
@@ -334,7 +334,7 @@ options:
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
-  --max-idle-nudges      max consecutive nudges before giving up (default: 3)
+  --max-idle-nudges      max consecutive nudges before giving up (default: 10)
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string

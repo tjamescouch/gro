@@ -673,11 +673,13 @@ async function singleShot(
   await memory.add({ role: "user", from: "User", content: prompt });
 
   let text: string | undefined;
+  let fatalError = false;
   try {
     text = await executeTurn(driver, memory, mcp, cfg, sessionId);
   } catch (e: unknown) {
     const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
     Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
+    fatalError = true;
   }
 
   // Save session (even on error — preserve conversation state)
@@ -687,6 +689,12 @@ async function singleShot(
     } catch (e: unknown) {
       Logger.error(C.red(`session save failed: ${asError(e).message}`));
     }
+  }
+
+  // Exit with non-zero code on fatal API errors so the supervisor
+  // can distinguish "finished cleanly" from "crashed on API call"
+  if (fatalError) {
+    process.exit(1);
   }
 
   if (text) {

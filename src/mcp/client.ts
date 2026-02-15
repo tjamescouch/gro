@@ -109,20 +109,32 @@ export class McpManager {
     for (const server of this.servers.values()) {
       const tool = server.tools.find(t => t.name === name);
       if (tool) {
-        const result = await server.client.callTool({ name, arguments: args }, undefined, { timeout: 5 * 60 * 1000 });
-        // Extract text content from result
-        if (Array.isArray(result.content)) {
-          return result.content
-            .map((c: any) => {
-              if (c.type === "text") return c.text;
-              return JSON.stringify(c);
-            })
-            .join("\n");
+        try {
+          const result = await server.client.callTool({ name, arguments: args }, undefined, { timeout: 5 * 60 * 1000 });
+          // Extract text content from result
+          if (Array.isArray(result.content)) {
+            return result.content
+              .map((c: any) => {
+                if (c.type === "text") return c.text;
+                return JSON.stringify(c);
+              })
+              .join("\n");
+          }
+          return JSON.stringify(result);
+        } catch (e: unknown) {
+          const err = asError(e);
+          const ge = groError("mcp_error", `MCP tool "${name}" (server: ${server.name}) failed: ${err.message}`, {
+            retryable: true,
+            cause: e,
+          });
+          Logger.error(`MCP tool call failed [${server.name}/${name}]:`, errorLogFields(ge));
+          throw ge;
         }
-        return JSON.stringify(result);
       }
     }
-    throw new Error(`No MCP server provides tool "${name}"`);
+    const ge = groError("mcp_error", `No MCP server provides tool "${name}"`, { retryable: false });
+    Logger.error(ge.message, errorLogFields(ge));
+    throw ge;
   }
 
   /**
@@ -140,7 +152,11 @@ export class McpManager {
    */
   async disconnectAll(): Promise<void> {
     for (const server of this.servers.values()) {
-      try { await server.client.close(); } catch {}
+      try {
+        await server.client.close();
+      } catch (e: unknown) {
+        Logger.debug(`MCP server "${server.name}" close error: ${asError(e).message}`);
+      }
     }
     this.servers.clear();
   }

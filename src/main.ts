@@ -566,7 +566,8 @@ async function executeTurn(
       let fnArgs: Record<string, any>;
       try {
         fnArgs = JSON.parse(tc.function.arguments);
-      } catch {
+      } catch (e: unknown) {
+        Logger.debug(`Failed to parse args for ${fnName}: ${asError(e).message}, using empty args`);
         fnArgs = {};
       }
 
@@ -582,12 +583,14 @@ async function executeTurn(
           result = await mcp.callTool(fnName, fnArgs);
         }
       } catch (e: unknown) {
-        const ge = groError("tool_error", `Tool "${fnName}" failed: ${asError(e).message}`, {
+        const raw = asError(e);
+        const ge = groError("tool_error", `Tool "${fnName}" failed: ${raw.message}`, {
           retryable: false,
           cause: e,
         });
         Logger.error("Tool execution error:", errorLogFields(ge));
-        result = `Error: ${ge.message}`;
+        if (raw.stack) Logger.error(raw.stack);
+        result = `Error: ${ge.message}${raw.stack ? '\nStack: ' + raw.stack : ''}`;
       }
 
       // Feed tool result back into memory
@@ -885,10 +888,14 @@ for (const sig of ["SIGTERM", "SIGHUP"] as const) {
 
 // Catch unhandled promise rejections (e.g. background summarization)
 process.on("unhandledRejection", (reason: unknown) => {
-  Logger.error(C.red(`unhandled rejection: ${asError(reason).message}`));
+  const err = asError(reason);
+  Logger.error(C.red(`unhandled rejection: ${err.message}`));
+  if (err.stack) Logger.error(C.red(err.stack));
 });
 
 main().catch((e: unknown) => {
-  Logger.error("gro:", asError(e).message);
+  const err = asError(e);
+  Logger.error("gro:", err.message);
+  if (err.stack) Logger.error(err.stack);
   process.exit(1);
 });

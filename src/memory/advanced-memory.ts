@@ -11,7 +11,7 @@ import { saveSession, loadSession, ensureGroDir } from "../session.js";
  */
 export class AdvancedMemory extends AgentMemory {
   private readonly driver: ChatDriver;
-  private readonly model: string;
+  private model: string;
   private readonly summarizerDriver: ChatDriver;
   private readonly summarizerModel: string;
 
@@ -56,6 +56,10 @@ export class AdvancedMemory extends AgentMemory {
     this.avgCharsPerToken = Math.max(1.5, Number(args.avgCharsPerToken ?? 4));
     this.keepRecentPerLane = Math.max(1, Math.floor(args.keepRecentPerLane ?? 4));
     this.keepRecentTools = Math.max(0, Math.floor(args.keepRecentTools ?? 3));
+  }
+
+  override setModel(model: string): void {
+    this.model = model;
   }
 
   async load(id: string): Promise<void> {

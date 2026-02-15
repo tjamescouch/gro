@@ -543,6 +543,8 @@ async function executeTurn(
           const newModel = resolveModelAlias(marker.arg);
           Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
           activeModel = newModel;
+          cfg.model = newModel;       // persist across turns
+          memory.setModel(newModel);  // persist in session metadata on save
         } else {
           Logger.debug(`Stream marker: ${marker.name}('${marker.arg}')`);
         }
@@ -718,6 +720,12 @@ async function singleShot(
   // Resume existing session if requested
   if (cfg.continueSession || cfg.resumeSession) {
     await memory.load(sessionId);
+    const sess = loadSession(sessionId);
+    if (sess?.meta.model && sess.meta.model !== cfg.model) {
+      Logger.info(`Restoring model from session: ${cfg.model} → ${sess.meta.model}`);
+      cfg.model = sess.meta.model;
+      memory.setModel(sess.meta.model);
+    }
   }
 
   await memory.add({ role: "user", from: "User", content: prompt });
@@ -777,6 +785,12 @@ async function interactive(
     if (sess) {
       const msgCount = sess.messages.filter((m: any) => m.role !== "system").length;
       Logger.info(C.gray(`Resumed session ${sessionId} (${msgCount} messages)`));
+      // Restore model from session metadata (e.g. after a stream marker model-change)
+      if (sess.meta.model && sess.meta.model !== cfg.model) {
+        Logger.info(`Restoring model from session: ${cfg.model} → ${sess.meta.model}`);
+        cfg.model = sess.meta.model;
+        memory.setModel(sess.meta.model);
+      }
     }
   }
 

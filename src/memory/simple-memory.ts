@@ -20,6 +20,10 @@ export class SimpleMemory extends AgentMemory {
     this.model = model;
   }
 
+  override setModel(model: string): void {
+    this.model = model;
+  }
+
   async load(id: string): Promise<void> {
     const session = loadSession(id);
     if (session) {

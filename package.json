@@ -1,6 +1,6 @@
 {
   "name": "gro",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Provider-agnostic LLM runtime with context management",
   "type": "module",
   "private": true,

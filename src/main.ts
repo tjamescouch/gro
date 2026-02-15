@@ -26,6 +26,7 @@ import type { AgentMemory } from "./memory/agent-memory.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.js";
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
+import { createMarkerParser } from "./stream-markers.js";
 
 const VERSION = getGroVersion();
 
@@ -485,6 +486,27 @@ function formatOutput(text: string, format: GroConfig["outputFormat"]): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Resolve short model aliases to full model identifiers.
+ * Allows stream markers like @@model-change('haiku')@@ without
+ * the model needing to know the full versioned name.
+ */
+const MODEL_ALIASES: Record<string, string> = {
+  "haiku": "claude-haiku-4-20250514",
+  "sonnet": "claude-sonnet-4-20250514",
+  "opus": "claude-opus-4-20250514",
+  "gpt4": "gpt-4o",
+  "gpt4o": "gpt-4o",
+  "gpt4o-mini": "gpt-4o-mini",
+  "o3": "o3",
+};
+
+function resolveModelAlias(alias: string): string {
+  const lower = alias.trim().toLowerCase();
+  return MODEL_ALIASES[lower] ?? alias;
+}
+
+
+/**
  * Execute a single turn: call the model, handle tool calls, repeat until
  * the model produces a final text response or we hit maxRounds.
  */
@@ -503,18 +525,38 @@ async function executeTurn(
   let turnTokensIn = 0;
   let turnTokensOut = 0;
 
-  const onToken = cfg.outputFormat === "stream-json"
+  const rawOnToken = cfg.outputFormat === "stream-json"
     ? (t: string) => process.stdout.write(JSON.stringify({ type: "token", token: t }) + "\n")
     : (t: string) => process.stdout.write(t);
+
+  // Mutable model reference — stream markers can switch this mid-turn
+  let activeModel = cfg.model;
 
   let brokeCleanly = false;
   let idleNudges = 0;
   for (let round = 0; round < cfg.maxToolRounds; round++) {
-    const output: ChatOutput = await driver.chat(memory.messages(), {
-      model: cfg.model,
-      tools: tools.length > 0 ? tools : undefined,
-      onToken,
+    // Create a fresh marker parser per round so partial state doesn't leak
+    const markerParser = createMarkerParser({
+      onToken: rawOnToken,
+      onMarker(marker) {
+        if (marker.name === "model-change") {
+          const newModel = resolveModelAlias(marker.arg);
+          Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
+          activeModel = newModel;
+        } else {
+          Logger.debug(`Stream marker: ${marker.name}('${marker.arg}')`);
+        }
+      },
     });
+
+    const output: ChatOutput = await driver.chat(memory.messages(), {
+      model: activeModel,
+      tools: tools.length > 0 ? tools : undefined,
+      onToken: markerParser.onToken,
+    });
+
+    // Flush any remaining buffered tokens from the marker parser
+    markerParser.flush();
 
     // Track token usage for niki budget enforcement
     if (output.usage) {
@@ -524,12 +566,13 @@ async function executeTurn(
       process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
     }
 
-    // Accumulate text
-    if (output.text) finalText += output.text;
+    // Accumulate clean text (markers stripped) for the return value
+    const cleanText = markerParser.getCleanText();
+    if (cleanText) finalText += cleanText;
 
-    // Store assistant message — must include tool_calls when present
-    // so OpenAI sees the required assistant→tool message sequence.
-    const assistantMsg: ChatMessage = { role: "assistant", from: "Assistant", content: output.text || "" };
+    // Store clean text in memory — markers are runtime directives, not conversation content.
+    // The original output.text is preserved in case we need it for debugging.
+    const assistantMsg: ChatMessage = { role: "assistant", from: "Assistant", content: cleanText || "" };
     if (output.toolCalls.length > 0) {
       (assistantMsg as any).tool_calls = output.toolCalls;
     }
@@ -623,8 +666,8 @@ async function executeTurn(
   if (!brokeCleanly && tools.length > 0) {
     Logger.debug("Max tool rounds reached — final turn with no tools");
     const finalOutput: ChatOutput = await driver.chat(memory.messages(), {
-      model: cfg.model,
-      onToken,
+      model: activeModel,
+      onToken: rawOnToken,
     });
     if (finalOutput.usage) {
       turnTokensIn += finalOutput.usage.inputTokens;

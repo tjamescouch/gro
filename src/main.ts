@@ -491,9 +491,9 @@ function formatOutput(text: string, format: GroConfig["outputFormat"]): string {
  * the model needing to know the full versioned name.
  */
 const MODEL_ALIASES: Record<string, string> = {
-  "haiku": "claude-haiku-4-20250514",
-  "sonnet": "claude-sonnet-4-20250514",
-  "opus": "claude-opus-4-20250514",
+  "haiku": "claude-haiku-4-5",
+  "sonnet": "claude-sonnet-4-5",
+  "opus": "claude-opus-4-6",
   "gpt4": "gpt-4o",
   "gpt4o": "gpt-4o",
   "gpt4o-mini": "gpt-4o-mini",

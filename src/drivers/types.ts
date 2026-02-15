@@ -11,7 +11,7 @@ export interface ChatMessage {
 
 export interface ChatToolCall {
   id: string;
-  type: "function";
+  type: "function" | "custom";
   function: { name: string; arguments: string };
   raw?: string;
 }

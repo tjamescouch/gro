@@ -3,3 +3,4 @@ dist/
 .org/
 .gro
 *.tgz
+.claude

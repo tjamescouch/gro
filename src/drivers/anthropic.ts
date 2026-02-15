@@ -187,7 +187,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
         } else if (block.type === "tool_use") {
           toolCalls.push({
             id: block.id,
-            type: "function",
+            type: "custom",
             function: {
               name: block.name,
               arguments: JSON.stringify(block.input),

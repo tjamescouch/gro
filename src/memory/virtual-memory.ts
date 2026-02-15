@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
  * Instead of keeping all messages in context (and blowing up the token budget),
  * VirtualMemory maintains a sliding window of recent messages plus a page index
  * of older, summarized context. The model can explicitly reference older pages
- * via @@ref:pageId@@ markers, which the runtime resolves on the next turn.
+ * via  markers, which the runtime resolves on the next turn.
  *
  * Architecture:
  *   [system prompt]
@@ -180,7 +180,7 @@ export class VirtualMemory extends AgentMemory {
   // --- Ref Management ---
 
   /**
-   * Request a page be loaded into context. Called when @@ref:pageId@@ is detected.
+   * Request a page be loaded into context. Called when  is detected.
    */
   ref(pageId: string): void {
     if (this.pages.has(pageId)) {
@@ -190,7 +190,7 @@ export class VirtualMemory extends AgentMemory {
   }
 
   /**
-   * Request a page be unloaded from context. Called when @@unref:pageId@@ is detected.
+   * Request a page be unloaded from context. Called when  is detected.
    */
   unref(pageId: string): void {
     this.pendingUnrefs.add(pageId);
@@ -243,12 +243,12 @@ export class VirtualMemory extends AgentMemory {
 
   /**
    * Build the page index message — a compact list of available pages
-   * the model can reference with @@ref:pageId@@.
+   * the model can reference with .
    */
   private buildPageIndex(): string {
     if (this.pages.size === 0) return "";
 
-    const lines = ["Available context pages (use @@ref:pageId@@ to load, @@unref:pageId@@ to release):"];
+    const lines = ["Available context pages (use  to load,  to release):"];
     for (const [id, page] of this.pages) {
       const active = this.activePageIds.has(id) ? " [LOADED]" : "";
       lines.push(`  ${id}: ${page.label} (${page.tokens} tok, ${page.messageCount} msgs)${active}`);

@@ -62,6 +62,30 @@ export interface MarkerParser {
   flush: () => void;
 }
 
+/**
+ * Scan a string for markers, fire the handler for each, and return cleaned text.
+ * Unlike the streaming parser, this operates on a complete string (e.g. tool call arguments).
+ */
+export function extractMarkers(text: string, onMarker: MarkerHandler): string {
+  let cleaned = "";
+  let lastIndex = 0;
+  const regex = new RegExp(MARKER_RE.source, "g");
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null) {
+    cleaned += text.slice(lastIndex, match.index);
+    const marker: StreamMarker = {
+      name: match[1],
+      arg: match[2] ?? match[3] ?? match[4] ?? "",
+      raw: match[0],
+    };
+    try { onMarker(marker); } catch { /* handled by caller */ }
+    lastIndex = match.index + match[0].length;
+  }
+  cleaned += text.slice(lastIndex);
+  return cleaned;
+}
+
 export function createMarkerParser(opts: MarkerParserOptions): MarkerParser {
   const { onMarker, onToken } = opts;
   let buffer = "";

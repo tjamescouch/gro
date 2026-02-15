@@ -79,7 +79,54 @@ export function saveSession(
 }
 
 /**
+ * Sanitize a message array so every assistant tool_use has a matching tool_result.
+ * When a session is killed mid-tool-call (e.g. SIGTERM from niki), the assistant
+ * message with tool_calls is saved but the tool result messages are not.
+ * The Anthropic API rejects this with a 400 error, causing an infinite crash loop.
+ *
+ * Strategy: walk backwards from the end. If we find an assistant message with
+ * tool_calls that have no matching tool-role responses, inject synthetic
+ * tool_result placeholders so the API accepts the history.
+ */
+function sanitizeToolPairs(messages: ChatMessage[]): ChatMessage[] {
+  if (messages.length === 0) return messages;
+
+  // Collect all tool_call IDs that have results
+  const answeredIds = new Set<string>();
+  for (const m of messages) {
+    if (m.role === "tool" && m.tool_call_id) {
+      answeredIds.add(m.tool_call_id);
+    }
+  }
+
+  // Find assistant messages with unanswered tool_calls and inject placeholders
+  const result: ChatMessage[] = [];
+  for (const m of messages) {
+    result.push(m);
+    const toolCalls = (m as any).tool_calls as Array<{ id: string; function?: { name?: string } }> | undefined;
+    if (m.role === "assistant" && Array.isArray(toolCalls)) {
+      for (const tc of toolCalls) {
+        if (!answeredIds.has(tc.id)) {
+          result.push({
+            role: "tool",
+            from: "system",
+            content: "[Session interrupted — tool call was not completed. The agent was terminated before this tool could return a result.]",
+            tool_call_id: tc.id,
+            name: tc.function?.name,
+          });
+          answeredIds.add(tc.id);
+          Logger.warn(`Session repair: injected placeholder tool_result for orphaned call ${tc.id} (${tc.function?.name ?? "unknown"})`);
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
  * Load a session from disk. Returns null if not found.
+ * Automatically repairs orphaned tool_use blocks from interrupted sessions.
  */
 export function loadSession(id: string): { messages: ChatMessage[]; meta: SessionMeta } | null {
   const dir = sessionDir(id);
@@ -91,7 +138,7 @@ export function loadSession(id: string): { messages: ChatMessage[]; meta: Sessio
   }
 
   try {
-    const messages = JSON.parse(readFileSync(msgPath, "utf-8"));
+    const messages = sanitizeToolPairs(JSON.parse(readFileSync(msgPath, "utf-8")));
     const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
     return { messages, meta };
   } catch (e: unknown) {

@@ -34,6 +34,9 @@ export abstract class AgentMemory {
 
   protected abstract onAfterAdd(): Promise<void>;
 
+  /** Update the active model (used by stream markers to persist model changes across turns). */
+  setModel(_model: string): void {}
+
   messages(): ChatMessage[] {
     return [...this.messagesBuffer];
   }

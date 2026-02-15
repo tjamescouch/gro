@@ -105,6 +105,40 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
   return { system: systemPrompt, apiMessages };
 }
 
+/** Pattern matching transient network errors that should be retried */
+const TRANSIENT_ERROR_RE = /fetch timeout|fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EAI_AGAIN|socket hang up/i;
+
+/** Parse response content blocks into text + tool calls + token usage */
+function parseResponseContent(data: any, onToken?: (t: string) => void): ChatOutput {
+  let text = "";
+  const toolCalls: ChatToolCall[] = [];
+
+  for (const block of data.content ?? []) {
+    if (block.type === "text") {
+      text += block.text;
+      if (onToken) {
+        try { onToken(block.text); } catch {}
+      }
+    } else if (block.type === "tool_use") {
+      toolCalls.push({
+        id: block.id,
+        type: "custom",
+        function: {
+          name: block.name,
+          arguments: JSON.stringify(block.input),
+        },
+      });
+    }
+  }
+
+  const usage: TokenUsage | undefined = data.usage ? {
+    inputTokens: data.usage.input_tokens ?? 0,
+    outputTokens: data.usage.output_tokens ?? 0,
+  } : undefined;
+
+  return { text, toolCalls, usage };
+}
+
 export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
   const base = (cfg.baseUrl ?? "https://api.anthropic.com").replace(/\/+$/, "");
   const endpoint = `${base}/v1/messages`;
@@ -177,38 +211,59 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
       }
 
       const data = await res.json() as any;
+      return parseResponseContent(data, onToken);
+    } catch (e: unknown) {
+      if (isGroError(e)) throw e; // already wrapped above
 
-      let text = "";
-      const toolCalls: ChatToolCall[] = [];
+      // Classify the error: fetch timeouts and network errors are transient
+      const errMsg = asError(e).message;
+      const isTransient = TRANSIENT_ERROR_RE.test(errMsg);
 
-      for (const block of data.content ?? []) {
-        if (block.type === "text") {
-          text += block.text;
-          if (onToken) {
-            try { onToken(block.text); } catch {}
+      if (isTransient) {
+        // Retry transient network errors (e.g. auth proxy down during container restart)
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+          const delay = retryDelay(attempt);
+          Logger.warn(`Transient error: ${errMsg.substring(0, 120)}, retry ${attempt + 1}/${MAX_RETRIES} in ${Math.round(delay)}ms`);
+          await sleep(delay);
+
+          try {
+            const retryRes = await timedFetch(endpoint, {
+              method: "POST",
+              headers,
+              body: JSON.stringify(body),
+              where: "driver:anthropic",
+              timeoutMs,
+            });
+
+            if (!retryRes.ok) {
+              const text = await retryRes.text().catch(() => "");
+              if (isRetryable(retryRes.status) && attempt < MAX_RETRIES - 1) continue;
+              throw groError("provider_error", `Anthropic API failed (${retryRes.status}): ${text}`, {
+                provider: "anthropic", model: resolvedModel, retryable: false, cause: new Error(text),
+              });
+            }
+
+            // Success on retry — parse and return
+            const data = await retryRes.json() as any;
+            Logger.info(`Recovered from transient error after ${attempt + 1} retries`);
+            return parseResponseContent(data, onToken);
+          } catch (retryErr: unknown) {
+            if (isGroError(retryErr)) throw retryErr;
+            if (attempt === MAX_RETRIES - 1) {
+              // Exhausted retries — throw with context
+              const ge = groError("provider_error", `Anthropic driver error (after ${MAX_RETRIES} retries): ${errMsg}`, {
+                provider: "anthropic", model: resolvedModel, request_id: requestId,
+                retryable: false, cause: e,
+              });
+              Logger.error("Anthropic driver error (retries exhausted):", errorLogFields(ge));
+              throw ge;
+            }
           }
-        } else if (block.type === "tool_use") {
-          toolCalls.push({
-            id: block.id,
-            type: "custom",
-            function: {
-              name: block.name,
-              arguments: JSON.stringify(block.input),
-            },
-          });
         }
       }
 
-      // Extract token usage from response
-      const usage: TokenUsage | undefined = data.usage ? {
-        inputTokens: data.usage.input_tokens ?? 0,
-        outputTokens: data.usage.output_tokens ?? 0,
-      } : undefined;
-
-      return { text, toolCalls, usage };
-    } catch (e: unknown) {
-      if (isGroError(e)) throw e; // already wrapped above
-      const ge = groError("provider_error", `Anthropic driver error: ${asError(e).message}`, {
+      // Non-transient error — throw immediately
+      const ge = groError("provider_error", `Anthropic driver error: ${errMsg}`, {
         provider: "anthropic",
         model: resolvedModel,
         request_id: requestId,

@@ -25,8 +25,9 @@ import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/
 import type { AgentMemory } from "./memory/agent-memory.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.js";
+import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 
-const VERSION = "0.3.1";
+const VERSION = getGroVersion();
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown state — module-level so signal handlers can save sessions.
@@ -497,6 +498,7 @@ async function executeTurn(
   const tools = mcp.getToolDefinitions();
   tools.push(agentpatchToolDefinition());
   if (cfg.bash) tools.push(bashToolDefinition());
+  tools.push(groVersionToolDefinition());
   let finalText = "";
   let turnTokensIn = 0;
   let turnTokensOut = 0;
@@ -579,6 +581,8 @@ async function executeTurn(
           result = executeAgentpatch(fnArgs);
         } else if (fnName === "bash" && cfg.bash) {
           result = executeBash(fnArgs);
+        } else if (fnName === "gro_version") {
+          result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent });
         } else {
           result = await mcp.callTool(fnName, fnArgs);
         }

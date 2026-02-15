@@ -26,8 +26,7 @@ import type { AgentMemory } from "./memory/agent-memory.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.js";
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
-// Stream marker imports — parser disabled for now, markers pass through as visible text.
-// import { createMarkerParser, extractMarkers } from "./stream-markers.js";
+import { createMarkerParser, extractMarkers } from "./stream-markers.js";
 
 const VERSION = getGroVersion();
 
@@ -536,16 +535,33 @@ async function executeTurn(
   let brokeCleanly = false;
   let idleNudges = 0;
   for (let round = 0; round < cfg.maxToolRounds; round++) {
-    // Stream markers: currently pass-through (visible in output).
-    // Model-change and other marker actions are disabled until the
-    // infrastructure is ready for hot-swapping.
-    const onToken = rawOnToken;
+    // Shared marker handler — used by both streaming parser and tool-arg scanner
+    const handleMarker = (marker: { name: string; arg: string }) => {
+      if (marker.name === "model-change") {
+        const newModel = resolveModelAlias(marker.arg);
+        Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
+        activeModel = newModel;
+        cfg.model = newModel;       // persist across turns
+        memory.setModel(newModel);  // persist in session metadata on save
+      } else {
+        Logger.debug(`Stream marker: ${marker.name}('${marker.arg}')`);
+      }
+    };
+
+    // Create a fresh marker parser per round so partial state doesn't leak
+    const markerParser = createMarkerParser({
+      onToken: rawOnToken,
+      onMarker: handleMarker,
+    });
 
     const output: ChatOutput = await driver.chat(memory.messages(), {
       model: activeModel,
       tools: tools.length > 0 ? tools : undefined,
-      onToken,
+      onToken: markerParser.onToken,
     });
+
+    // Flush any remaining buffered tokens from the marker parser
+    markerParser.flush();
 
     // Track token usage for niki budget enforcement
     if (output.usage) {
@@ -555,10 +571,11 @@ async function executeTurn(
       process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
     }
 
-    // Accumulate output text
-    if (output.text) finalText += output.text;
+    // Accumulate clean text (markers stripped) for the return value
+    const cleanText = markerParser.getCleanText();
+    if (cleanText) finalText += cleanText;
 
-    const assistantMsg: ChatMessage = { role: "assistant", from: "Assistant", content: output.text || "" };
+    const assistantMsg: ChatMessage = { role: "assistant", from: "Assistant", content: cleanText || "" };
     if (output.toolCalls.length > 0) {
       (assistantMsg as any).tool_calls = output.toolCalls;
     }
@@ -600,6 +617,15 @@ async function executeTurn(
       } catch (e: unknown) {
         Logger.debug(`Failed to parse args for ${fnName}: ${asError(e).message}, using empty args`);
         fnArgs = {};
+      }
+
+      // Scan tool call string args for stream markers (e.g. model sends
+      // @@model-change('haiku')@@ inside an agentchat_send message).
+      // Strip markers from args so they don't leak into tool output.
+      for (const key of Object.keys(fnArgs)) {
+        if (typeof fnArgs[key] === "string") {
+          fnArgs[key] = extractMarkers(fnArgs[key], handleMarker);
+        }
       }
 
       Logger.debug(`Tool call: ${fnName}(${JSON.stringify(fnArgs)})`);

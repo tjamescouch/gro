@@ -21,7 +21,7 @@ import { McpManager } from "./mcp/index.js";
 import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
 import type { McpServerConfig } from "./mcp/index.js";
-import type { ChatDriver, ChatMessage, ChatOutput } from "./drivers/types.js";
+import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/types.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.js";
@@ -498,6 +498,8 @@ async function executeTurn(
   tools.push(agentpatchToolDefinition());
   if (cfg.bash) tools.push(bashToolDefinition());
   let finalText = "";
+  let turnTokensIn = 0;
+  let turnTokensOut = 0;
 
   const onToken = cfg.outputFormat === "stream-json"
     ? (t: string) => process.stdout.write(JSON.stringify({ type: "token", token: t }) + "\n")
@@ -511,6 +513,14 @@ async function executeTurn(
       tools: tools.length > 0 ? tools : undefined,
       onToken,
     });
+
+    // Track token usage for niki budget enforcement
+    if (output.usage) {
+      turnTokensIn += output.usage.inputTokens;
+      turnTokensOut += output.usage.outputTokens;
+      // Log cumulative usage to stderr — niki parses these patterns for budget enforcement
+      process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
+    }
 
     // Accumulate text
     if (output.text) finalText += output.text;
@@ -609,6 +619,11 @@ async function executeTurn(
       model: cfg.model,
       onToken,
     });
+    if (finalOutput.usage) {
+      turnTokensIn += finalOutput.usage.inputTokens;
+      turnTokensOut += finalOutput.usage.outputTokens;
+      process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
+    }
     if (finalOutput.text) finalText += finalOutput.text;
     await memory.add({ role: "assistant", from: "Assistant", content: finalOutput.text || "" });
   }

@@ -16,10 +16,16 @@ export interface ChatToolCall {
   raw?: string;
 }
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface ChatOutput {
   text: string;
   toolCalls: ChatToolCall[];
   reasoning?: string;
+  usage?: TokenUsage;
 }
 
 export interface ChatDriver {

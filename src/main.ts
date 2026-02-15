@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * gro — provider-agnostic LLM runtime with context management.
  *

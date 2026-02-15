@@ -26,12 +26,14 @@ function convertToolDefs(tools: any[]): any[] {
   return tools.map(t => {
     if (t.type === "function" && t.function) {
       return {
+        type: "custom",
         name: t.function.name,
         description: t.function.description || "",
         input_schema: t.function.parameters || { type: "object", properties: {} },
       };
     }
-    // Already in Anthropic format — pass through
+    // Already in Anthropic format — ensure type is set
+    if (!t.type) return { type: "custom", ...t };
     return t;
   });
 }

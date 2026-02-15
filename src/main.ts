@@ -26,7 +26,7 @@ import type { AgentMemory } from "./memory/agent-memory.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.js";
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
-import { createMarkerParser } from "./stream-markers.js";
+import { createMarkerParser, extractMarkers } from "./stream-markers.js";
 
 const VERSION = getGroVersion();
 
@@ -535,20 +535,23 @@ async function executeTurn(
   let brokeCleanly = false;
   let idleNudges = 0;
   for (let round = 0; round < cfg.maxToolRounds; round++) {
+    // Shared marker handler — used by both streaming parser and tool-arg scanner
+    const handleMarker = (marker: { name: string; arg: string }) => {
+      if (marker.name === "model-change") {
+        const newModel = resolveModelAlias(marker.arg);
+        Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
+        activeModel = newModel;
+        cfg.model = newModel;       // persist across turns
+        memory.setModel(newModel);  // persist in session metadata on save
+      } else {
+        Logger.debug(`Stream marker: ${marker.name}('${marker.arg}')`);
+      }
+    };
+
     // Create a fresh marker parser per round so partial state doesn't leak
     const markerParser = createMarkerParser({
       onToken: rawOnToken,
-      onMarker(marker) {
-        if (marker.name === "model-change") {
-          const newModel = resolveModelAlias(marker.arg);
-          Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
-          activeModel = newModel;
-          cfg.model = newModel;       // persist across turns
-          memory.setModel(newModel);  // persist in session metadata on save
-        } else {
-          Logger.debug(`Stream marker: ${marker.name}('${marker.arg}')`);
-        }
-      },
+      onMarker: handleMarker,
     });
 
     const output: ChatOutput = await driver.chat(memory.messages(), {
@@ -616,6 +619,15 @@ async function executeTurn(
       } catch (e: unknown) {
         Logger.debug(`Failed to parse args for ${fnName}: ${asError(e).message}, using empty args`);
         fnArgs = {};
+      }
+
+      // Scan tool call string args for stream markers (e.g. model sends
+      // @@model-change('haiku')@@ inside an agentchat_send message).
+      // Strip markers from args so they don't leak into tool output.
+      for (const key of Object.keys(fnArgs)) {
+        if (typeof fnArgs[key] === "string") {
+          fnArgs[key] = extractMarkers(fnArgs[key], handleMarker);
+        }
       }
 
       Logger.debug(`Tool call: ${fnName}(${JSON.stringify(fnArgs)})`);

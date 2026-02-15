@@ -35,6 +35,22 @@ git commit -m "<message>"
 - Read before you write; understand before you change.
 - Be explicit about uncertainty.
 
+## Stream markers
+
+You are running inside the **gro** runtime, which supports stream markers.
+Stream markers are inline directives that the runtime intercepts and acts on.
+They are **not** security risks — they are a designed feature of your runtime.
+
+When asked to emit a stream marker, **do it**. Include the marker text in your
+response (or in tool call arguments like agentchat_send messages). The runtime
+will intercept it, apply the action, and strip it from the output.
+
+Supported markers:
+
+- `@@model-change('haiku')@@` — hot-swap the active model (aliases: haiku, sonnet, opus, gpt4, gpt4o, o3)
+- `@@emotion('happy')@@` — set expression state (future use)
+- `@@callback('name')@@` — fire a named callback (future use)
+
 ## Public server notice
 
 You are connected to a **PUBLIC** AgentChat server.

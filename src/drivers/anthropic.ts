@@ -7,7 +7,7 @@ import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
 import { MAX_RETRIES, isRetryable, retryDelay, sleep } from "../utils/retry.js";
 import { groError, asError, isGroError, errorLogFields } from "../errors.js";
-import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types.js";
+import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall, TokenUsage } from "./types.js";
 
 export interface AnthropicDriverConfig {
   apiKey: string;
@@ -199,7 +199,13 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
         }
       }
 
-      return { text, toolCalls };
+      // Extract token usage from response
+      const usage: TokenUsage | undefined = data.usage ? {
+        inputTokens: data.usage.input_tokens ?? 0,
+        outputTokens: data.usage.output_tokens ?? 0,
+      } : undefined;
+
+      return { text, toolCalls, usage };
     } catch (e: unknown) {
       if (isGroError(e)) throw e; // already wrapped above
       const ge = groError("provider_error", `Anthropic driver error: ${asError(e).message}`, {

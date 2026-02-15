@@ -7,7 +7,7 @@ import { asError } from "../errors.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
 import { MAX_RETRIES, isRetryable, retryDelay, sleep } from "../utils/retry.js";
-import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types.js";
+import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall, TokenUsage } from "./types.js";
 
 export interface OpenAiDriverConfig {
   baseUrl: string;
@@ -108,7 +108,11 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
         const content = typeof msg?.content === "string" ? msg.content : "";
         const toolCalls: ChatToolCall[] = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
         if (content && onToken) onToken(content);
-        return { text: content, reasoning: msg?.reasoning || undefined, toolCalls };
+        const usage: TokenUsage | undefined = data?.usage ? {
+          inputTokens: data.usage.prompt_tokens ?? 0,
+          outputTokens: data.usage.completion_tokens ?? 0,
+        } : undefined;
+        return { text: content, reasoning: msg?.reasoning || undefined, toolCalls, usage };
       }
 
       // SSE streaming
@@ -117,6 +121,7 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
       let buf = "";
       let fullText = "";
       let fullReasoning = "";
+      let streamUsage: TokenUsage | undefined;
       const toolByIndex = new Map<number, ChatToolCall>();
 
       const pumpEvent = async (rawEvent: string) => {
@@ -132,6 +137,14 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
 
         let payload: any;
         try { payload = JSON.parse(joined); } catch { return; }
+
+        // Capture usage from final streaming chunk (if stream_options.include_usage was set)
+        if (payload?.usage) {
+          streamUsage = {
+            inputTokens: payload.usage.prompt_tokens ?? 0,
+            outputTokens: payload.usage.completion_tokens ?? 0,
+          };
+        }
 
         const delta = payload?.choices?.[0]?.delta;
         if (!delta) return;
@@ -230,7 +243,7 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
         .sort((a, b) => a[0] - b[0])
         .map(([, v]) => v);
 
-      return { text: fullText, reasoning: fullReasoning || undefined, toolCalls };
+      return { text: fullText, reasoning: fullReasoning || undefined, toolCalls, usage: streamUsage };
     } catch (e: unknown) {
       const wrapped = asError(e);
       if (wrapped.name === "AbortError") Logger.debug("timeout(stream)", { ms: defaultTimeout });

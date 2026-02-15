@@ -17,6 +17,94 @@ export interface AnthropicDriverConfig {
   timeoutMs?: number;
 }
 
+/**
+ * Convert tool definitions from OpenAI format to Anthropic format.
+ * OpenAI: { type: "function", function: { name, description, parameters } }
+ * Anthropic: { name, description, input_schema }
+ */
+function convertToolDefs(tools: any[]): any[] {
+  return tools.map(t => {
+    if (t.type === "function" && t.function) {
+      return {
+        name: t.function.name,
+        description: t.function.description || "",
+        input_schema: t.function.parameters || { type: "object", properties: {} },
+      };
+    }
+    // Already in Anthropic format — pass through
+    return t;
+  });
+}
+
+/**
+ * Convert internal messages (OpenAI-style) to Anthropic Messages API format.
+ *
+ * Key differences:
+ * - Assistant tool calls become content blocks with type "tool_use"
+ * - Tool result messages become user messages with type "tool_result" content blocks
+ * - Anthropic requires strictly alternating user/assistant roles
+ */
+function convertMessages(messages: ChatMessage[]): { system: string | undefined; apiMessages: any[] } {
+  let systemPrompt: string | undefined;
+  const apiMessages: any[] = [];
+
+  for (const m of messages) {
+    if (m.role === "system") {
+      systemPrompt = systemPrompt ? systemPrompt + "\n" + m.content : m.content;
+      continue;
+    }
+
+    if (m.role === "assistant") {
+      const content: any[] = [];
+      if (m.content) content.push({ type: "text", text: m.content });
+
+      // Convert OpenAI-style tool_calls to Anthropic tool_use blocks
+      const toolCalls = (m as any).tool_calls;
+      if (Array.isArray(toolCalls)) {
+        for (const tc of toolCalls) {
+          let input: any;
+          try { input = JSON.parse(tc.function.arguments || "{}"); } catch { input = {}; }
+          content.push({
+            type: "tool_use",
+            id: tc.id,
+            name: tc.function.name,
+            input,
+          });
+        }
+      }
+
+      if (content.length > 0) {
+        apiMessages.push({ role: "assistant", content });
+      }
+      continue;
+    }
+
+    if (m.role === "tool") {
+      // Tool results must be in a user message with tool_result content blocks
+      const block = {
+        type: "tool_result",
+        tool_use_id: m.tool_call_id,
+        content: m.content,
+      };
+
+      // Group consecutive tool results into a single user message
+      const last = apiMessages[apiMessages.length - 1];
+      if (last && last.role === "user" && Array.isArray(last.content) &&
+          last.content.length > 0 && last.content[0].type === "tool_result") {
+        last.content.push(block);
+      } else {
+        apiMessages.push({ role: "user", content: [block] });
+      }
+      continue;
+    }
+
+    // Regular user messages
+    apiMessages.push({ role: "user", content: m.content });
+  }
+
+  return { system: systemPrompt, apiMessages };
+}
+
 export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
   const base = (cfg.baseUrl ?? "https://api.anthropic.com").replace(/\/+$/, "");
   const endpoint = `${base}/v1/messages`;
@@ -30,17 +118,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
     const onToken: ((t: string) => void) | undefined = opts?.onToken;
     const resolvedModel = opts?.model ?? model;
 
-    // Separate system messages from conversation
-    let systemPrompt: string | undefined;
-    const apiMessages: { role: string; content: string }[] = [];
-
-    for (const m of messages) {
-      if (m.role === "system") {
-        systemPrompt = systemPrompt ? systemPrompt + "\n" + m.content : m.content;
-      } else {
-        apiMessages.push({ role: m.role, content: m.content });
-      }
-    }
+    const { system: systemPrompt, apiMessages } = convertMessages(messages);
 
     const body: any = {
       model: resolvedModel,
@@ -49,9 +127,9 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
     };
     if (systemPrompt) body.system = systemPrompt;
 
-    // Tools support
+    // Tools support — convert from OpenAI format to Anthropic format
     if (Array.isArray(opts?.tools) && opts.tools.length) {
-      body.tools = opts.tools;
+      body.tools = convertToolDefs(opts.tools);
     }
 
     const headers: Record<string, string> = {

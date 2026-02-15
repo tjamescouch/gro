@@ -28,6 +28,16 @@ import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.
 
 const VERSION = "0.3.1";
 
+// ---------------------------------------------------------------------------
+// Graceful shutdown state — module-level so signal handlers can save sessions.
+// ---------------------------------------------------------------------------
+let _shutdownMemory: AgentMemory | null = null;
+let _shutdownSessionId: string | null = null;
+let _shutdownSessionPersistence = false;
+
+/** Auto-save interval: save session every N tool rounds in persistent mode */
+const AUTO_SAVE_INTERVAL = 10;
+
 // Wake notes: a runner-global file that is prepended to the system prompt on process start
 // so agents reliably see dev workflow + memory pointers on wake.
 const WAKE_NOTES_DEFAULT_PATH = join(process.env.HOME || "", ".claude", "WAKE.md");
@@ -477,6 +487,7 @@ async function executeTurn(
   memory: AgentMemory,
   mcp: McpManager,
   cfg: GroConfig,
+  sessionId?: string,
 ): Promise<string> {
   const tools = mcp.getToolDefinitions();
   tools.push(agentpatchToolDefinition());
@@ -573,6 +584,16 @@ async function executeTurn(
         name: fnName,
       });
     }
+
+    // Auto-save periodically in persistent mode to survive SIGTERM/crashes
+    if (cfg.persistent && cfg.sessionPersistence && sessionId && round > 0 && round % AUTO_SAVE_INTERVAL === 0) {
+      try {
+        await memory.save(sessionId);
+        Logger.debug(`Auto-saved session ${sessionId} at round ${round}`);
+      } catch (e: unknown) {
+        Logger.warn(`Auto-save failed at round ${round}: ${asError(e).message}`);
+      }
+    }
   }
 
   // If we exhausted maxToolRounds (loop didn't break via no-tool-calls),
@@ -619,6 +640,11 @@ async function singleShot(
 
   const memory = createMemory(cfg, driver);
 
+  // Register for graceful shutdown
+  _shutdownMemory = memory;
+  _shutdownSessionId = sessionId;
+  _shutdownSessionPersistence = cfg.sessionPersistence;
+
   // Resume existing session if requested
   if (cfg.continueSession || cfg.resumeSession) {
     await memory.load(sessionId);
@@ -628,7 +654,7 @@ async function singleShot(
 
   let text: string | undefined;
   try {
-    text = await executeTurn(driver, memory, mcp, cfg);
+    text = await executeTurn(driver, memory, mcp, cfg, sessionId);
   } catch (e: unknown) {
     const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
     Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
@@ -661,6 +687,11 @@ async function interactive(
   const memory = createMemory(cfg, driver);
   const readline = await import("readline");
 
+  // Register for graceful shutdown
+  _shutdownMemory = memory;
+  _shutdownSessionId = sessionId;
+  _shutdownSessionPersistence = cfg.sessionPersistence;
+
   // Resume existing session if requested
   if (cfg.continueSession || cfg.resumeSession) {
     await memory.load(sessionId);
@@ -691,7 +722,7 @@ async function interactive(
 
     try {
       await memory.add({ role: "user", from: "User", content: input });
-      await executeTurn(driver, memory, mcp, cfg);
+      await executeTurn(driver, memory, mcp, cfg, sessionId);
     } catch (e: unknown) {
       const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
       Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
@@ -808,10 +839,18 @@ async function main() {
   }
 }
 
-// Graceful shutdown on signals
+// Graceful shutdown on signals — save session before exiting
 for (const sig of ["SIGTERM", "SIGHUP"] as const) {
-  process.on(sig, () => {
-    Logger.info(C.gray(`\nreceived ${sig}, shutting down...`));
+  process.on(sig, async () => {
+    Logger.info(C.gray(`\nreceived ${sig}, saving session and shutting down...`));
+    if (_shutdownMemory && _shutdownSessionId && _shutdownSessionPersistence) {
+      try {
+        await _shutdownMemory.save(_shutdownSessionId);
+        Logger.info(C.gray(`session ${_shutdownSessionId} saved on ${sig}`));
+      } catch (e: unknown) {
+        Logger.error(C.red(`session save on ${sig} failed: ${asError(e).message}`));
+      }
+    }
     process.exit(0);
   });
 }

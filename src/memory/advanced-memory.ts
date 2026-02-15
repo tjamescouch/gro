@@ -53,7 +53,7 @@ export class AdvancedMemory extends AgentMemory {
     this.highRatio = Math.min(0.95, Math.max(0.55, args.highRatio ?? 0.70));
     this.lowRatio = Math.min(this.highRatio - 0.05, Math.max(0.35, args.lowRatio ?? 0.50));
     this.summaryRatio = Math.min(0.50, Math.max(0.15, args.summaryRatio ?? 0.35));
-    this.avgCharsPerToken = Math.max(1.5, Number(args.avgCharsPerToken ?? 4));
+    this.avgCharsPerToken = Math.max(1.5, Number(args.avgCharsPerToken ?? 2.8));
     this.keepRecentPerLane = Math.max(1, Math.floor(args.keepRecentPerLane ?? 4));
     this.keepRecentTools = Math.max(0, Math.floor(args.keepRecentTools ?? 3));
   }
@@ -79,6 +79,44 @@ export class AdvancedMemory extends AgentMemory {
     });
   }
 
+
+  /**
+   * Return messages for the API, with hard truncation as a safety net.
+   * Even if background summarization hasn't caught up, this ensures we never
+   * send more than the configured context budget to the driver.
+   */
+  override messages(): ChatMessage[] {
+    const budget = this.budgetTokens();
+    const all = [...this.messagesBuffer];
+    const estTok = this.estimateTokens(all);
+
+    // If under budget, return everything (common case)
+    if (estTok <= budget) return all;
+
+    // Hard truncation: keep system prompt + most recent messages that fit
+    const result: ChatMessage[] = [];
+    let usedTok = 0;
+
+    // Always keep the system prompt (first message if system role)
+    if (all.length > 0 && all[0].role === "system") {
+      result.push(all[0]);
+      usedTok = this.estimateTokens(result);
+    }
+
+    // Walk backwards from the end, adding messages until we hit budget
+    const toAdd: ChatMessage[] = [];
+    for (let i = all.length - 1; i >= (result.length > 0 ? 1 : 0); i--) {
+      const candidate = [all[i], ...toAdd];
+      const candidateTok = this.estimateTokens(candidate);
+      if (usedTok + candidateTok <= budget) {
+        toAdd.unshift(all[i]);
+      } else {
+        break;  // No more room
+      }
+    }
+
+    return [...result, ...toAdd];
+  }
   protected async onAfterAdd(): Promise<void> {
     const budget = this.budgetTokens();
     const estTok = this.estimateTokens(this.messagesBuffer);

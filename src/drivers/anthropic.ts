@@ -141,6 +141,20 @@ function parseResponseContent(data: any, onToken?: (t: string) => void): ChatOut
   return { text, toolCalls, usage };
 }
 
+/**
+ * Determine if a model supports Anthropic adaptive/extended thinking.
+ * Conservative allowlist approach: if we don't recognize the model,
+ * we omit thinking (safe default — API works fine without it).
+ */
+function supportsAdaptiveThinking(model: string): boolean {
+  const m = model.toLowerCase();
+  if (/claude-opus-4/.test(m)) return true;
+  if (/claude-sonnet-4/.test(m)) return true;
+  if (/claude-3[.-]7/.test(m)) return true;
+  if (/claude-3[.-]5-sonnet.*20241022/.test(m)) return true;
+  return false;
+}
+
 export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
   const base = (cfg.baseUrl ?? "https://api.anthropic.com").replace(/\/+$/, "");
   const endpoint = `${base}/v1/messages`;
@@ -158,12 +172,13 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
 
     const body: any = {
       model: resolvedModel,
-      thinking: {
-        type: "adaptive"
-      },
       max_tokens: maxTokens,
       messages: apiMessages,
     };
+    // Only include adaptive thinking for models that support it
+    if (supportsAdaptiveThinking(resolvedModel)) {
+      body.thinking = { type: "adaptive" };
+    }
     if (systemPrompt) body.system = systemPrompt;
 
     // Tools support — convert from OpenAI format to Anthropic format

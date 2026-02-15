@@ -55,6 +55,7 @@ interface GroConfig {
   wakeNotes: string;
   wakeNotesEnabled: boolean;
   contextTokens: number;
+  maxTokens: number;
   interactive: boolean;
   print: boolean;
   maxToolRounds: number;
@@ -168,6 +169,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--wake-notes") { flags.wakeNotes = args[++i]; }
     else if (arg === "--no-wake-notes") { flags.noWakeNotes = "true"; }
     else if (arg === "--context-tokens") { flags.contextTokens = args[++i]; }
+    else if (arg === "--max-tokens") { flags.maxTokens = args[++i]; }
     else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
     else if (arg === "--bash") { flags.bash = "true"; }
     else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
@@ -287,6 +289,7 @@ ${systemPrompt}` : wake;
     wakeNotes: flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH,
     wakeNotesEnabled: flags.noWakeNotes !== "true",
     contextTokens: parseInt(flags.contextTokens || "8192"),
+    maxTokens: parseInt(flags.maxTokens || "16384"),
     interactive: interactiveMode,
     print: printMode,
     maxToolRounds: parseInt(flags.maxToolRounds || "10"),
@@ -361,6 +364,7 @@ options:
   --wake-notes           path to wake notes file (default: ~/.claude/WAKE.md)
   --no-wake-notes        disable auto-prepending wake notes
   --context-tokens       context window budget (default: 8192)
+  --max-tokens           max response tokens per turn (default: 16384)
   --max-turns            max agentic rounds per turn (default: 10)
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
@@ -391,6 +395,7 @@ function createDriverForModel(
   model: string,
   apiKey: string,
   baseUrl: string,
+  maxTokens?: number,
 ): ChatDriver {
   switch (provider) {
     case "anthropic":
@@ -398,7 +403,7 @@ function createDriverForModel(
         Logger.error("gro: ANTHROPIC_API_KEY not set (set ANTHROPIC_BASE_URL for proxy mode)");
         process.exit(1);
       }
-      return makeAnthropicDriver({ apiKey: apiKey || "proxy-managed", model, baseUrl });
+      return makeAnthropicDriver({ apiKey: apiKey || "proxy-managed", model, baseUrl, maxTokens });
 
     case "openai":
       if (!apiKey && baseUrl === "https://api.openai.com") {
@@ -418,7 +423,7 @@ function createDriverForModel(
 }
 
 function createDriver(cfg: GroConfig): ChatDriver {
-  return createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl);
+  return createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens);
 }
 
 // ---------------------------------------------------------------------------
@@ -805,7 +810,7 @@ async function main() {
     "--provider", "-P", "--model", "-m", "--base-url",
     "--system-prompt", "--system-prompt-file",
     "--append-system-prompt", "--append-system-prompt-file",
-    "--context-tokens", "--max-tool-rounds", "--max-turns",
+    "--context-tokens", "--max-tokens", "--max-tool-rounds", "--max-turns",
     "--max-thinking-tokens", "--max-budget-usd",
     "--summarizer-model", "--output-format", "--mcp-config",
     "--resume", "-r",

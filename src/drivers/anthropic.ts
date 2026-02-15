@@ -122,6 +122,9 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
 
     const body: any = {
       model: resolvedModel,
+      thinking: {
+        type: "adaptive"
+      },
       max_tokens: maxTokens,
       messages: apiMessages,
     };

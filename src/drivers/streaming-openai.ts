@@ -54,11 +54,11 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     const payloadSize = JSON.stringify(messages).length;
     const sizeMB = (payloadSize / (1024 * 1024)).toFixed(2);
 
-    // Extract snippet from last user message for observability
+    // Extract snippet from first user message for observability (shows original task)
     let snippet = "";
-    const lastUserMsg = messages.filter(m => m.role === "user").pop();
-    if (lastUserMsg && lastUserMsg.content) {
-      const content = lastUserMsg.content.trim().replace(/\n+/g, " ");
+    const firstUserMsg = messages.find(m => m.role === "user");
+    if (firstUserMsg && firstUserMsg.content) {
+      const content = firstUserMsg.content.trim().replace(/\n+/g, " ");
       snippet = content.length > 60 ? content.slice(0, 60) + "..." : content;
     }
 

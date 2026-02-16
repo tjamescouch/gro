@@ -467,11 +467,12 @@ function createMemory(cfg: GroConfig, driver: ChatDriver): AgentMemory {
     Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
   }
 
-  Logger.info("MemoryMode=Virtual (default)");
+  Logger.info(`MemoryMode=Virtual (default) workingMemory=${cfg.contextTokens} tokens`);
   const vm = new VirtualMemory({
     driver: summarizerDriver ?? driver,
     summarizerModel: summarizerModel ?? cfg.model,
     systemPrompt: cfg.systemPrompt || undefined,
+    workingMemoryTokens: cfg.contextTokens,
   });
   vm.setModel(cfg.model);
   return vm;

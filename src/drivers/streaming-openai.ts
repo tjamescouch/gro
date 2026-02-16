@@ -57,9 +57,30 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     // Extract snippet from last message for observability (shows what prompted this call)
     let snippet = "";
     const lastMsg = messages[messages.length - 1];
-    if (lastMsg && lastMsg.content) {
-      const content = lastMsg.content.trim().replace(/\n+/g, " ");
-      snippet = content.length > 120 ? content.slice(0, 120) + "..." : content;
+    if (lastMsg) {
+      if (lastMsg.role === "tool" && lastMsg.name && lastMsg.content) {
+        // Format tool messages as function calls: tool_name(key=val, ...)
+        try {
+          const toolData = JSON.parse(lastMsg.content);
+          const args = Object.entries(toolData)
+            .slice(0, 3) // Show first 3 keys
+            .map(([k, v]) => {
+              const valStr = typeof v === "string" ? v : JSON.stringify(v);
+              const truncated = valStr.length > 30 ? valStr.slice(0, 30) + "..." : valStr;
+              return `${k}=${JSON.stringify(truncated)}`;
+            })
+            .join(", ");
+          snippet = `${lastMsg.name}(${args})`;
+        } catch {
+          // Fallback if not valid JSON
+          const content = lastMsg.content.trim().replace(/\n+/g, " ");
+          snippet = `${lastMsg.name}(${content.slice(0, 80)}...)`;
+        }
+      } else if (lastMsg.content) {
+        // Regular message (user/assistant/etc): show content
+        const content = lastMsg.content.trim().replace(/\n+/g, " ");
+        snippet = content.length > 120 ? content.slice(0, 120) + "..." : content;
+      }
     }
 
     Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` <${snippet}>` : ""}`);

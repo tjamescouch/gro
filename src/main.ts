@@ -662,7 +662,22 @@ async function executeTurn(
         }
       }
 
-      Logger.debug(`Tool call: ${fnName}(${JSON.stringify(fnArgs)})`);
+      // Format tool call for readability
+      let toolCallDisplay: string;
+      if (fnName === "bash" && fnArgs.command) {
+        toolCallDisplay = `${fnName}(${fnArgs.command})`;
+      } else {
+        // For other tools, show args in key=value format
+        const argPairs = Object.entries(fnArgs)
+          .map(([k, v]) => {
+            const valStr = typeof v === "string" ? v : JSON.stringify(v);
+            const truncated = valStr.length > 60 ? valStr.slice(0, 60) + "..." : valStr;
+            return `${k}=${truncated}`;
+          })
+          .join(", ");
+        toolCallDisplay = argPairs ? `${fnName}(${argPairs})` : `${fnName}()`;
+      }
+      Logger.info(`[Tool call] ${toolCallDisplay}`);
 
       let result: string;
       try {

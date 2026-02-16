@@ -23,7 +23,7 @@ export class Logger {
   static isVerbose() { return Logger._verbose; }
 
   static info(...a: any[]) {
-    if (Logger._verbose) console.log(...a);
+    console.log(...a);
   }
 
   static warn(...a: any[]) { console.warn(...a); }

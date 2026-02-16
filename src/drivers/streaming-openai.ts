@@ -53,7 +53,16 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     // Always log data size, full dump only in verbose+debug mode
     const payloadSize = JSON.stringify(messages).length;
     const sizeMB = (payloadSize / (1024 * 1024)).toFixed(2);
-    Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)`);
+
+    // Extract snippet from last user message for observability
+    let snippet = "";
+    const lastUserMsg = messages.filter(m => m.role === "user").pop();
+    if (lastUserMsg && lastUserMsg.content) {
+      const content = lastUserMsg.content.trim().replace(/\n+/g, " ");
+      snippet = content.length > 60 ? content.slice(0, 60) + "..." : content;
+    }
+
+    Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` "${snippet}"` : ""}`);
     Logger.debug("streaming messages out", messages);
 
     const controller = new AbortController();

@@ -205,7 +205,16 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
     // Always log data size
     const payloadSize = JSON.stringify(body).length;
     const sizeMB = (payloadSize / (1024 * 1024)).toFixed(2);
-    Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)`);
+
+    // Extract snippet from last user message for observability
+    let snippet = "";
+    const lastUserMsg = messages.filter(m => m.role === "user").pop();
+    if (lastUserMsg && lastUserMsg.content) {
+      const content = lastUserMsg.content.trim().replace(/\n+/g, " ");
+      snippet = content.length > 60 ? content.slice(0, 60) + "..." : content;
+    }
+
+    Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` "${snippet}"` : ""}`);
 
     const RETRYABLE_STATUS = new Set([429, 503, 529]);
     let requestId: string | undefined;

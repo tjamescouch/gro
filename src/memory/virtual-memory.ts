@@ -46,6 +46,14 @@ export interface VirtualMemoryConfig {
   pageSlotTokens?: number;
   /** Token budget for working memory (recent messages + summaries) */
   workingMemoryTokens?: number;
+  /** Weight for assistant lane (auto-normalized) */
+  assistantWeight?: number;
+  /** Weight for user lane (auto-normalized) */
+  userWeight?: number;
+  /** Weight for system lane (auto-normalized) */
+  systemWeight?: number;
+  /** Weight for tool lane (auto-normalized) */
+  toolWeight?: number;
   /** Characters per token estimate */
   avgCharsPerToken?: number;
   /** Minimum recent messages to keep per lane (never summarize) */
@@ -66,6 +74,10 @@ const DEFAULTS = {
   pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
   pageSlotTokens: 40_000,
   workingMemoryTokens: 80_000,
+  assistantWeight: 8,
+  userWeight: 4,
+  systemWeight: 3,
+  toolWeight: 1,
   avgCharsPerToken: 2.8,
   minRecentPerLane: 4,
   highRatio: 0.75,
@@ -105,6 +117,10 @@ export class VirtualMemory extends AgentMemory {
       pagesDir: config.pagesDir ?? DEFAULTS.pagesDir,
       pageSlotTokens: config.pageSlotTokens ?? DEFAULTS.pageSlotTokens,
       workingMemoryTokens: config.workingMemoryTokens ?? DEFAULTS.workingMemoryTokens,
+      assistantWeight: config.assistantWeight ?? DEFAULTS.assistantWeight,
+      userWeight: config.userWeight ?? DEFAULTS.userWeight,
+      systemWeight: config.systemWeight ?? DEFAULTS.systemWeight,
+      toolWeight: config.toolWeight ?? DEFAULTS.toolWeight,
       avgCharsPerToken: config.avgCharsPerToken ?? DEFAULTS.avgCharsPerToken,
       minRecentPerLane: config.minRecentPerLane ?? DEFAULTS.minRecentPerLane,
       highRatio: config.highRatio ?? DEFAULTS.highRatio,
@@ -213,6 +229,24 @@ export class VirtualMemory extends AgentMemory {
 
   private tokensFor(text: string): number {
     return Math.ceil(text.length / this.cfg.avgCharsPerToken);
+  }
+
+  /** Normalize weights and compute per-lane token budgets */
+  private computeLaneBudgets(): {
+    assistant: number;
+    user: number;
+    system: number;
+    tool: number;
+  } {
+    const totalWeight = this.cfg.assistantWeight + this.cfg.userWeight + this.cfg.systemWeight + this.cfg.toolWeight;
+    const wmBudget = this.cfg.workingMemoryTokens;
+
+    return {
+      assistant: Math.floor((this.cfg.assistantWeight / totalWeight) * wmBudget),
+      user: Math.floor((this.cfg.userWeight / totalWeight) * wmBudget),
+      system: Math.floor((this.cfg.systemWeight / totalWeight) * wmBudget),
+      tool: Math.floor((this.cfg.toolWeight / totalWeight) * wmBudget),
+    };
   }
 
   private msgTokens(msgs: ChatMessage[]): number {
@@ -366,7 +400,7 @@ export class VirtualMemory extends AgentMemory {
     for (let i = nonSystem.length - 1; i >= 0; i--) {
       const msg = nonSystem[i];
       const mt = this.msgTokens([msg]);
-      if (wmTokens + mt > wmBudget && window.length >= this.cfg.minRecentMessages) break;
+      if (wmTokens + mt > wmBudget && window.length >= this.cfg.minRecentPerLane * 4) break;
       window.unshift(msg);
       wmTokens += mt;
       if (wmTokens > wmBudget * 2) break;
@@ -470,31 +504,43 @@ export class VirtualMemory extends AgentMemory {
   protected async onAfterAdd(): Promise<void> {
     if (!this.cfg.driver) return;
 
-    const wmBudget = this.cfg.workingMemoryTokens;
-    const nonSystem = this.messagesBuffer.filter(m => m.role !== "system");
-    const currentTokens = this.msgTokens(nonSystem);
+    // Compute normalized per-lane budgets
+    const budgets = this.computeLaneBudgets();
+
+    // Partition messages to check per-lane budgets
+    const { assistant, user, system, tool } = this.partition();
+
+    // Calculate per-lane token usage
+    const assistantTokens = this.msgTokens(assistant);
+    const userTokens = this.msgTokens(user);
+    const systemTokens = this.msgTokens(system.slice(1)); // Exclude system prompt
+    const toolTokens = this.msgTokens(tool);
+
+    // Check if any lane exceeds its budget
+    const assistantOverBudget = assistantTokens > budgets.assistant * this.cfg.highRatio;
+    const userOverBudget = userTokens > budgets.user * this.cfg.highRatio;
+    const systemOverBudget = systemTokens > budgets.system * this.cfg.highRatio;
+    const toolOverBudget = toolTokens > budgets.tool * this.cfg.highRatio;
 
     // VM diagnostics logging (if GRO_VM_DEBUG=true)
     if (process.env.GRO_VM_DEBUG === "true") {
-      const highWatermark = Math.floor(wmBudget * this.cfg.highRatio);
-      const lowWatermark = Math.floor(wmBudget * this.cfg.lowRatio);
-      const willPage = currentTokens > highWatermark;
-      Logger.info(`[VM] tokens=${currentTokens} high=${highWatermark} low=${lowWatermark} paging=${willPage}`);
+      Logger.info(`[VM] A:${assistantTokens}/${budgets.assistant} U:${userTokens}/${budgets.user} S:${systemTokens}/${budgets.system} T:${toolTokens}/${budgets.tool} paging=[A:${assistantOverBudget} U:${userOverBudget} S:${systemOverBudget} T:${toolOverBudget}]`);
     }
 
-    if (currentTokens <= wmBudget * this.cfg.highRatio) return;
+    // If no lane is over budget, nothing to do
+    if (!assistantOverBudget && !userOverBudget && !systemOverBudget && !toolOverBudget) return;
 
     await this.runOnce(async () => {
-      const nonSys = this.messagesBuffer.filter(m => m.role !== "system");
-      const est = this.msgTokens(nonSys);
-      if (est <= wmBudget * this.cfg.highRatio) return;
+      // Compute normalized budgets
+      const budgets = this.computeLaneBudgets();
 
-      // Partition messages into swimlanes
+      // Re-partition to get fresh data
       const { firstSystemIndex, assistant, user, system, tool, other } = this.partition();
       const tailN = this.cfg.minRecentPerLane;
 
       // Calculate metrics before cleanup
-      const beforeTokens = est;
+      const nonSys = this.messagesBuffer.filter(m => m.role !== "system");
+      const beforeTokens = this.msgTokens(nonSys);
       const beforeMB = (beforeTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
       const beforeMsgCount = nonSys.length;
 
@@ -502,18 +548,45 @@ export class VirtualMemory extends AgentMemory {
       const sysHead = firstSystemIndex === 0 ? [this.messagesBuffer[0]] : [];
       const remainingSystem = firstSystemIndex === 0 ? system.slice(1) : system.slice(0);
 
-      // Determine which messages to page out per lane
-      const olderAssistant = assistant.slice(0, Math.max(0, assistant.length - tailN));
-      const olderUser = user.slice(0, Math.max(0, user.length - tailN));
-      const olderSystem = remainingSystem.slice(0, Math.max(0, remainingSystem.length - tailN));
+      // Recalculate per-lane token usage
+      const assistantTok = this.msgTokens(assistant);
+      const userTok = this.msgTokens(user);
+      const systemTok = this.msgTokens(remainingSystem);
+      const toolTok = this.msgTokens(tool);
 
-      // Keep recent messages per lane
-      const keepAssistant = assistant.slice(Math.max(0, assistant.length - tailN));
-      const keepUser = user.slice(Math.max(0, user.length - tailN));
-      const keepSystem = remainingSystem.slice(Math.max(0, remainingSystem.length - tailN));
+      // Determine which lanes to page based on normalized budget
+      const shouldPageAssistant = assistantTok > budgets.assistant * this.cfg.highRatio;
+      const shouldPageUser = userTok > budgets.user * this.cfg.highRatio;
+      const shouldPageSystem = systemTok > budgets.system * this.cfg.highRatio;
+      const shouldPageTool = toolTok > budgets.tool * this.cfg.highRatio;
 
-      // Always keep all tool messages (they're critical for continuity)
-      const keepTools = tool;
+      // Determine which messages to page out per lane (only if over budget)
+      const olderAssistant = shouldPageAssistant
+        ? assistant.slice(0, Math.max(0, assistant.length - tailN))
+        : [];
+      const olderUser = shouldPageUser
+        ? user.slice(0, Math.max(0, user.length - tailN))
+        : [];
+      const olderSystem = shouldPageSystem
+        ? remainingSystem.slice(0, Math.max(0, remainingSystem.length - tailN))
+        : [];
+      const olderTool = shouldPageTool
+        ? tool.slice(0, Math.max(0, tool.length - tailN))
+        : [];
+
+      // Keep recent messages per lane (or all if not paging)
+      const keepAssistant = shouldPageAssistant
+        ? assistant.slice(Math.max(0, assistant.length - tailN))
+        : assistant;
+      const keepUser = shouldPageUser
+        ? user.slice(Math.max(0, user.length - tailN))
+        : user;
+      const keepSystem = shouldPageSystem
+        ? remainingSystem.slice(Math.max(0, remainingSystem.length - tailN))
+        : remainingSystem;
+      const keepTools = shouldPageTool
+        ? tool.slice(Math.max(0, tool.length - tailN))
+        : tool;
 
       // Create pages for each lane with older messages
       const summaries: ChatMessage[] = [];
@@ -548,6 +621,16 @@ export class VirtualMemory extends AgentMemory {
         });
       }
 
+      if (olderTool.length >= 2) {
+        const label = `tool lane ${new Date().toISOString().slice(0, 16)} (${olderTool.length} msgs)`;
+        const { summary } = await this.createPageFromMessages(olderTool, label);
+        summaries.push({
+          role: "system",
+          from: "VirtualMemory",
+          content: `TOOL LANE SUMMARY:\n${summary}`,
+        });
+      }
+
       // Rebuild message buffer: summaries + system prompt + recent messages from each lane
       // We need to preserve the original message order for kept messages
       const keptSet = new Set([
@@ -575,8 +658,8 @@ export class VirtualMemory extends AgentMemory {
       const afterMsgCount = afterNonSys.length;
       const reclaimedMB = (parseFloat(beforeMB) - parseFloat(afterMB)).toFixed(2);
 
-      // Log cleanup event
-      Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} lanes=[A:${olderAssistant.length} U:${olderUser.length} S:${olderSystem.length}]`);
+      // Log cleanup event with per-lane paging info
+      Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} paged=[A:${olderAssistant.length} U:${olderUser.length} S:${olderSystem.length} T:${olderTool.length}]`);
     });
   }
 

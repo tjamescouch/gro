@@ -1,95 +1,116 @@
-import type { ChatMessage } from "../drivers/types.js";
+import type { ChatDriver, ChatMessage } from "../drivers/types.js";
 import { AgentMemory } from "./agent-memory.js";
 import { saveSession, loadSession, ensureGroDir } from "../session.js";
-import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { createHash } from "node:crypto";
 
 /**
- * VirtualMemory — paged context management for long-running agents.
+ * VirtualMemory — paged context with inline refs and independent budgets.
  *
- * Instead of keeping all messages in context (and blowing up the token budget),
- * VirtualMemory maintains a sliding window of recent messages plus a page index
- * of older, summarized context. The model can explicitly reference older pages
- * via  markers, which the runtime resolves on the next turn.
- *
- * Architecture:
+ * Buffer layout:
  *   [system prompt]
- *   [page index — one-line descriptions of available pages]
- *   [active pages — explicitly loaded via @@ref@@]
- *   [recent messages — sliding window within token budget]
+ *   [page slot — reserved budget for loaded pages]
+ *   [working memory — recent messages, older ones fade to summaries with embedded refs]
  *
- * Pages are immutable once created — they're summaries of conversation windows.
- * New conversation creates new pages when the window slides.
+ * When working memory exceeds its budget, the oldest raw messages are:
+ * 1. Saved as an immutable page on disk
+ * 2. Replaced with a compact summary containing inline  links
+ *
+ * The model encounters refs naturally while reading summaries and can
+ * request the full page by emitting . Pages load into
+ * the page slot on the next turn. If the slot is full, oldest loaded
+ * page is evicted.
+ *
+ * No separate page index — refs are hyperlinks woven into the text.
  */
 
 // --- Types ---
 
 export interface ContextPage {
-  /** Unique page identifier */
   id: string;
-  /** One-line description for the page index */
   label: string;
-  /** Full summarized content of this page */
   content: string;
-  /** Timestamp when page was created */
   createdAt: string;
-  /** Number of original messages that were summarized into this page */
   messageCount: number;
-  /** Approximate token count of the content */
   tokens: number;
 }
 
 export interface VirtualMemoryConfig {
-  /** Base directory for storing pages (default: ~/.gro/pages/) */
+  /** Directory for page storage (default: ~/.gro/pages/) */
   pagesDir?: string;
-  /** Max tokens for the recent messages window */
-  windowTokens?: number;
-  /** Max tokens for loaded active pages */
-  activePageTokens?: number;
-  /** Max tokens for the page index */
-  indexTokens?: number;
+  /** Token budget for the page slot (loaded pages) */
+  pageSlotTokens?: number;
+  /** Token budget for working memory (recent messages + summaries) */
+  workingMemoryTokens?: number;
   /** Characters per token estimate */
   avgCharsPerToken?: number;
-  /** Messages to keep in the recent window minimum */
+  /** Minimum recent messages to always keep raw (never summarize) */
   minRecentMessages?: number;
+  /** High watermark ratio — trigger summarization when working memory exceeds this */
+  highRatio?: number;
+  /** Low watermark ratio — summarize down to this level */
+  lowRatio?: number;
   /** System prompt */
   systemPrompt?: string;
+  /** Driver for summarization calls */
+  driver?: ChatDriver;
+  /** Model to use for summarization */
+  summarizerModel?: string;
 }
 
-const DEFAULT_CONFIG: Required<VirtualMemoryConfig> = {
+const DEFAULTS = {
   pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
-  windowTokens: 80_000,
-  activePageTokens: 40_000,
-  indexTokens: 4_000,
+  pageSlotTokens: 40_000,
+  workingMemoryTokens: 80_000,
   avgCharsPerToken: 2.8,
   minRecentMessages: 6,
+  highRatio: 0.75,
+  lowRatio: 0.50,
   systemPrompt: "",
+  summarizerModel: "claude-sonnet-4-20250514",
 };
 
 // --- VirtualMemory ---
 
 export class VirtualMemory extends AgentMemory {
-  private config: Required<VirtualMemoryConfig>;
+  private cfg: Required<Omit<VirtualMemoryConfig, "driver" | "summarizerModel">> & {
+    driver: ChatDriver | null;
+    summarizerModel: string;
+  };
 
-  /** All known pages (the full index) */
+  /** All known pages */
   private pages: Map<string, ContextPage> = new Map();
 
-  /** Currently loaded page IDs (in context) */
+  /** Currently loaded page IDs (in the page slot) */
   private activePageIds: Set<string> = new Set();
 
-  /** Pending ref requests from the model (resolved on next messages() call) */
+  /** Pages requested by the model via @@ref markers */
   private pendingRefs: Set<string> = new Set();
 
-  /** Pending unref requests */
+  /** Pages to unload */
   private pendingUnrefs: Set<string> = new Set();
+
+  /** Load order for eviction (oldest first) */
+  private loadOrder: string[] = [];
 
   private model = "unknown";
 
   constructor(config: VirtualMemoryConfig = {}) {
     super(config.systemPrompt);
-    this.config = { ...DEFAULT_CONFIG, ...config } as Required<VirtualMemoryConfig>;
-    mkdirSync(this.config.pagesDir, { recursive: true });
+    this.cfg = {
+      pagesDir: config.pagesDir ?? DEFAULTS.pagesDir,
+      pageSlotTokens: config.pageSlotTokens ?? DEFAULTS.pageSlotTokens,
+      workingMemoryTokens: config.workingMemoryTokens ?? DEFAULTS.workingMemoryTokens,
+      avgCharsPerToken: config.avgCharsPerToken ?? DEFAULTS.avgCharsPerToken,
+      minRecentMessages: config.minRecentMessages ?? DEFAULTS.minRecentMessages,
+      highRatio: config.highRatio ?? DEFAULTS.highRatio,
+      lowRatio: config.lowRatio ?? DEFAULTS.lowRatio,
+      systemPrompt: config.systemPrompt ?? DEFAULTS.systemPrompt,
+      driver: config.driver ?? null,
+      summarizerModel: config.summarizerModel ?? DEFAULTS.summarizerModel,
+    };
+    mkdirSync(this.cfg.pagesDir, { recursive: true });
   }
 
   override setModel(model: string): void {
@@ -117,10 +138,10 @@ export class VirtualMemory extends AgentMemory {
     this.savePageIndex();
   }
 
-  // --- Page Index ---
+  // --- Page Index (persisted metadata) ---
 
   private indexPath(): string {
-    return join(this.config.pagesDir, "index.json");
+    return join(this.cfg.pagesDir, "index.json");
   }
 
   private loadPageIndex(): void {
@@ -129,255 +150,298 @@ export class VirtualMemory extends AgentMemory {
     try {
       const data = JSON.parse(readFileSync(p, "utf8"));
       this.pages.clear();
-      for (const page of data.pages ?? []) {
-        this.pages.set(page.id, page);
-      }
+      for (const page of data.pages ?? []) this.pages.set(page.id, page);
       this.activePageIds = new Set(data.activePageIds ?? []);
+      this.loadOrder = data.loadOrder ?? [];
     } catch {
-      // Corrupted index — start fresh
       this.pages.clear();
-      this.activePageIds.clear();
     }
   }
 
   private savePageIndex(): void {
-    mkdirSync(this.config.pagesDir, { recursive: true });
-    const data = {
+    mkdirSync(this.cfg.pagesDir, { recursive: true });
+    writeFileSync(this.indexPath(), JSON.stringify({
       pages: Array.from(this.pages.values()),
       activePageIds: Array.from(this.activePageIds),
+      loadOrder: this.loadOrder,
       savedAt: new Date().toISOString(),
-    };
-    writeFileSync(this.indexPath(), JSON.stringify(data, null, 2) + "\n");
+    }, null, 2) + "\n");
   }
 
   // --- Page Storage ---
 
-  private pagePath(pageId: string): string {
-    return join(this.config.pagesDir, `${pageId}.json`);
+  private pagePath(id: string): string {
+    return join(this.cfg.pagesDir, `${id}.json`);
   }
 
   private savePage(page: ContextPage): void {
-    mkdirSync(this.config.pagesDir, { recursive: true });
+    mkdirSync(this.cfg.pagesDir, { recursive: true });
     writeFileSync(this.pagePath(page.id), JSON.stringify(page, null, 2) + "\n");
     this.pages.set(page.id, page);
   }
 
-  private loadPage(pageId: string): ContextPage | null {
-    // Check in-memory first
-    const cached = this.pages.get(pageId);
-    if (cached) return cached;
-
-    // Try disk
-    const p = this.pagePath(pageId);
+  private loadPageContent(id: string): string | null {
+    const cached = this.pages.get(id);
+    if (cached) return cached.content;
+    const p = this.pagePath(id);
     if (!existsSync(p)) return null;
     try {
-      return JSON.parse(readFileSync(p, "utf8"));
+      const page: ContextPage = JSON.parse(readFileSync(p, "utf8"));
+      this.pages.set(id, page);
+      return page.content;
     } catch {
       return null;
     }
   }
 
-  // --- Ref Management ---
+  // --- Ref/Unref (called by marker handler) ---
 
-  /**
-   * Request a page be loaded into context. Called when  is detected.
-   */
   ref(pageId: string): void {
-    if (this.pages.has(pageId)) {
-      this.pendingRefs.add(pageId);
-      this.pendingUnrefs.delete(pageId);
-    }
+    this.pendingRefs.add(pageId);
+    this.pendingUnrefs.delete(pageId);
   }
 
-  /**
-   * Request a page be unloaded from context. Called when  is detected.
-   */
   unref(pageId: string): void {
     this.pendingUnrefs.add(pageId);
     this.pendingRefs.delete(pageId);
   }
 
-  // --- Token Estimation ---
+  // --- Token Math ---
 
-  private estimateTokens(text: string): number {
-    return Math.ceil(text.length / this.config.avgCharsPerToken);
+  private tokensFor(text: string): number {
+    return Math.ceil(text.length / this.cfg.avgCharsPerToken);
   }
 
-  private messageTokens(msgs: ChatMessage[]): number {
+  private msgTokens(msgs: ChatMessage[]): number {
     let chars = 0;
     for (const m of msgs) {
       const s = String(m.content ?? "");
       chars += (s.length > 24_000 ? 24_000 : s.length) + 32;
     }
-    return Math.ceil(chars / this.config.avgCharsPerToken);
+    return Math.ceil(chars / this.cfg.avgCharsPerToken);
   }
 
   // --- Page Creation ---
 
-  /**
-   * Generate a deterministic page ID from content hash.
-   */
   private generatePageId(content: string): string {
-    const hash = createHash("sha256").update(content).digest("hex").slice(0, 12);
-    return `pg_${hash}`;
+    return "pg_" + createHash("sha256").update(content).digest("hex").slice(0, 12);
   }
 
   /**
-   * Create a new page from a set of messages. The messages are summarized
-   * into a single content block with a descriptive label.
+   * Create a page from raw messages and return a summary with embedded ref.
+   * The raw content is saved to disk; the returned summary replaces it in working memory.
    */
-  createPage(label: string, content: string, messageCount: number): ContextPage {
+  async createPageFromMessages(
+    messages: ChatMessage[],
+    label: string,
+  ): Promise<{ page: ContextPage; summary: string }> {
+    // Build raw content for the page
+    const rawContent = messages.map(m =>
+      `[${m.role}${m.from ? ` (${m.from})` : ""}]: ${String(m.content ?? "").slice(0, 8000)}`
+    ).join("\n\n");
+
     const page: ContextPage = {
-      id: this.generatePageId(content),
+      id: this.generatePageId(rawContent),
       label,
-      content,
+      content: rawContent,
       createdAt: new Date().toISOString(),
-      messageCount,
-      tokens: this.estimateTokens(content),
+      messageCount: messages.length,
+      tokens: this.tokensFor(rawContent),
     };
     this.savePage(page);
-    return page;
+
+    // Generate summary with embedded ref
+    let summary: string;
+    if (this.cfg.driver) {
+      summary = await this.summarizeWithRef(messages, page.id, label);
+    } else {
+      // Fallback: simple label + ref without LLM
+      summary = `[Summary of ${messages.length} messages: ${label}] `;
+    }
+
+    return { page, summary };
+  }
+
+  private async summarizeWithRef(
+    messages: ChatMessage[],
+    pageId: string,
+    label: string,
+  ): Promise<string> {
+    const transcript = messages.map(m => {
+      const c = String(m.content ?? "").slice(0, 4000);
+      return `${m.role.toUpperCase()}: ${c}`;
+    }).join("\n");
+
+    const sys: ChatMessage = {
+      role: "system",
+      from: "System",
+      content: [
+        "You are a precise summarizer. Output concise bullet points preserving facts, tasks, file paths, commands, and decisions.",
+        `End the summary with: `,
+        "This ref is a hyperlink to the full conversation. Always include it.",
+        "Hard limit: ~500 characters.",
+      ].join(" "),
+    };
+
+    const usr: ChatMessage = {
+      role: "user",
+      from: "User",
+      content: `Summarize this conversation segment (${label}):\n\n${transcript.slice(0, 12000)}`,
+    };
+
+    try {
+      const out = await this.cfg.driver!.chat([sys, usr], { model: this.cfg.summarizerModel });
+      let text = String((out as any)?.text ?? "").trim();
+      // Ensure ref is present
+      if (!text.includes(``)) {
+        text += `\n`;
+      }
+      return text;
+    } catch {
+      return `[Summary of ${messages.length} messages: ${label}] `;
+    }
   }
 
   // --- Context Assembly ---
 
-  /**
-   * Build the page index message — a compact list of available pages
-   * the model can reference with .
-   */
-  private buildPageIndex(): string {
-    if (this.pages.size === 0) return "";
-
-    const lines = ["Available context pages (use  to load,  to release):"];
-    for (const [id, page] of this.pages) {
-      const active = this.activePageIds.has(id) ? " [LOADED]" : "";
-      lines.push(`  ${id}: ${page.label} (${page.tokens} tok, ${page.messageCount} msgs)${active}`);
-    }
-    return lines.join("\n");
-  }
-
-  /**
-   * Build active page content — the full content of loaded pages.
-   */
-  private buildActivePages(): string {
-    const sections: string[] = [];
-    let totalTokens = 0;
-
-    for (const pageId of this.activePageIds) {
-      const page = this.loadPage(pageId);
-      if (!page) continue;
-
-      if (totalTokens + page.tokens > this.config.activePageTokens) {
-        sections.push(`[Page ${pageId} skipped — would exceed active page budget]`);
-        continue;
-      }
-
-      sections.push(`--- Page: ${pageId} (${page.label}) ---\n${page.content}\n--- End Page ---`);
-      totalTokens += page.tokens;
-    }
-
-    return sections.join("\n\n");
-  }
-
-  /**
-   * Override messages() to implement the virtual memory paging.
-   * Returns: system prompt + page index + active pages + recent messages window.
-   */
   override messages(): ChatMessage[] {
-    // Process pending refs/unrefs
-    for (const id of this.pendingRefs) {
-      this.activePageIds.add(id);
-    }
+    // Resolve pending refs/unrefs
     for (const id of this.pendingUnrefs) {
       this.activePageIds.delete(id);
+      this.loadOrder = this.loadOrder.filter(x => x !== id);
+    }
+    for (const id of this.pendingRefs) {
+      if (this.pages.has(id) || existsSync(this.pagePath(id))) {
+        this.activePageIds.add(id);
+        if (!this.loadOrder.includes(id)) this.loadOrder.push(id);
+      }
     }
     this.pendingRefs.clear();
     this.pendingUnrefs.clear();
 
+    // Evict oldest pages if slot is over budget
+    this.evictPages();
+
     const result: ChatMessage[] = [];
     let usedTokens = 0;
 
-    // 1. System prompt (always first)
+    // 1. System prompt
     const sysMsg = this.messagesBuffer.find(m => m.role === "system");
     if (sysMsg) {
       result.push(sysMsg);
-      usedTokens += this.messageTokens([sysMsg]);
+      usedTokens += this.msgTokens([sysMsg]);
     }
 
-    // 2. Page index (if we have pages)
-    const indexContent = this.buildPageIndex();
-    if (indexContent) {
-      const indexTokens = this.estimateTokens(indexContent);
-      if (indexTokens <= this.config.indexTokens) {
-        result.push({
-          role: "system",
-          from: "VirtualMemory",
-          content: indexContent,
-        });
-        usedTokens += indexTokens;
-      }
+    // 2. Page slot — loaded pages
+    const pageMessages = this.buildPageSlot();
+    if (pageMessages.length > 0) {
+      result.push(...pageMessages);
+      usedTokens += this.msgTokens(pageMessages);
     }
 
-    // 3. Active pages
-    const activePagesContent = this.buildActivePages();
-    if (activePagesContent) {
-      const apTokens = this.estimateTokens(activePagesContent);
-      result.push({
-        role: "system",
-        from: "VirtualMemory",
-        content: activePagesContent,
-      });
-      usedTokens += apTokens;
-    }
-
-    // 4. Recent messages — fill remaining budget
-    const remainingBudget = this.config.windowTokens - usedTokens;
-    const nonSystemMsgs = this.messagesBuffer.filter(m => m.role !== "system" || m !== sysMsg);
-
-    // Walk backwards to fill the window
+    // 3. Working memory — recent messages within budget
+    const wmBudget = this.cfg.workingMemoryTokens;
+    const nonSystem = this.messagesBuffer.filter(m => m !== sysMsg);
     const window: ChatMessage[] = [];
-    let windowTokens = 0;
+    let wmTokens = 0;
 
-    for (let i = nonSystemMsgs.length - 1; i >= 0; i--) {
-      const msg = nonSystemMsgs[i];
-      const msgTokens = this.messageTokens([msg]);
-
-      if (windowTokens + msgTokens > remainingBudget && window.length >= this.config.minRecentMessages) {
-        break;
-      }
-
+    for (let i = nonSystem.length - 1; i >= 0; i--) {
+      const msg = nonSystem[i];
+      const mt = this.msgTokens([msg]);
+      if (wmTokens + mt > wmBudget && window.length >= this.cfg.minRecentMessages) break;
       window.unshift(msg);
-      windowTokens += msgTokens;
-
-      // Hard stop — even minRecentMessages can't exceed 2x budget
-      if (windowTokens > remainingBudget * 2) break;
+      wmTokens += mt;
+      if (wmTokens > wmBudget * 2) break;
     }
 
     result.push(...window);
     return result;
   }
 
-  // --- Lifecycle ---
+  private buildPageSlot(): ChatMessage[] {
+    const msgs: ChatMessage[] = [];
+    let slotTokens = 0;
+
+    for (const id of this.loadOrder) {
+      if (!this.activePageIds.has(id)) continue;
+      const content = this.loadPageContent(id);
+      if (!content) continue;
+      const page = this.pages.get(id);
+      const tokens = this.tokensFor(content);
+      if (slotTokens + tokens > this.cfg.pageSlotTokens) continue;
+
+      msgs.push({
+        role: "system",
+        from: "VirtualMemory",
+        content: `--- Loaded Page: ${id} (${page?.label ?? "unknown"}) ---\n${content}\n--- End Page: ${id} (use  to release) ---`,
+      });
+      slotTokens += tokens;
+    }
+    return msgs;
+  }
+
+  private evictPages(): void {
+    let slotTokens = 0;
+    for (const id of this.loadOrder) {
+      const page = this.pages.get(id);
+      if (page) slotTokens += page.tokens;
+    }
+
+    while (slotTokens > this.cfg.pageSlotTokens && this.loadOrder.length > 0) {
+      const evictId = this.loadOrder.shift()!;
+      this.activePageIds.delete(evictId);
+      const page = this.pages.get(evictId);
+      if (page) slotTokens -= page.tokens;
+    }
+  }
+
+  // --- Background Summarization ---
 
   protected async onAfterAdd(): Promise<void> {
-    // No background summarization — page creation is explicit or triggered by the runtime
+    if (!this.cfg.driver) return;
+
+    const wmBudget = this.cfg.workingMemoryTokens;
+    const nonSystem = this.messagesBuffer.filter(m => m.role !== "system");
+    const currentTokens = this.msgTokens(nonSystem);
+
+    if (currentTokens <= wmBudget * this.cfg.highRatio) return;
+
+    await this.runOnce(async () => {
+      const nonSys = this.messagesBuffer.filter(m => m.role !== "system");
+      const est = this.msgTokens(nonSys);
+      if (est <= wmBudget * this.cfg.highRatio) return;
+
+      const targetTokens = Math.floor(wmBudget * this.cfg.lowRatio);
+
+      // Find how many old messages to summarize
+      const protect = this.cfg.minRecentMessages;
+      const summarizable = nonSys.slice(0, Math.max(0, nonSys.length - protect));
+      if (summarizable.length < 2) return;
+
+      // Take a chunk of oldest messages to page out
+      const chunkSize = Math.min(summarizable.length, Math.max(4, Math.floor(summarizable.length / 2)));
+      const toPage = summarizable.slice(0, chunkSize);
+
+      // Create page + summary
+      const label = `session ${new Date().toISOString().slice(0, 16)} (${toPage.length} msgs)`;
+      const { summary } = await this.createPageFromMessages(toPage, label);
+
+      // Replace paged messages with summary in buffer
+      const sysMsg = this.messagesBuffer.find(m => m.role === "system");
+      const startIdx = sysMsg ? 1 : 0;
+
+      this.messagesBuffer.splice(startIdx, chunkSize, {
+        role: "assistant",
+        from: "VirtualMemory",
+        content: summary,
+      });
+    });
   }
 
   // --- Accessors ---
 
-  getPages(): ContextPage[] {
-    return Array.from(this.pages.values());
-  }
-
-  getActivePageIds(): string[] {
-    return Array.from(this.activePageIds);
-  }
-
-  getPageCount(): number {
-    return this.pages.size;
-  }
-
-  hasPage(pageId: string): boolean {
-    return this.pages.has(pageId);
-  }
+  getPages(): ContextPage[] { return Array.from(this.pages.values()); }
+  getActivePageIds(): string[] { return Array.from(this.activePageIds); }
+  getPageCount(): number { return this.pages.size; }
+  hasPage(id: string): boolean { return this.pages.has(id); }
 }

@@ -214,7 +214,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
       snippet = content.length > 60 ? content.slice(0, 60) + "..." : content;
     }
 
-    Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` "${snippet}"` : ""}`);
+    Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` <${snippet}>` : ""}`);
 
     const RETRYABLE_STATUS = new Set([429, 503, 529]);
     let requestId: string | undefined;

@@ -62,7 +62,7 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
       snippet = content.length > 60 ? content.slice(0, 60) + "..." : content;
     }
 
-    Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` "${snippet}"` : ""}`);
+    Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` <${snippet}>` : ""}`);
     Logger.debug("streaming messages out", messages);
 
     const controller = new AbortController();

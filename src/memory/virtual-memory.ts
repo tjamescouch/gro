@@ -7,16 +7,18 @@ import { createHash } from "node:crypto";
 import { Logger } from "../logger.js";
 
 /**
- * VirtualMemory — paged context with inline refs and independent budgets.
+ * VirtualMemory — paged context with inline refs, independent budgets, and swimlane awareness.
  *
  * Buffer layout:
  *   [system prompt]
  *   [page slot — reserved budget for loaded pages]
  *   [working memory — recent messages, older ones fade to summaries with embedded refs]
  *
- * When working memory exceeds its budget, the oldest raw messages are:
- * 1. Saved as an immutable page on disk
- * 2. Replaced with a compact summary containing inline  links
+ * When working memory exceeds its budget, messages are partitioned into swimlanes
+ * (assistant/user/system/tool) and processed independently:
+ * 1. Recent messages from each lane are preserved (minRecentPerLane)
+ * 2. Older messages from each lane are saved as immutable pages on disk
+ * 3. Each lane's paged messages are replaced with a compact summary containing inline  links
  *
  * The model encounters refs naturally while reading summaries and can
  * request the full page by emitting . Pages load into
@@ -46,8 +48,8 @@ export interface VirtualMemoryConfig {
   workingMemoryTokens?: number;
   /** Characters per token estimate */
   avgCharsPerToken?: number;
-  /** Minimum recent messages to always keep raw (never summarize) */
-  minRecentMessages?: number;
+  /** Minimum recent messages to keep per lane (never summarize) */
+  minRecentPerLane?: number;
   /** High watermark ratio — trigger summarization when working memory exceeds this */
   highRatio?: number;
   /** Low watermark ratio — summarize down to this level */
@@ -65,7 +67,7 @@ const DEFAULTS = {
   pageSlotTokens: 40_000,
   workingMemoryTokens: 80_000,
   avgCharsPerToken: 2.8,
-  minRecentMessages: 6,
+  minRecentPerLane: 4,
   highRatio: 0.75,
   lowRatio: 0.50,
   systemPrompt: "",
@@ -104,7 +106,7 @@ export class VirtualMemory extends AgentMemory {
       pageSlotTokens: config.pageSlotTokens ?? DEFAULTS.pageSlotTokens,
       workingMemoryTokens: config.workingMemoryTokens ?? DEFAULTS.workingMemoryTokens,
       avgCharsPerToken: config.avgCharsPerToken ?? DEFAULTS.avgCharsPerToken,
-      minRecentMessages: config.minRecentMessages ?? DEFAULTS.minRecentMessages,
+      minRecentPerLane: config.minRecentPerLane ?? DEFAULTS.minRecentPerLane,
       highRatio: config.highRatio ?? DEFAULTS.highRatio,
       lowRatio: config.lowRatio ?? DEFAULTS.lowRatio,
       systemPrompt: config.systemPrompt ?? DEFAULTS.systemPrompt,
@@ -235,6 +237,7 @@ export class VirtualMemory extends AgentMemory {
   async createPageFromMessages(
     messages: ChatMessage[],
     label: string,
+    lane?: "assistant" | "user" | "system",
   ): Promise<{ page: ContextPage; summary: string }> {
     // Build raw content for the page
     const rawContent = messages.map(m =>
@@ -254,7 +257,7 @@ export class VirtualMemory extends AgentMemory {
     // Generate summary with embedded ref
     let summary: string;
     if (this.cfg.driver) {
-      summary = await this.summarizeWithRef(messages, page.id, label);
+      summary = await this.summarizeWithRef(messages, page.id, label, lane);
     } else {
       // Fallback: simple label + ref without LLM
       summary = `[Summary of ${messages.length} messages: ${label}] `;
@@ -267,17 +270,31 @@ export class VirtualMemory extends AgentMemory {
     messages: ChatMessage[],
     pageId: string,
     label: string,
+    lane?: "assistant" | "user" | "system",
   ): Promise<string> {
     const transcript = messages.map(m => {
       const c = String(m.content ?? "").slice(0, 4000);
       return `${m.role.toUpperCase()}: ${c}`;
     }).join("\n");
 
+    // Lane-specific summarization instructions (inspired by AdvancedMemory)
+    const laneInstructions = lane ? (() => {
+      switch (lane) {
+        case "assistant":
+          return "Focus on assistant decisions, plans, code edits, shell commands, and outcomes.";
+        case "system":
+          return "Summarize system instructions, rules, goals, and constraints without changing their intent.";
+        case "user":
+          return "Summarize user requests, feedback, constraints, and acceptance criteria.";
+      }
+    })() : "Summarize this conversation segment preserving key context.";
+
     const sys: ChatMessage = {
       role: "system",
       from: "System",
       content: [
         "You are a precise summarizer. Output concise bullet points preserving facts, tasks, file paths, commands, and decisions.",
+        laneInstructions,
         `End the summary with: `,
         "This ref is a hyperlink to the full conversation. Always include it.",
         "Hard limit: ~500 characters.",
@@ -396,6 +413,33 @@ export class VirtualMemory extends AgentMemory {
     }
   }
 
+  // --- Swimlane Partitioning ---
+
+  /**
+   * Partition messages into swimlanes by role, respecting the first system message.
+   * Similar to AdvancedMemory's approach.
+   */
+  private partition() {
+    const assistant: ChatMessage[] = [];
+    const user: ChatMessage[] = [];
+    const system: ChatMessage[] = [];
+    const tool: ChatMessage[] = [];
+    const other: ChatMessage[] = [];
+
+    for (const m of this.messagesBuffer) {
+      switch (m.role) {
+        case "assistant": assistant.push(m); break;
+        case "user": user.push(m); break;
+        case "system": system.push(m); break;
+        case "tool": tool.push(m); break;
+        default: other.push(m); break;
+      }
+    }
+
+    const firstSystemIndex = this.messagesBuffer.findIndex(x => x.role === "system");
+    return { firstSystemIndex, assistant, user, system, tool, other };
+  }
+
   // --- Background Summarization ---
 
   /**
@@ -445,36 +489,84 @@ export class VirtualMemory extends AgentMemory {
       const est = this.msgTokens(nonSys);
       if (est <= wmBudget * this.cfg.highRatio) return;
 
-      const targetTokens = Math.floor(wmBudget * this.cfg.lowRatio);
-
-      // Find how many old messages to summarize
-      const protect = this.cfg.minRecentMessages;
-      const summarizable = nonSys.slice(0, Math.max(0, nonSys.length - protect));
-      if (summarizable.length < 2) return;
-
-      // Take a chunk of oldest messages to page out, respecting tool message boundaries
-      const proposedSize = Math.min(summarizable.length, Math.max(4, Math.floor(summarizable.length / 2)));
-      const chunkSize = this.findSafeBoundary(summarizable, proposedSize);
-      const toPage = summarizable.slice(0, chunkSize);
-
-      // Create page + summary
-      const label = `session ${new Date().toISOString().slice(0, 16)} (${toPage.length} msgs)`;
-      const { summary } = await this.createPageFromMessages(toPage, label);
+      // Partition messages into swimlanes
+      const { firstSystemIndex, assistant, user, system, tool, other } = this.partition();
+      const tailN = this.cfg.minRecentPerLane;
 
       // Calculate metrics before cleanup
       const beforeTokens = est;
       const beforeMB = (beforeTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
       const beforeMsgCount = nonSys.length;
 
-      // Replace paged messages with summary in buffer
-      const sysMsg = this.messagesBuffer.find(m => m.role === "system");
-      const startIdx = sysMsg ? 1 : 0;
+      // Separate system prompt from other system messages
+      const sysHead = firstSystemIndex === 0 ? [this.messagesBuffer[0]] : [];
+      const remainingSystem = firstSystemIndex === 0 ? system.slice(1) : system.slice(0);
 
-      this.messagesBuffer.splice(startIdx, chunkSize, {
-        role: "assistant",
-        from: "VirtualMemory",
-        content: summary,
-      });
+      // Determine which messages to page out per lane
+      const olderAssistant = assistant.slice(0, Math.max(0, assistant.length - tailN));
+      const olderUser = user.slice(0, Math.max(0, user.length - tailN));
+      const olderSystem = remainingSystem.slice(0, Math.max(0, remainingSystem.length - tailN));
+
+      // Keep recent messages per lane
+      const keepAssistant = assistant.slice(Math.max(0, assistant.length - tailN));
+      const keepUser = user.slice(Math.max(0, user.length - tailN));
+      const keepSystem = remainingSystem.slice(Math.max(0, remainingSystem.length - tailN));
+
+      // Always keep all tool messages (they're critical for continuity)
+      const keepTools = tool;
+
+      // Create pages for each lane with older messages
+      const summaries: ChatMessage[] = [];
+
+      if (olderAssistant.length >= 2) {
+        const label = `assistant lane ${new Date().toISOString().slice(0, 16)} (${olderAssistant.length} msgs)`;
+        const { summary } = await this.createPageFromMessages(olderAssistant, label, "assistant");
+        summaries.push({
+          role: "assistant",
+          from: "VirtualMemory",
+          content: `ASSISTANT LANE SUMMARY:\n${summary}`,
+        });
+      }
+
+      if (olderUser.length >= 2) {
+        const label = `user lane ${new Date().toISOString().slice(0, 16)} (${olderUser.length} msgs)`;
+        const { summary } = await this.createPageFromMessages(olderUser, label, "user");
+        summaries.push({
+          role: "user",
+          from: "VirtualMemory",
+          content: `USER LANE SUMMARY:\n${summary}`,
+        });
+      }
+
+      if (olderSystem.length >= 2) {
+        const label = `system lane ${new Date().toISOString().slice(0, 16)} (${olderSystem.length} msgs)`;
+        const { summary } = await this.createPageFromMessages(olderSystem, label, "system");
+        summaries.push({
+          role: "system",
+          from: "VirtualMemory",
+          content: `SYSTEM LANE SUMMARY:\n${summary}`,
+        });
+      }
+
+      // Rebuild message buffer: summaries + system prompt + recent messages from each lane
+      // We need to preserve the original message order for kept messages
+      const keptSet = new Set([
+        ...sysHead,
+        ...keepAssistant,
+        ...keepUser,
+        ...keepSystem,
+        ...keepTools,
+        ...other,
+      ]);
+
+      const orderedKept: ChatMessage[] = [];
+      for (const m of this.messagesBuffer) {
+        if (keptSet.has(m)) orderedKept.push(m);
+      }
+
+      // Insert summaries at the beginning (after system prompt if present)
+      const rebuilt: ChatMessage[] = [...summaries, ...orderedKept];
+      this.messagesBuffer.splice(0, this.messagesBuffer.length, ...rebuilt);
 
       // Calculate metrics after cleanup
       const afterNonSys = this.messagesBuffer.filter(m => m.role !== "system");
@@ -484,7 +576,7 @@ export class VirtualMemory extends AgentMemory {
       const reclaimedMB = (parseFloat(beforeMB) - parseFloat(afterMB)).toFixed(2);
 
       // Log cleanup event
-      Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount}`);
+      Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} lanes=[A:${olderAssistant.length} U:${olderUser.length} S:${olderSystem.length}]`);
     });
   }
 

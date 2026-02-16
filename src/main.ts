@@ -226,7 +226,7 @@ function loadConfig(): GroConfig {
     else { Logger.warn(`Unknown flag: ${arg}`); }
   }
 
-  const provider = inferProvider(flags.provider, flags.model);
+  const provider = inferProvider(flags.provider, flags.model || process.env.AGENT_MODEL);
   const apiKey = resolveApiKey(provider);
   const noMcp = flags.noMcp === "true";
   const mcpServers = noMcp ? {} : loadMcpServers(mcpConfigPaths);
@@ -294,7 +294,7 @@ ${systemPrompt}` : wake;
 
   return {
     provider,
-    model: flags.model || defaultModel(provider),
+    model: flags.model || process.env.AGENT_MODEL || defaultModel(provider),
     baseUrl: flags.baseUrl || defaultBaseUrl(provider),
     apiKey,
     systemPrompt,

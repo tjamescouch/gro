@@ -435,6 +435,11 @@ export class VirtualMemory extends AgentMemory {
       const label = `session ${new Date().toISOString().slice(0, 16)} (${toPage.length} msgs)`;
       const { summary } = await this.createPageFromMessages(toPage, label);
 
+      // Calculate metrics before cleanup
+      const beforeTokens = est;
+      const beforeMB = (beforeTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
+      const beforeMsgCount = nonSys.length;
+
       // Replace paged messages with summary in buffer
       const sysMsg = this.messagesBuffer.find(m => m.role === "system");
       const startIdx = sysMsg ? 1 : 0;
@@ -444,6 +449,16 @@ export class VirtualMemory extends AgentMemory {
         from: "VirtualMemory",
         content: summary,
       });
+
+      // Calculate metrics after cleanup
+      const afterNonSys = this.messagesBuffer.filter(m => m.role !== "system");
+      const afterTokens = this.msgTokens(afterNonSys);
+      const afterMB = (afterTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
+      const afterMsgCount = afterNonSys.length;
+      const reclaimedMB = (parseFloat(beforeMB) - parseFloat(afterMB)).toFixed(2);
+
+      // Log cleanup event
+      Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount}`);
     });
   }
 

@@ -46,14 +46,14 @@ export interface VirtualMemoryConfig {
   pageSlotTokens?: number;
   /** Token budget for working memory (recent messages + summaries) */
   workingMemoryTokens?: number;
-  /** Token budget for assistant lane */
-  assistantTokens?: number;
-  /** Token budget for user lane */
-  userTokens?: number;
-  /** Token budget for system lane */
-  systemTokens?: number;
-  /** Token budget for tool lane */
-  toolTokens?: number;
+  /** Weight for assistant lane (auto-normalized) */
+  assistantWeight?: number;
+  /** Weight for user lane (auto-normalized) */
+  userWeight?: number;
+  /** Weight for system lane (auto-normalized) */
+  systemWeight?: number;
+  /** Weight for tool lane (auto-normalized) */
+  toolWeight?: number;
   /** Characters per token estimate */
   avgCharsPerToken?: number;
   /** Minimum recent messages to keep per lane (never summarize) */
@@ -74,10 +74,10 @@ const DEFAULTS = {
   pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
   pageSlotTokens: 40_000,
   workingMemoryTokens: 80_000,
-  assistantTokens: 40_000,
-  userTokens: 20_000,
-  systemTokens: 15_000,
-  toolTokens: 5_000,
+  assistantWeight: 8,
+  userWeight: 4,
+  systemWeight: 3,
+  toolWeight: 1,
   avgCharsPerToken: 2.8,
   minRecentPerLane: 4,
   highRatio: 0.75,
@@ -117,10 +117,10 @@ export class VirtualMemory extends AgentMemory {
       pagesDir: config.pagesDir ?? DEFAULTS.pagesDir,
       pageSlotTokens: config.pageSlotTokens ?? DEFAULTS.pageSlotTokens,
       workingMemoryTokens: config.workingMemoryTokens ?? DEFAULTS.workingMemoryTokens,
-      assistantTokens: config.assistantTokens ?? DEFAULTS.assistantTokens,
-      userTokens: config.userTokens ?? DEFAULTS.userTokens,
-      systemTokens: config.systemTokens ?? DEFAULTS.systemTokens,
-      toolTokens: config.toolTokens ?? DEFAULTS.toolTokens,
+      assistantWeight: config.assistantWeight ?? DEFAULTS.assistantWeight,
+      userWeight: config.userWeight ?? DEFAULTS.userWeight,
+      systemWeight: config.systemWeight ?? DEFAULTS.systemWeight,
+      toolWeight: config.toolWeight ?? DEFAULTS.toolWeight,
       avgCharsPerToken: config.avgCharsPerToken ?? DEFAULTS.avgCharsPerToken,
       minRecentPerLane: config.minRecentPerLane ?? DEFAULTS.minRecentPerLane,
       highRatio: config.highRatio ?? DEFAULTS.highRatio,
@@ -229,6 +229,24 @@ export class VirtualMemory extends AgentMemory {
 
   private tokensFor(text: string): number {
     return Math.ceil(text.length / this.cfg.avgCharsPerToken);
+  }
+
+  /** Normalize weights and compute per-lane token budgets */
+  private computeLaneBudgets(): {
+    assistant: number;
+    user: number;
+    system: number;
+    tool: number;
+  } {
+    const totalWeight = this.cfg.assistantWeight + this.cfg.userWeight + this.cfg.systemWeight + this.cfg.toolWeight;
+    const wmBudget = this.cfg.workingMemoryTokens;
+
+    return {
+      assistant: Math.floor((this.cfg.assistantWeight / totalWeight) * wmBudget),
+      user: Math.floor((this.cfg.userWeight / totalWeight) * wmBudget),
+      system: Math.floor((this.cfg.systemWeight / totalWeight) * wmBudget),
+      tool: Math.floor((this.cfg.toolWeight / totalWeight) * wmBudget),
+    };
   }
 
   private msgTokens(msgs: ChatMessage[]): number {
@@ -486,6 +504,9 @@ export class VirtualMemory extends AgentMemory {
   protected async onAfterAdd(): Promise<void> {
     if (!this.cfg.driver) return;
 
+    // Compute normalized per-lane budgets
+    const budgets = this.computeLaneBudgets();
+
     // Partition messages to check per-lane budgets
     const { assistant, user, system, tool } = this.partition();
 
@@ -496,20 +517,23 @@ export class VirtualMemory extends AgentMemory {
     const toolTokens = this.msgTokens(tool);
 
     // Check if any lane exceeds its budget
-    const assistantOverBudget = assistantTokens > this.cfg.assistantTokens * this.cfg.highRatio;
-    const userOverBudget = userTokens > this.cfg.userTokens * this.cfg.highRatio;
-    const systemOverBudget = systemTokens > this.cfg.systemTokens * this.cfg.highRatio;
-    const toolOverBudget = toolTokens > this.cfg.toolTokens * this.cfg.highRatio;
+    const assistantOverBudget = assistantTokens > budgets.assistant * this.cfg.highRatio;
+    const userOverBudget = userTokens > budgets.user * this.cfg.highRatio;
+    const systemOverBudget = systemTokens > budgets.system * this.cfg.highRatio;
+    const toolOverBudget = toolTokens > budgets.tool * this.cfg.highRatio;
 
     // VM diagnostics logging (if GRO_VM_DEBUG=true)
     if (process.env.GRO_VM_DEBUG === "true") {
-      Logger.info(`[VM] A:${assistantTokens}/${this.cfg.assistantTokens} U:${userTokens}/${this.cfg.userTokens} S:${systemTokens}/${this.cfg.systemTokens} T:${toolTokens}/${this.cfg.toolTokens} paging=[A:${assistantOverBudget} U:${userOverBudget} S:${systemOverBudget} T:${toolOverBudget}]`);
+      Logger.info(`[VM] A:${assistantTokens}/${budgets.assistant} U:${userTokens}/${budgets.user} S:${systemTokens}/${budgets.system} T:${toolTokens}/${budgets.tool} paging=[A:${assistantOverBudget} U:${userOverBudget} S:${systemOverBudget} T:${toolOverBudget}]`);
     }
 
     // If no lane is over budget, nothing to do
     if (!assistantOverBudget && !userOverBudget && !systemOverBudget && !toolOverBudget) return;
 
     await this.runOnce(async () => {
+      // Compute normalized budgets
+      const budgets = this.computeLaneBudgets();
+
       // Re-partition to get fresh data
       const { firstSystemIndex, assistant, user, system, tool, other } = this.partition();
       const tailN = this.cfg.minRecentPerLane;
@@ -524,17 +548,17 @@ export class VirtualMemory extends AgentMemory {
       const sysHead = firstSystemIndex === 0 ? [this.messagesBuffer[0]] : [];
       const remainingSystem = firstSystemIndex === 0 ? system.slice(1) : system.slice(0);
 
-      // Recalculate per-lane budgets
+      // Recalculate per-lane token usage
       const assistantTok = this.msgTokens(assistant);
       const userTok = this.msgTokens(user);
       const systemTok = this.msgTokens(remainingSystem);
       const toolTok = this.msgTokens(tool);
 
-      // Determine which lanes to page based on budget
-      const shouldPageAssistant = assistantTok > this.cfg.assistantTokens * this.cfg.highRatio;
-      const shouldPageUser = userTok > this.cfg.userTokens * this.cfg.highRatio;
-      const shouldPageSystem = systemTok > this.cfg.systemTokens * this.cfg.highRatio;
-      const shouldPageTool = toolTok > this.cfg.toolTokens * this.cfg.highRatio;
+      // Determine which lanes to page based on normalized budget
+      const shouldPageAssistant = assistantTok > budgets.assistant * this.cfg.highRatio;
+      const shouldPageUser = userTok > budgets.user * this.cfg.highRatio;
+      const shouldPageSystem = systemTok > budgets.system * this.cfg.highRatio;
+      const shouldPageTool = toolTok > budgets.tool * this.cfg.highRatio;
 
       // Determine which messages to page out per lane (only if over budget)
       const olderAssistant = shouldPageAssistant

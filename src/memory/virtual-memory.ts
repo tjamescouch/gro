@@ -4,6 +4,7 @@ import { saveSession, loadSession, ensureGroDir } from "../session.js";
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { Logger } from "../logger.js";
 
 /**
  * VirtualMemory — paged context with inline refs and independent budgets.
@@ -403,6 +404,14 @@ export class VirtualMemory extends AgentMemory {
     const wmBudget = this.cfg.workingMemoryTokens;
     const nonSystem = this.messagesBuffer.filter(m => m.role !== "system");
     const currentTokens = this.msgTokens(nonSystem);
+
+    // VM diagnostics logging (if GRO_VM_DEBUG=true)
+    if (process.env.GRO_VM_DEBUG === "true") {
+      const highWatermark = Math.floor(wmBudget * this.cfg.highRatio);
+      const lowWatermark = Math.floor(wmBudget * this.cfg.lowRatio);
+      const willPage = currentTokens > highWatermark;
+      Logger.info(`[VM] tokens=${currentTokens} high=${highWatermark} low=${lowWatermark} paging=${willPage}`);
+    }
 
     if (currentTokens <= wmBudget * this.cfg.highRatio) return;
 

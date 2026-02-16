@@ -551,10 +551,15 @@ async function executeTurn(
     const handleMarker = (marker: { name: string; arg: string }) => {
       if (marker.name === "model-change") {
         const newModel = resolveModelAlias(marker.arg);
-        Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
-        activeModel = newModel;
-        cfg.model = newModel;       // persist across turns
-        memory.setModel(newModel);  // persist in session metadata on save
+        const newProvider = inferProvider(undefined, newModel);
+        if (newProvider !== cfg.provider) {
+          Logger.error(`Stream marker: model-change '${marker.arg}' REJECTED — cross-provider swap (${cfg.provider} → ${newProvider}) is not supported. Stay on ${cfg.provider} models.`);
+        } else {
+          Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
+          activeModel = newModel;
+          cfg.model = newModel;       // persist across turns
+          memory.setModel(newModel);  // persist in session metadata on save
+        }
       } else if (marker.name === "ref" && marker.arg) {
         // VirtualMemory page ref — load a page into context for next turn
         if ("ref" in memory && typeof (memory as any).ref === "function") {

@@ -148,9 +148,14 @@ function parseResponseContent(data: any, onToken?: (t: string) => void): ChatOut
  */
 function supportsAdaptiveThinking(model: string): boolean {
   const m = model.toLowerCase();
+  // Opus 4.x — supports thinking
   if (/claude-opus-4/.test(m)) return true;
-  if (/claude-sonnet-4/.test(m)) return true;
+  // Sonnet 4 dated builds (e.g. claude-sonnet-4-20250514) — supports thinking
+  // Sonnet 4.5 (claude-sonnet-4-5) does NOT support adaptive thinking
+  if (/claude-sonnet-4-\d{8}/.test(m)) return true;
+  // Claude 3.7 Sonnet — supports thinking
   if (/claude-3[.-]7/.test(m)) return true;
+  // Claude 3.5 Sonnet (Oct 2024) — supports thinking
   if (/claude-3[.-]5-sonnet.*20241022/.test(m)) return true;
   return false;
 }
@@ -216,6 +221,13 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
         }
 
         const text = await res.text().catch(() => "");
+
+        // If 400 due to thinking not supported, retry without thinking params
+        if (res.status === 400 && body.thinking && /thinking|not supported/i.test(text)) {
+          Logger.warn(`Model ${resolvedModel} rejected adaptive thinking — retrying without`);
+          delete body.thinking;
+          continue;
+        }
         const ge = groError("provider_error", `Anthropic API failed (${res.status}): ${text}`, {
           provider: "anthropic",
           model: resolvedModel,

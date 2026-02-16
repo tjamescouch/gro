@@ -27,6 +27,7 @@ import type { AgentMemory } from "./memory/agent-memory.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.js";
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
+import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
 import { createMarkerParser, extractMarkers } from "./stream-markers.js";
 
 const VERSION = getGroVersion();
@@ -534,6 +535,7 @@ async function executeTurn(
   tools.push(agentpatchToolDefinition());
   if (cfg.bash) tools.push(bashToolDefinition());
   tools.push(groVersionToolDefinition());
+  tools.push(memoryStatusToolDefinition());
   let finalText = "";
   let turnTokensIn = 0;
   let turnTokensOut = 0;
@@ -670,6 +672,8 @@ async function executeTurn(
           result = executeBash(fnArgs);
         } else if (fnName === "gro_version") {
           result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent });
+        } else if (fnName === "memory_status") {
+          result = executeMemoryStatus(fnArgs, memory);
         } else {
           result = await mcp.callTool(fnName, fnArgs);
         }

@@ -41,6 +41,14 @@ let _shutdownSessionPersistence = false;
 /** Auto-save interval: save session every N tool rounds in persistent mode */
 const AUTO_SAVE_INTERVAL = 10;
 
+/** Maximum backoff delay when tool failures loop */
+const MAX_BACKOFF_MS = 30000; // 30 seconds
+
+/** Sleep utility for exponential backoff */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // Wake notes: a runner-global file that is prepended to the system prompt on process start
 // so agents reliably see dev workflow + memory pointers on wake.
 const WAKE_NOTES_DEFAULT_PATH = join(process.env.HOME || "", ".claude", "WAKE.md");
@@ -539,7 +547,9 @@ async function executeTurn(
 
   let brokeCleanly = false;
   let idleNudges = 0;
+  let consecutiveFailedRounds = 0;
   for (let round = 0; round < cfg.maxToolRounds; round++) {
+    let roundHadFailure = false;
     // Shared marker handler — used by both streaming parser and tool-arg scanner
     const handleMarker = (marker: { name: string; arg: string }) => {
       if (marker.name === "model-change") {
@@ -664,6 +674,7 @@ async function executeTurn(
           result = await mcp.callTool(fnName, fnArgs);
         }
       } catch (e: unknown) {
+        roundHadFailure = true;
         const raw = asError(e);
         const ge = groError("tool_error", `Tool "${fnName}" failed: ${raw.message}`, {
           retryable: false,
@@ -692,6 +703,16 @@ async function executeTurn(
       } catch (e: unknown) {
         Logger.warn(`Auto-save failed at round ${round}: ${asError(e).message}`);
       }
+    }
+
+    // Exponential backoff on consecutive failed rounds to prevent runaway API loops
+    if (roundHadFailure) {
+      consecutiveFailedRounds++;
+      const backoffMs = Math.min(1000 * Math.pow(2, consecutiveFailedRounds - 1), MAX_BACKOFF_MS);
+      Logger.warn(`Round ${round} had tool failures (${consecutiveFailedRounds} consecutive), backing off ${backoffMs}ms`);
+      await sleep(backoffMs);
+    } else {
+      consecutiveFailedRounds = 0;
     }
   }
 

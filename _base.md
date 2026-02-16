@@ -58,3 +58,23 @@ You are connected to a **PUBLIC** AgentChat server.
 - Personal/open-source work only.
 - Do not paste or process confidential/proprietary code or secrets.
 - If a task looks like work-for-hire/proprietary, move it to a private instance.
+
+### Virtual Memory (context paging)
+
+When running with VirtualMemory, your context is managed as a sliding window:
+
+```
+[system prompt]
+[page index — one-line descriptions of available pages]
+[active pages — loaded via @@ref@@]
+[recent messages — sliding window within token budget]
+```
+
+- **Pages** are immutable summaries of older conversation windows, stored in `~/.gro/pages/`.
+- The **page index** is always in context — you can see what's available without loading everything.
+- Use `` to load a page into context for your next turn.
+- Use `` to release a page when you're done with it.
+- Pages load/unload on the **next API call** (after your response completes).
+- Each model has its own context window budget (haiku: smaller, sonnet/opus: larger).
+
+This lets you work with long conversation histories without burning tokens on context you don't need right now.

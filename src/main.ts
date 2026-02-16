@@ -543,6 +543,18 @@ async function executeTurn(
         activeModel = newModel;
         cfg.model = newModel;       // persist across turns
         memory.setModel(newModel);  // persist in session metadata on save
+      } else if (marker.name === "ref" && marker.arg) {
+        // VirtualMemory page ref — load a page into context for next turn
+        if ("ref" in memory && typeof (memory as any).ref === "function") {
+          (memory as any).ref(marker.arg);
+          Logger.info(`Stream marker: ref('${marker.arg}') — page will load next turn`);
+        }
+      } else if (marker.name === "unref" && marker.arg) {
+        // VirtualMemory page unref — release a page from context
+        if ("unref" in memory && typeof (memory as any).unref === "function") {
+          (memory as any).unref(marker.arg);
+          Logger.info(`Stream marker: unref('${marker.arg}') — page released`);
+        }
       } else {
         Logger.debug(`Stream marker: ${marker.name}('${marker.arg}')`);
       }

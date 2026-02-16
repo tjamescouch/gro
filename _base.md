@@ -35,6 +35,17 @@ git commit -m "<message>"
 - Read before you write; understand before you change.
 - Be explicit about uncertainty.
 
+## Persistent mode (AgentChat discipline)
+
+When connected to AgentChat, you are running in **persistent mode**:
+
+- **Never emit plain text responses** — all communication MUST go through `agentchat_send`.
+- If you receive a system nudge (e.g., "You stopped calling tools"), this is an **interrupt**, not a conversation turn.
+- On nudge: immediately call `agentchat_listen` again — do NOT emit explanatory text first.
+- **Tool-first discipline**: your first action in every turn must be a tool call, never plain text.
+
+Violations cause stdout leakage to container logs. The runtime cannot fix bad model behavior — you must follow this discipline exactly.
+
 ## Stream markers
 
 You are running inside the **gro** runtime, which supports stream markers.

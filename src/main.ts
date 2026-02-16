@@ -29,6 +29,10 @@ import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
 import { createMarkerParser, extractMarkers } from "./stream-markers.js";
+import { readToolDefinition, executeRead } from "./tools/read.js";
+import { writeToolDefinition, executeWrite } from "./tools/write.js";
+import { globToolDefinition, executeGlob } from "./tools/glob.js";
+import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 
 const VERSION = getGroVersion();
 
@@ -536,6 +540,10 @@ async function executeTurn(
   if (cfg.bash) tools.push(bashToolDefinition());
   tools.push(groVersionToolDefinition());
   tools.push(memoryStatusToolDefinition());
+  tools.push(readToolDefinition());
+  tools.push(writeToolDefinition());
+  tools.push(globToolDefinition());
+  tools.push(grepToolDefinition());
   let finalText = "";
   let turnTokensIn = 0;
   let turnTokensOut = 0;
@@ -689,6 +697,14 @@ async function executeTurn(
           result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent });
         } else if (fnName === "memory_status") {
           result = executeMemoryStatus(fnArgs, memory);
+        } else if (fnName === "Read") {
+          result = executeRead(fnArgs);
+        } else if (fnName === "Write") {
+          result = executeWrite(fnArgs);
+        } else if (fnName === "Glob") {
+          result = executeGlob(fnArgs);
+        } else if (fnName === "Grep") {
+          result = executeGrep(fnArgs);
         } else {
           result = await mcp.callTool(fnName, fnArgs);
         }

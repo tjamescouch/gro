@@ -806,11 +806,19 @@ async function interactive(
 
   // Resume existing session if requested
   if (cfg.continueSession || cfg.resumeSession) {
-    await memory.load(sessionId);
     const sess = loadSession(sessionId);
-    if (sess) {
-      const msgCount = sess.messages.filter((m: any) => m.role !== "system").length;
-      Logger.info(C.gray(`Resumed session ${sessionId} (${msgCount} messages)`));
+    if (sess && sess.meta.provider !== cfg.provider) {
+      Logger.warn(
+        `Provider changed from ${sess.meta.provider} to ${cfg.provider} — ` +
+        `starting fresh session to avoid cross-provider corruption (tool message format incompatibility)`
+      );
+      // Don't load the old session - cross-provider resume is unsafe
+    } else {
+      await memory.load(sessionId);
+      if (sess) {
+        const msgCount = sess.messages.filter((m: any) => m.role !== "system").length;
+        Logger.info(C.gray(`Resumed session ${sessionId} (${msgCount} messages)`));
+      }
     }
   }
 

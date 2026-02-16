@@ -69,7 +69,7 @@ const DEFAULTS = {
   highRatio: 0.75,
   lowRatio: 0.50,
   systemPrompt: "",
-  summarizerModel: "claude-3-haiku-latest",
+  summarizerModel: "claude-3-haiku-20240307",
 };
 
 // --- VirtualMemory ---

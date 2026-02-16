@@ -434,65 +434,38 @@ function createDriver(cfg: GroConfig): ChatDriver {
 // ---------------------------------------------------------------------------
 
 function createMemory(cfg: GroConfig, driver: ChatDriver): AgentMemory {
-  // Check for Virtual Memory first (orthogonal to interactive mode)
-  if (process.env.GRO_MEMORY === "virtual") {
-    let summarizerDriver: ChatDriver | undefined;
-    let summarizerModel: string | undefined;
-
-    if (cfg.summarizerModel) {
-      summarizerModel = cfg.summarizerModel;
-      const summarizerProvider = inferProvider(undefined, summarizerModel);
-      summarizerDriver = createDriverForModel(
-        summarizerProvider,
-        summarizerModel,
-        resolveApiKey(summarizerProvider),
-        defaultBaseUrl(summarizerProvider),
-      );
-      Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
-    }
-
-    Logger.info("MemoryMode=Virtual (GRO_MEMORY=virtual)");
-    const vm = new VirtualMemory({
-      driver: summarizerDriver ?? driver,
-      summarizerModel: summarizerModel ?? cfg.model,
-      systemPrompt: cfg.systemPrompt || undefined,
-    });
-    vm.setModel(cfg.model);
-    return vm;
+  // Opt-out: SimpleMemory only if explicitly requested
+  if (process.env.GRO_MEMORY === "simple") {
+    Logger.info("MemoryMode=Simple (GRO_MEMORY=simple)");
+    const mem = new SimpleMemory(cfg.systemPrompt || undefined);
+    mem.setMeta(cfg.provider, cfg.model);
+    return mem;
   }
 
-  // Non-VM modes: AdvancedMemory for interactive, SimpleMemory for non-interactive
-  if (cfg.interactive) {
-    let summarizerDriver: ChatDriver | undefined;
-    let summarizerModel: string | undefined;
+  // Default: VirtualMemory (safe, cost-controlled)
+  let summarizerDriver: ChatDriver | undefined;
+  let summarizerModel: string | undefined;
 
-    if (cfg.summarizerModel) {
-      summarizerModel = cfg.summarizerModel;
-      const summarizerProvider = inferProvider(undefined, summarizerModel);
-      summarizerDriver = createDriverForModel(
-        summarizerProvider,
-        summarizerModel,
-        resolveApiKey(summarizerProvider),
-        defaultBaseUrl(summarizerProvider),
-      );
-      Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
-    }
-
-    Logger.info("MemoryMode=Advanced");
-    return new AdvancedMemory({
-      driver,
-      model: cfg.model,
-      summarizerDriver,
+  if (cfg.summarizerModel) {
+    summarizerModel = cfg.summarizerModel;
+    const summarizerProvider = inferProvider(undefined, summarizerModel);
+    summarizerDriver = createDriverForModel(
+      summarizerProvider,
       summarizerModel,
-      systemPrompt: cfg.systemPrompt || undefined,
-      contextTokens: cfg.contextTokens,
-    });
+      resolveApiKey(summarizerProvider),
+      defaultBaseUrl(summarizerProvider),
+    );
+    Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
   }
 
-  Logger.info("MemoryMode=Simple");
-  const mem = new SimpleMemory(cfg.systemPrompt || undefined);
-  mem.setMeta(cfg.provider, cfg.model);
-  return mem;
+  Logger.info("MemoryMode=Virtual (default)");
+  const vm = new VirtualMemory({
+    driver: summarizerDriver ?? driver,
+    summarizerModel: summarizerModel ?? cfg.model,
+    systemPrompt: cfg.systemPrompt || undefined,
+  });
+  vm.setModel(cfg.model);
+  return vm;
 }
 
 // ---------------------------------------------------------------------------

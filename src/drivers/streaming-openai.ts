@@ -59,7 +59,7 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     const lastMsg = messages[messages.length - 1];
     if (lastMsg && lastMsg.content) {
       const content = lastMsg.content.trim().replace(/\n+/g, " ");
-      snippet = content.length > 60 ? content.slice(0, 60) + "..." : content;
+      snippet = content.length > 120 ? content.slice(0, 120) + "..." : content;
     }
 
     Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` <${snippet}>` : ""}`);

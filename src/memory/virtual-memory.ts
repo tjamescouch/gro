@@ -398,6 +398,31 @@ export class VirtualMemory extends AgentMemory {
 
   // --- Background Summarization ---
 
+  /**
+   * Find a safe boundary for chunking messages that doesn't split tool call/result pairs.
+   * Scans backward from the proposed chunkSize to find a position where the next message
+   * is NOT a tool result (role !== "tool"), ensuring we don't orphan tool messages.
+   */
+  private findSafeBoundary(messages: ChatMessage[], proposedSize: number): number {
+    if (proposedSize >= messages.length) return proposedSize;
+    if (proposedSize === 0) return 0;
+
+    // Scan backward from proposed boundary to find a safe split point
+    for (let i = proposedSize; i > 0; i--) {
+      // Check if the message immediately after position i is a tool message
+      if (i < messages.length && messages[i].role === "tool") {
+        // Not safe - this would orphan tool results. Try one position earlier.
+        continue;
+      }
+      // Safe boundary found
+      return i;
+    }
+
+    // Fallback: if we can't find a safe boundary, take minimum chunk (2 messages)
+    // This ensures we always make progress even if the entire buffer is tool messages
+    return Math.min(2, proposedSize);
+  }
+
   protected async onAfterAdd(): Promise<void> {
     if (!this.cfg.driver) return;
 
@@ -427,8 +452,9 @@ export class VirtualMemory extends AgentMemory {
       const summarizable = nonSys.slice(0, Math.max(0, nonSys.length - protect));
       if (summarizable.length < 2) return;
 
-      // Take a chunk of oldest messages to page out
-      const chunkSize = Math.min(summarizable.length, Math.max(4, Math.floor(summarizable.length / 2)));
+      // Take a chunk of oldest messages to page out, respecting tool message boundaries
+      const proposedSize = Math.min(summarizable.length, Math.max(4, Math.floor(summarizable.length / 2)));
+      const chunkSize = this.findSafeBoundary(summarizable, proposedSize);
       const toPage = summarizable.slice(0, chunkSize);
 
       // Create page + summary

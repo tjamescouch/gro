@@ -520,7 +520,8 @@ export class VirtualMemory extends AgentMemory {
     const assistantOverBudget = assistantTokens > budgets.assistant * this.cfg.highRatio;
     const userOverBudget = userTokens > budgets.user * this.cfg.highRatio;
     const systemOverBudget = systemTokens > budgets.system * this.cfg.highRatio;
-    const toolOverBudget = toolTokens > budgets.tool * this.cfg.highRatio;
+    // Tool lane always pages with assistant to avoid orphaning tool calls/results
+    const toolOverBudget = assistantOverBudget;
 
     // VM diagnostics logging (if GRO_VM_DEBUG=true)
     if (process.env.GRO_VM_DEBUG === "true") {
@@ -528,7 +529,7 @@ export class VirtualMemory extends AgentMemory {
     }
 
     // If no lane is over budget, nothing to do
-    if (!assistantOverBudget && !userOverBudget && !systemOverBudget && !toolOverBudget) return;
+    if (!assistantOverBudget && !userOverBudget && !systemOverBudget) return;
 
     await this.runOnce(async () => {
       // Compute normalized budgets
@@ -558,7 +559,9 @@ export class VirtualMemory extends AgentMemory {
       const shouldPageAssistant = assistantTok > budgets.assistant * this.cfg.highRatio;
       const shouldPageUser = userTok > budgets.user * this.cfg.highRatio;
       const shouldPageSystem = systemTok > budgets.system * this.cfg.highRatio;
-      const shouldPageTool = toolTok > budgets.tool * this.cfg.highRatio;
+      // CRITICAL: Tool lane MUST page with assistant lane to avoid orphaning tool calls/results
+      // Tool results (tool lane) must stay paired with their tool calls (assistant lane)
+      const shouldPageTool = shouldPageAssistant;
 
       // Determine which messages to page out per lane (only if over budget)
       const olderAssistant = shouldPageAssistant

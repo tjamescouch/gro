@@ -138,6 +138,11 @@ function parseResponseContent(data: any, onToken?: (t: string) => void): ChatOut
     outputTokens: data.usage.output_tokens ?? 0,
   } : undefined;
 
+  // Log response size
+  const responseSize = JSON.stringify({ text, toolCalls, usage }).length;
+  const respMB = (responseSize / (1024 * 1024)).toFixed(2);
+  Logger.info(`[API ←] ${respMB} MB`);
+
   return { text, toolCalls, usage };
 }
 
@@ -196,6 +201,11 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
       "x-api-key": cfg.apiKey,
       "anthropic-version": "2023-06-01",
     };
+
+    // Always log data size
+    const payloadSize = JSON.stringify(body).length;
+    const sizeMB = (payloadSize / (1024 * 1024)).toFixed(2);
+    Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)`);
 
     const RETRYABLE_STATUS = new Set([429, 503, 529]);
     let requestId: string | undefined;

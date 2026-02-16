@@ -49,6 +49,11 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
 
   async function chat(messages: ChatMessage[], opts?: any): Promise<ChatOutput> {
     await rateLimiter.limit("llm-ask", 1);
+
+    // Always log data size, full dump only in verbose+debug mode
+    const payloadSize = JSON.stringify(messages).length;
+    const sizeMB = (payloadSize / (1024 * 1024)).toFixed(2);
+    Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)`);
     Logger.debug("streaming messages out", messages);
 
     const controller = new AbortController();
@@ -112,6 +117,12 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
           inputTokens: data.usage.prompt_tokens ?? 0,
           outputTokens: data.usage.completion_tokens ?? 0,
         } : undefined;
+
+        // Log response size
+        const responseSize = JSON.stringify({ text: content, toolCalls, usage }).length;
+        const respMB = (responseSize / (1024 * 1024)).toFixed(2);
+        Logger.info(`[API ←] ${respMB} MB`);
+
         return { text: content, reasoning: msg?.reasoning || undefined, toolCalls, usage };
       }
 
@@ -242,6 +253,11 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
       const toolCalls: ChatToolCall[] = Array.from(toolByIndex.entries())
         .sort((a, b) => a[0] - b[0])
         .map(([, v]) => v);
+
+      // Log response size
+      const responseSize = JSON.stringify({ text: fullText, toolCalls, usage: streamUsage }).length;
+      const respMB = (responseSize / (1024 * 1024)).toFixed(2);
+      Logger.info(`[API ←] ${respMB} MB`);
 
       return { text: fullText, reasoning: fullReasoning || undefined, toolCalls, usage: streamUsage };
     } catch (e: unknown) {

@@ -17,12 +17,24 @@ function writeRaw(s: string) {
 }
 
 export class Logger {
-  static info(...a: any[]) { console.log(...a); }
+  private static _verbose = false;
+
+  static setVerbose(v: boolean) { Logger._verbose = v; }
+  static isVerbose() { return Logger._verbose; }
+
+  static info(...a: any[]) {
+    if (Logger._verbose) console.log(...a);
+  }
+
   static warn(...a: any[]) { console.warn(...a); }
   static error(...a: any[]) { console.error(...a); }
+
   static debug(...a: any[]) {
-    if ((process.env.GRO_LOG_LEVEL ?? "").toUpperCase() === "DEBUG") console.log(...a);
+    // Debug requires BOTH verbose mode AND GRO_LOG_LEVEL=DEBUG
+    const debugLevel = (process.env.GRO_LOG_LEVEL ?? "").toUpperCase() === "DEBUG";
+    if (Logger._verbose && debugLevel) console.log(...a);
   }
+
   static streamInfo(s: string) { writeRaw(s); }
   static endStreamLine(suffix = "") { writeRaw(suffix + "\n"); }
 }

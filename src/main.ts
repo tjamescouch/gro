@@ -884,6 +884,9 @@ async function main() {
     process.env.GRO_LOG_LEVEL = "debug";
   }
 
+  // Set Logger verbose mode
+  Logger.setVerbose(cfg.verbose);
+
   // Resolve session ID
   let sessionId: string;
   if (cfg.continueSession) {

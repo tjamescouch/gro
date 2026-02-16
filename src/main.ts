@@ -17,6 +17,7 @@ import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
 import { makeAnthropicDriver } from "./drivers/anthropic.js";
 import { SimpleMemory } from "./memory/simple-memory.js";
 import { AdvancedMemory } from "./memory/advanced-memory.js";
+import { VirtualMemory } from "./memory/virtual-memory.js";
 import { McpManager } from "./mcp/index.js";
 import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
@@ -447,6 +448,17 @@ function createMemory(cfg: GroConfig, driver: ChatDriver): AgentMemory {
         defaultBaseUrl(summarizerProvider),
       );
       Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
+    }
+
+    if (process.env.GRO_MEMORY === "virtual") {
+      Logger.info("Memory: VirtualMemory (GRO_MEMORY=virtual)");
+      const vm = new VirtualMemory({
+        driver: summarizerDriver ?? driver,
+        summarizerModel: summarizerModel ?? cfg.model,
+        systemPrompt: cfg.systemPrompt || undefined,
+      });
+      vm.setModel(cfg.model);
+      return vm;
     }
 
     return new AdvancedMemory({

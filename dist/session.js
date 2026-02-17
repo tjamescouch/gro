@@ -1,12 +1,21 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, accessSync, constants } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { Logger } from "./logger.js";
 import { groError, asError, errorLogFields } from "./errors.js";
 const GRO_DIR = ".gro";
 const CONTEXT_DIR = "context";
 function groDir() {
-    return join(process.cwd(), GRO_DIR);
+    const cwdBased = join(process.cwd(), GRO_DIR);
+    try {
+        accessSync(process.cwd(), constants.W_OK);
+        return cwdBased;
+    }
+    catch {
+        // cwd isn't writable (e.g. Lima's /home workdir) — use $HOME/.gro
+        return join(homedir(), GRO_DIR);
+    }
 }
 function contextDir() {
     return join(groDir(), CONTEXT_DIR);

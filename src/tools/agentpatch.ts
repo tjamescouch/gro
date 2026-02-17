@@ -5,22 +5,70 @@
  *
  * This wraps the agentpatch patch grammar and applies patches via the
  * `agentpatch/bin/apply_patch` script.
+ *
+ * When `--show-diffs` is enabled (via `enableShowDiffs()`), each successful
+ * patch is broadcast as a markdown snippet to the agent's AgentChat channel.
+ * The channel name is derived from the agent's agentchat identity file
+ * (written by `agentchat_connect`) — no extra env vars needed.
  */
 import { execSync, execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { Logger } from "../logger.js";
 
-function getAgentName(): string | null {
-  // Explicit override first
-  if (process.env.AGENT_NAME) return process.env.AGENT_NAME;
-  // Fall back to container/host hostname
-  try {
-    return execSync("hostname", { encoding: "utf-8", timeout: 1000 }).trim();
-  } catch {
-    return null;
-  }
+// ---------------------------------------------------------------------------
+// Module-level broadcast state — set once at startup via enableShowDiffs()
+// ---------------------------------------------------------------------------
+
+let _showDiffs = false;
+let _server: string | null = null;
+
+/**
+ * Enable patch broadcast. Called by main.ts when --show-diffs is passed.
+ * server: the AgentChat server URL (from AGENTCHAT_SERVER or config).
+ */
+export function enableShowDiffs(server: string): void {
+  _showDiffs = true;
+  _server = server;
 }
+
+// ---------------------------------------------------------------------------
+// Agent name resolution — read from agentchat identity file
+// ---------------------------------------------------------------------------
+
+/**
+ * Find the agent's name from their agentchat identity file.
+ * agentchat_connect writes: <cwd>/.agentchat/identities/<name>.json
+ * We scan both cwd and home directory identity locations.
+ */
+function resolveAgentName(): string | null {
+  const candidates = [
+    join(process.cwd(), ".agentchat", "identities"),
+    join(homedir(), ".agentchat", "identities"),
+  ];
+
+  for (const dir of candidates) {
+    if (!existsSync(dir)) continue;
+    try {
+      const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      if (files.length === 0) continue;
+      // Use the first (or only) identity
+      const raw = readFileSync(join(dir, files[0]), "utf-8");
+      const identity = JSON.parse(raw);
+      if (identity?.name) return identity.name as string;
+      // Fallback: identity filename without extension
+      return files[0].replace(/\.json$/, "");
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Broadcast helpers
+// ---------------------------------------------------------------------------
 
 const MAX_BROADCAST_SNIPPET = 600;
 
@@ -46,13 +94,16 @@ function extractFilenames(patch: string): string[] {
 
 /**
  * Post a patch summary to the agent's AgentChat channel.
- * Reads AGENT_NAME and AGENTCHAT_SERVER from the environment.
- * Silently no-ops if either is absent or if agentchat is unavailable.
+ * Only runs when --show-diffs is enabled. Silent no-op on any failure.
  */
 function broadcastPatch(patch: string): void {
-  const agentName = getAgentName();
-  const server = process.env.AGENTCHAT_SERVER;
-  if (!agentName || !server) return;
+  if (!_showDiffs || !_server) return;
+
+  const agentName = resolveAgentName();
+  if (!agentName) {
+    Logger.debug("show-diffs: no agent identity found, skipping broadcast");
+    return;
+  }
 
   const channel = `#${agentName.toLowerCase()}`;
   const files = extractFilenames(patch);
@@ -60,7 +111,7 @@ function broadcastPatch(patch: string): void {
     ? files.map((f) => `\`${f}\``).join(", ")
     : "files";
 
-  // Show a trimmed snippet of the patch body
+  // Trim to a readable snippet
   const lines = patch.split("\n");
   const snippetLines = lines.slice(0, 30).join("\n");
   const snippet = snippetLines.length > MAX_BROADCAST_SNIPPET
@@ -70,15 +121,19 @@ function broadcastPatch(patch: string): void {
   const message = `patched ${fileLabel}\n\`\`\`\n${snippet}\n\`\`\``;
 
   try {
-    execFileSync("agentchat", ["send", server, channel, message], {
+    execFileSync("agentchat", ["send", _server, channel, message], {
       encoding: "utf-8",
       timeout: 5000,
       stdio: ["ignore", "ignore", "ignore"],
     });
   } catch {
-    // Non-fatal — don't interrupt the agent if broadcast fails
+    // Non-fatal — never interrupt the agent's tool loop
   }
 }
+
+// ---------------------------------------------------------------------------
+// Tool definition + execution
+// ---------------------------------------------------------------------------
 
 const DEFAULT_TIMEOUT = 120_000;
 const MAX_OUTPUT = 30_000;

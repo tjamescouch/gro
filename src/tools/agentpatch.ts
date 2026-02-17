@@ -11,6 +11,17 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Logger } from "../logger.js";
 
+function getAgentName(): string | null {
+  // Explicit override first
+  if (process.env.AGENT_NAME) return process.env.AGENT_NAME;
+  // Fall back to container/host hostname
+  try {
+    return execSync("hostname", { encoding: "utf-8", timeout: 1000 }).trim();
+  } catch {
+    return null;
+  }
+}
+
 const MAX_BROADCAST_SNIPPET = 600;
 
 /**
@@ -39,7 +50,7 @@ function extractFilenames(patch: string): string[] {
  * Silently no-ops if either is absent or if agentchat is unavailable.
  */
 function broadcastPatch(patch: string): void {
-  const agentName = process.env.AGENT_NAME;
+  const agentName = getAgentName();
   const server = process.env.AGENTCHAT_SERVER;
   if (!agentName || !server) return;
 

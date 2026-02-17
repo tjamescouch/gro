@@ -25,7 +25,7 @@ import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/types.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
-import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.js";
+import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
 import { compactContextToolDefinition, executeCompactContext } from "./tools/compact-context.js";
@@ -85,6 +85,8 @@ interface GroConfig {
   resumeSession: string | null;
   sessionPersistence: boolean;
   verbose: boolean;
+  name: string | null;
+  showDiffs: boolean;
   mcpServers: Record<string, McpServerConfig>;
 }
 
@@ -210,6 +212,8 @@ function loadConfig(): GroConfig {
     else if (arg === "--no-mcp") { flags.noMcp = "true"; }
     else if (arg === "--no-session-persistence") { flags.noSessionPersistence = "true"; }
     else if (arg === "--verbose") { flags.verbose = "true"; }
+    else if (arg === "--show-diffs") { flags.showDiffs = "true"; }
+    else if (arg === "--name") { flags.name = args[++i]; }
     else if (arg === "-d" || arg === "--debug" || arg === "-d2e" || arg === "--debug-to-stderr") {
       flags.verbose = "true";
       // --debug may have optional filter value
@@ -319,6 +323,8 @@ ${systemPrompt}` : wake;
     resumeSession: flags.resume || null,
     sessionPersistence: flags.noSessionPersistence !== "true",
     verbose: flags.verbose === "true",
+    name: flags.name || null,
+    showDiffs: flags.showDiffs === "true",
     mcpServers,
   };
 }
@@ -1000,6 +1006,15 @@ async function main() {
       continue;
     }
     positional.push(args[i]);
+  }
+
+  // Enable patch broadcast to AgentChat if --show-diffs and --name are set
+  if (cfg.showDiffs && cfg.name) {
+    const server = process.env.AGENTCHAT_SERVER || "wss://agentchat-server.fly.dev";
+    enableShowDiffs(cfg.name, server);
+    Logger.debug(`show-diffs enabled: #${cfg.name.toLowerCase()} → ${server}`);
+  } else if (cfg.showDiffs && !cfg.name) {
+    Logger.warn("--show-diffs requires --name to be set");
   }
 
   const driver = createDriver(cfg);

@@ -5,11 +5,97 @@
  *
  * This wraps the agentpatch patch grammar and applies patches via the
  * `agentpatch/bin/apply_patch` script.
+ *
+ * When `--show-diffs` is enabled (via `enableShowDiffs(name, server)`),
+ * each successful patch is broadcast as a markdown snippet to #<name>
+ * on the configured AgentChat server.
  */
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Logger } from "../logger.js";
+
+// ---------------------------------------------------------------------------
+// Module-level broadcast state — set once at startup via enableShowDiffs()
+// ---------------------------------------------------------------------------
+
+let _showDiffs = false;
+let _agentName: string | null = null;
+let _server: string | null = null;
+
+/**
+ * Enable patch broadcast. Called by main.ts when --show-diffs is passed.
+ * name: the agent's name (from --name flag).
+ * server: the AgentChat server URL.
+ */
+export function enableShowDiffs(name: string, server: string): void {
+  _showDiffs = true;
+  _agentName = name;
+  _server = server;
+}
+
+// ---------------------------------------------------------------------------
+// Broadcast helpers
+// ---------------------------------------------------------------------------
+
+const MAX_BROADCAST_SNIPPET = 600;
+
+/**
+ * Extract filenames from an agentpatch-style patch.
+ * Handles "*** File: path" headers and standard "+++ path" unified-diff headers.
+ */
+function extractFilenames(patch: string): string[] {
+  const seen = new Set<string>();
+  const results: string[] = [];
+  for (const line of patch.split("\n")) {
+    let match: RegExpMatchArray | null;
+    if ((match = line.match(/^\*{3}\s+File:\s+(.+)$/))) {
+      const f = match[1].trim();
+      if (!seen.has(f)) { seen.add(f); results.push(f); }
+    } else if ((match = line.match(/^\+{3}\s+(.+?)(?:\s+\d{4}-\d{2}-\d{2}.*)?$/))) {
+      const f = match[1].trim();
+      if (f !== "/dev/null" && !seen.has(f)) { seen.add(f); results.push(f); }
+    }
+  }
+  return results;
+}
+
+/**
+ * Post a patch summary to the agent's AgentChat channel.
+ * Only runs when --show-diffs is enabled. Silent no-op on any failure.
+ */
+function broadcastPatch(patch: string): void {
+  if (!_showDiffs || !_agentName || !_server) return;
+
+  const channel = `#${_agentName.toLowerCase()}`;
+  const files = extractFilenames(patch);
+  const fileLabel = files.length > 0
+    ? files.map((f) => `\`${f}\``).join(", ")
+    : "files";
+
+  // Trim to a readable snippet
+  const lines = patch.split("\n");
+  const snippetLines = lines.slice(0, 30).join("\n");
+  const snippet = snippetLines.length > MAX_BROADCAST_SNIPPET
+    ? snippetLines.slice(0, MAX_BROADCAST_SNIPPET) + "\n…"
+    : snippetLines;
+
+  const message = `patched ${fileLabel}\n\`\`\`\n${snippet}\n\`\`\``;
+
+  try {
+    execFileSync("agentchat", ["send", _server, channel, message], {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+  } catch {
+    // Non-fatal — never interrupt the agent's tool loop
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool definition + execution
+// ---------------------------------------------------------------------------
 
 const DEFAULT_TIMEOUT = 120_000;
 const MAX_OUTPUT = 30_000;
@@ -77,6 +163,7 @@ export function executeAgentpatch(args: Record<string, any>): string {
       maxBuffer: 10 * 1024 * 1024,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    if (!dryRun) broadcastPatch(patch);
     return truncate(out || "ok");
   } catch (e: any) {
     let result = "";

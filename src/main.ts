@@ -28,6 +28,7 @@ import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { agentpatchToolDefinition, executeAgentpatch } from "./tools/agentpatch.js";
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
+import { compactContextToolDefinition, executeCompactContext } from "./tools/compact-context.js";
 import { createMarkerParser, extractMarkers } from "./stream-markers.js";
 import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
@@ -541,6 +542,7 @@ async function executeTurn(
   if (cfg.bash) tools.push(bashToolDefinition());
   tools.push(groVersionToolDefinition());
   tools.push(memoryStatusToolDefinition());
+  tools.push(compactContextToolDefinition());
   tools.push(readToolDefinition());
   tools.push(writeToolDefinition());
   tools.push(globToolDefinition());
@@ -698,6 +700,8 @@ async function executeTurn(
           result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent });
         } else if (fnName === "memory_status") {
           result = executeMemoryStatus(fnArgs, memory);
+        } else if (fnName === "compact_context") {
+          result = await executeCompactContext(fnArgs, memory);
         } else if (fnName === "Read") {
           result = executeRead(fnArgs);
         } else if (fnName === "Write") {

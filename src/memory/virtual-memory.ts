@@ -157,6 +157,49 @@ export class VirtualMemory extends AgentMemory {
     this.savePageIndex();
   }
 
+  /**
+   * Force immediate context compaction regardless of watermark level.
+   * Use before starting a large task when you want to free up working memory.
+   * Returns a summary of what was compacted.
+   */
+  async forceCompact(): Promise<string> {
+    if (!this.cfg.driver) {
+      return "Error: no driver configured, cannot compact";
+    }
+
+    const before = this.messagesBuffer.filter(m => m.role !== "system");
+    const beforeTokens = this.msgTokens(before);
+    const beforeCount = before.length;
+
+    if (beforeCount === 0) {
+      return "Nothing to compact — context is empty.";
+    }
+
+    // Set flag so onAfterAdd bypasses watermark check this one time.
+    this.forceCompactPending = true;
+    // Trigger via add of a no-op system note (drives onAfterAdd).
+    // We'll remove it immediately after compaction.
+    const noop: import("../drivers/types.js").ChatMessage = {
+      role: "system",
+      content: "<!-- compact -->",
+      from: "System",
+    };
+    this.messagesBuffer.push(noop);
+    await this.onAfterAdd();
+    // Remove the noop message
+    const idx = this.messagesBuffer.indexOf(noop);
+    if (idx !== -1) this.messagesBuffer.splice(idx, 1);
+
+    const after = this.messagesBuffer.filter(m => m.role !== "system");
+    const afterTokens = this.msgTokens(after);
+    const afterCount = after.length;
+    const pageCount = this.getPageCount();
+
+    return `Compacted: ${beforeCount} → ${afterCount} messages, ${beforeTokens} → ${afterTokens} tokens. Total pages: ${pageCount}.`;
+  }
+
+  private forceCompactPending = false;
+
   // --- Page Index (persisted metadata) ---
 
   private indexPath(): string {
@@ -306,28 +349,43 @@ export class VirtualMemory extends AgentMemory {
     label: string,
     lane?: "assistant" | "user" | "system",
   ): Promise<string> {
+    // Extract importance-tagged content for special handling
+    const importantLines: string[] = [];
     const transcript = messages.map(m => {
-      const c = String(m.content ?? "").slice(0, 4000);
+      const raw = String(m.content ?? "");
+      const c = raw.slice(0, 4000);
+      // Collect @@important@@ lines verbatim for the summarizer header
+      for (const line of raw.split("\n")) {
+        if (/@@important@@/i.test(line)) {
+          importantLines.push(line.replace(/@@important@@/gi, "").trim());
+        }
+      }
       return `${m.role.toUpperCase()}: ${c}`;
     }).join("\n");
+
+    const importantNote = importantLines.length > 0
+      ? `\n\nIMPORTANT — preserve these verbatim in the summary:\n${importantLines.map(l => `  • ${l}`).join("\n")}`
+      : "";
 
     // Lane-specific summarization instructions (inspired by AdvancedMemory)
     const laneInstructions = lane ? (() => {
       switch (lane) {
         case "assistant":
-          return "Focus on assistant decisions, plans, code edits, shell commands, and outcomes.";
+          return "Focus on assistant decisions, plans, code edits, shell commands, and outcomes. Skip ephemeral status messages.";
         case "system":
           return "Summarize system instructions, rules, goals, and constraints without changing their intent.";
         case "user":
-          return "Summarize user requests, feedback, constraints, and acceptance criteria.";
+          return "Summarize user requests, feedback, constraints, and acceptance criteria. Skip filler messages.";
       }
-    })() : "Summarize this conversation segment preserving key context.";
+    })() : "Summarize this conversation segment preserving key context. Skip ephemeral status messages.";
 
     const sys: ChatMessage = {
       role: "system",
       from: "System",
       content: [
         "You are a precise summarizer. Output concise bullet points preserving facts, tasks, file paths, commands, and decisions.",
+        "Messages marked @@important@@ MUST be reproduced verbatim.",
+        "Messages marked @@ephemeral@@ can be omitted entirely.",
         laneInstructions,
         `End the summary with: `,
         "This ref is a hyperlink to the full conversation. Always include it.",
@@ -338,7 +396,7 @@ export class VirtualMemory extends AgentMemory {
     const usr: ChatMessage = {
       role: "user",
       from: "User",
-      content: `Summarize this conversation segment (${label}):\n\n${transcript.slice(0, 12000)}`,
+      content: `Summarize this conversation segment (${label}):${importantNote}\n\n${transcript.slice(0, 12000)}`,
     };
 
     try {
@@ -528,8 +586,10 @@ export class VirtualMemory extends AgentMemory {
       Logger.info(`[VM] A:${assistantTokens}/${budgets.assistant} U:${userTokens}/${budgets.user} S:${systemTokens}/${budgets.system} T:${toolTokens}/${budgets.tool} paging=[A:${assistantOverBudget} U:${userOverBudget} S:${systemOverBudget} T:${toolOverBudget}]`);
     }
 
-    // If no lane is over budget, nothing to do
-    if (!assistantOverBudget && !userOverBudget && !systemOverBudget) return;
+    // If no lane is over budget, nothing to do (unless forced)
+    const forced = this.forceCompactPending;
+    this.forceCompactPending = false;
+    if (!forced && !assistantOverBudget && !userOverBudget && !systemOverBudget) return;
 
     await this.runOnce(async () => {
       // Compute normalized budgets
@@ -555,10 +615,10 @@ export class VirtualMemory extends AgentMemory {
       const systemTok = this.msgTokens(remainingSystem);
       const toolTok = this.msgTokens(tool);
 
-      // Determine which lanes to page based on normalized budget
-      const shouldPageAssistant = assistantTok > budgets.assistant * this.cfg.highRatio;
-      const shouldPageUser = userTok > budgets.user * this.cfg.highRatio;
-      const shouldPageSystem = systemTok > budgets.system * this.cfg.highRatio;
+      // Determine which lanes to page based on normalized budget (forced = page all non-empty lanes)
+      const shouldPageAssistant = forced ? assistant.length > tailN : assistantTok > budgets.assistant * this.cfg.highRatio;
+      const shouldPageUser = forced ? user.length > tailN : userTok > budgets.user * this.cfg.highRatio;
+      const shouldPageSystem = forced ? remainingSystem.length > 0 : systemTok > budgets.system * this.cfg.highRatio;
       // CRITICAL: Tool lane MUST page with assistant lane to avoid orphaning tool calls/results
       // Tool results (tool lane) must stay paired with their tool calls (assistant lane)
       const shouldPageTool = shouldPageAssistant;

@@ -16,7 +16,7 @@
   "scripts": {
     "start": "npx tsx src/main.ts",
     "build": "tsc && chmod +x dist/main.js && cp package.json dist/",
-    "prepare": "npm run build || true",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build",
     "build:bun": "bun build src/main.ts --outdir dist --target bun",
     "test": "npx tsx --test tests/*.test.ts",

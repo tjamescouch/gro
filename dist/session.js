@@ -1,0 +1,154 @@
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { Logger } from "./logger.js";
+import { groError, asError, errorLogFields } from "./errors.js";
+const GRO_DIR = ".gro";
+const CONTEXT_DIR = "context";
+function groDir() {
+    return join(process.cwd(), GRO_DIR);
+}
+function contextDir() {
+    return join(groDir(), CONTEXT_DIR);
+}
+function sessionDir(id) {
+    return join(contextDir(), id);
+}
+/**
+ * Ensure the .gro/context directory exists.
+ */
+export function ensureGroDir() {
+    const dir = contextDir();
+    if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+    }
+}
+/**
+ * Generate a new session ID (short UUID prefix for readability).
+ */
+export function newSessionId() {
+    return randomUUID().split("-")[0];
+}
+/**
+ * Save a session to disk.
+ */
+export function saveSession(id, messages, meta) {
+    const dir = sessionDir(id);
+    if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+    }
+    const fullMeta = {
+        ...meta,
+        updatedAt: new Date().toISOString(),
+    };
+    writeFileSync(join(dir, "messages.json"), JSON.stringify(messages, null, 2));
+    writeFileSync(join(dir, "meta.json"), JSON.stringify(fullMeta, null, 2));
+}
+/**
+ * Sanitize a message array so every assistant tool_use has a matching tool_result.
+ * When a session is killed mid-tool-call (e.g. SIGTERM from niki), the assistant
+ * message with tool_calls is saved but the tool result messages are not.
+ * The Anthropic API rejects this with a 400 error, causing an infinite crash loop.
+ *
+ * Strategy: walk backwards from the end. If we find an assistant message with
+ * tool_calls that have no matching tool-role responses, inject synthetic
+ * tool_result placeholders so the API accepts the history.
+ */
+function sanitizeToolPairs(messages) {
+    if (messages.length === 0)
+        return messages;
+    // Collect all tool_call IDs that have results
+    const answeredIds = new Set();
+    for (const m of messages) {
+        if (m.role === "tool" && m.tool_call_id) {
+            answeredIds.add(m.tool_call_id);
+        }
+    }
+    // Find assistant messages with unanswered tool_calls and inject placeholders
+    const result = [];
+    for (const m of messages) {
+        result.push(m);
+        const toolCalls = m.tool_calls;
+        if (m.role === "assistant" && Array.isArray(toolCalls)) {
+            for (const tc of toolCalls) {
+                if (!answeredIds.has(tc.id)) {
+                    result.push({
+                        role: "tool",
+                        from: "system",
+                        content: "[Session interrupted — tool call was not completed. The agent was terminated before this tool could return a result.]",
+                        tool_call_id: tc.id,
+                        name: tc.function?.name,
+                    });
+                    answeredIds.add(tc.id);
+                    Logger.warn(`Session repair: injected placeholder tool_result for orphaned call ${tc.id} (${tc.function?.name ?? "unknown"})`);
+                }
+            }
+        }
+    }
+    return result;
+}
+/**
+ * Load a session from disk. Returns null if not found.
+ * Automatically repairs orphaned tool_use blocks from interrupted sessions.
+ */
+export function loadSession(id) {
+    const dir = sessionDir(id);
+    const msgPath = join(dir, "messages.json");
+    const metaPath = join(dir, "meta.json");
+    if (!existsSync(msgPath) || !existsSync(metaPath)) {
+        return null;
+    }
+    try {
+        const messages = sanitizeToolPairs(JSON.parse(readFileSync(msgPath, "utf-8")));
+        const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+        return { messages, meta };
+    }
+    catch (e) {
+        const ge = groError("session_error", `Failed to load session ${id}: ${asError(e).message}`, { cause: e });
+        Logger.warn(ge.message, errorLogFields(ge));
+        return null;
+    }
+}
+/**
+ * Find the most recent session (for --continue).
+ */
+export function findLatestSession() {
+    const dir = contextDir();
+    if (!existsSync(dir))
+        return null;
+    let latest = null;
+    for (const entry of readdirSync(dir)) {
+        const metaPath = join(dir, entry, "meta.json");
+        if (existsSync(metaPath)) {
+            const stat = statSync(metaPath);
+            if (!latest || stat.mtimeMs > latest.mtime) {
+                latest = { id: entry, mtime: stat.mtimeMs };
+            }
+        }
+    }
+    return latest?.id ?? null;
+}
+/**
+ * List all sessions, sorted by most recent first.
+ */
+export function listSessions() {
+    const dir = contextDir();
+    if (!existsSync(dir))
+        return [];
+    const sessions = [];
+    for (const entry of readdirSync(dir)) {
+        const metaPath = join(dir, entry, "meta.json");
+        if (existsSync(metaPath)) {
+            try {
+                const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+                const stat = statSync(metaPath);
+                sessions.push({ ...meta, mtime: stat.mtimeMs });
+            }
+            catch {
+                // skip corrupt sessions
+            }
+        }
+    }
+    sessions.sort((a, b) => b.mtime - a.mtime);
+    return sessions.map(({ mtime: _, ...rest }) => rest);
+}

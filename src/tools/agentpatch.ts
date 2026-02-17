@@ -12,7 +12,7 @@
  * (written by `agentchat_connect`) — no extra env vars needed.
  */
 import { execSync, execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import fs, { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Logger } from "../logger.js";
@@ -53,12 +53,18 @@ function resolveAgentName(): string | null {
     try {
       const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
       if (files.length === 0) continue;
-      // Use the first (or only) identity
-      const raw = readFileSync(join(dir, files[0]), "utf-8");
+      // One identity per container is the current invariant (agentctl-swarm/spawner).
+      // If there are ever multiple, pick the most recently modified — most likely
+      // to be the active identity.
+      const sorted = files
+        .map((f) => ({ f, mtime: fs.statSync(join(dir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+      const best = sorted[0].f;
+      const raw = readFileSync(join(dir, best), "utf-8");
       const identity = JSON.parse(raw);
       if (identity?.name) return identity.name as string;
       // Fallback: identity filename without extension
-      return files[0].replace(/\.json$/, "");
+      return best.replace(/\.json$/, "");
     } catch {
       continue;
     }

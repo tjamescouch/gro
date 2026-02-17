@@ -11,6 +11,7 @@
  *   @@model-change('sonnet')@@  — switch the active model mid-stream
  *   @@callback('name')@@       — fire a named callback
  *   @@emotion('happy')@@       — set facial expression / emotion state
+ *   @@importance('0.9')@@      — tag message importance (0.0-1.0) for memory paging priority
  *
  * Usage:
  *   const parser = createMarkerParser({ onMarker: (name, arg) => { ... } });

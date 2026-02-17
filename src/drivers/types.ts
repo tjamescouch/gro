@@ -3,6 +3,9 @@ export interface ChatMessage {
   from: string;
   content: string;
   reasoning?: string;
+  /** Importance weight (0.0–1.0). Set by  stream markers.
+   *  Higher values signal the message should be preserved longer during paging. */
+  importance?: number;
   /** When role==="tool", the id of the tool call being answered. */
   tool_call_id?: string;
   /** Optional: tool/function name for clarity. */

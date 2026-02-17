@@ -6,15 +6,13 @@
  * This wraps the agentpatch patch grammar and applies patches via the
  * `agentpatch/bin/apply_patch` script.
  *
- * When `--show-diffs` is enabled (via `enableShowDiffs()`), each successful
- * patch is broadcast as a markdown snippet to the agent's AgentChat channel.
- * The channel name is derived from the agent's agentchat identity file
- * (written by `agentchat_connect`) — no extra env vars needed.
+ * When `--show-diffs` is enabled (via `enableShowDiffs(name, server)`),
+ * each successful patch is broadcast as a markdown snippet to #<name>
+ * on the configured AgentChat server.
  */
 import { execSync, execFileSync } from "node:child_process";
-import fs, { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { Logger } from "../logger.js";
 
 // ---------------------------------------------------------------------------
@@ -22,54 +20,18 @@ import { Logger } from "../logger.js";
 // ---------------------------------------------------------------------------
 
 let _showDiffs = false;
+let _agentName: string | null = null;
 let _server: string | null = null;
 
 /**
  * Enable patch broadcast. Called by main.ts when --show-diffs is passed.
- * server: the AgentChat server URL (from AGENTCHAT_SERVER or config).
+ * name: the agent's name (from --name flag).
+ * server: the AgentChat server URL.
  */
-export function enableShowDiffs(server: string): void {
+export function enableShowDiffs(name: string, server: string): void {
   _showDiffs = true;
+  _agentName = name;
   _server = server;
-}
-
-// ---------------------------------------------------------------------------
-// Agent name resolution — read from agentchat identity file
-// ---------------------------------------------------------------------------
-
-/**
- * Find the agent's name from their agentchat identity file.
- * agentchat_connect writes: <cwd>/.agentchat/identities/<name>.json
- * We scan both cwd and home directory identity locations.
- */
-function resolveAgentName(): string | null {
-  const candidates = [
-    join(process.cwd(), ".agentchat", "identities"),
-    join(homedir(), ".agentchat", "identities"),
-  ];
-
-  for (const dir of candidates) {
-    if (!existsSync(dir)) continue;
-    try {
-      const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
-      if (files.length === 0) continue;
-      // One identity per container is the current invariant (agentctl-swarm/spawner).
-      // If there are ever multiple, pick the most recently modified — most likely
-      // to be the active identity.
-      const sorted = files
-        .map((f) => ({ f, mtime: fs.statSync(join(dir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime);
-      const best = sorted[0].f;
-      const raw = readFileSync(join(dir, best), "utf-8");
-      const identity = JSON.parse(raw);
-      if (identity?.name) return identity.name as string;
-      // Fallback: identity filename without extension
-      return best.replace(/\.json$/, "");
-    } catch {
-      continue;
-    }
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,15 +65,9 @@ function extractFilenames(patch: string): string[] {
  * Only runs when --show-diffs is enabled. Silent no-op on any failure.
  */
 function broadcastPatch(patch: string): void {
-  if (!_showDiffs || !_server) return;
+  if (!_showDiffs || !_agentName || !_server) return;
 
-  const agentName = resolveAgentName();
-  if (!agentName) {
-    Logger.debug("show-diffs: no agent identity found, skipping broadcast");
-    return;
-  }
-
-  const channel = `#${agentName.toLowerCase()}`;
+  const channel = `#${_agentName.toLowerCase()}`;
   const files = extractFilenames(patch);
   const fileLabel = files.length > 0
     ? files.map((f) => `\`${f}\``).join(", ")

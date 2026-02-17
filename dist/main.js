@@ -552,6 +552,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
     let consecutiveFailedRounds = 0;
     for (let round = 0; round < cfg.maxToolRounds; round++) {
         let roundHadFailure = false;
+        let roundImportance = undefined;
         // Shared marker handler — used by both streaming parser and tool-arg scanner
         const handleMarker = (marker) => {
             if (marker.name === "model-change") {
@@ -579,6 +580,17 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
                 if ("unref" in memory && typeof memory.unref === "function") {
                     memory.unref(marker.arg);
                     Logger.info(`Stream marker: unref('${marker.arg}') — page released`);
+                }
+            }
+            else if (marker.name === "importance" && marker.arg) {
+                // Importance weighting — tag current message for paging priority
+                const val = parseFloat(marker.arg);
+                if (!isNaN(val) && val >= 0 && val <= 1) {
+                    roundImportance = val;
+                    Logger.info(`Stream marker: importance(${val})`);
+                }
+                else {
+                    Logger.warn(`Stream marker: importance('${marker.arg}') — invalid value, must be 0.0–1.0`);
                 }
             }
             else {
@@ -609,6 +621,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
         if (cleanText)
             finalText += cleanText;
         const assistantMsg = { role: "assistant", from: "Assistant", content: cleanText || "" };
+        if (roundImportance !== undefined) {
+            assistantMsg.importance = roundImportance;
+        }
         if (output.toolCalls.length > 0) {
             assistantMsg.tool_calls = output.toolCalls;
         }

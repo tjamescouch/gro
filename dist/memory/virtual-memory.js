@@ -20,6 +20,8 @@ const DEFAULTS = {
     summarizerModel: "claude-haiku-4-5",
 };
 // --- VirtualMemory ---
+/** Messages with importance >= this threshold are promoted to the keep set during paging */
+const IMPORTANCE_KEEP_THRESHOLD = 0.7;
 export class VirtualMemory extends AgentMemory {
     constructor(config = {}) {
         super(config.systemPrompt);
@@ -207,6 +209,8 @@ export class VirtualMemory extends AgentMemory {
     async createPageFromMessages(messages, label, lane) {
         // Build raw content for the page
         const rawContent = messages.map(m => `[${m.role}${m.from ? ` (${m.from})` : ""}]: ${String(m.content ?? "").slice(0, 8000)}`).join("\n\n");
+        // Track max importance across messages in this page
+        const maxImportance = messages.reduce((max, m) => Math.max(max, m.importance ?? 0), 0);
         const page = {
             id: this.generatePageId(rawContent),
             label,
@@ -214,6 +218,7 @@ export class VirtualMemory extends AgentMemory {
             createdAt: new Date().toISOString(),
             messageCount: messages.length,
             tokens: this.tokensFor(rawContent),
+            ...(maxImportance > 0 ? { maxImportance } : {}),
         };
         this.savePage(page);
         // Generate summary with embedded ref
@@ -239,7 +244,10 @@ export class VirtualMemory extends AgentMemory {
                     importantLines.push(line.replace(/@@important@@/gi, "").trim());
                 }
             }
-            return `${m.role.toUpperCase()}: ${c}`;
+            // Tag messages with importance field for the summarizer
+            const imp = (m.importance ?? 0) >= IMPORTANCE_KEEP_THRESHOLD
+                ? ` [IMPORTANT=${m.importance}]` : "";
+            return `${m.role.toUpperCase()}${imp}: ${c}`;
         }).join("\n");
         const importantNote = importantLines.length > 0
             ? `\n\nIMPORTANT — preserve these verbatim in the summary:\n${importantLines.map(l => `  • ${l}`).join("\n")}`
@@ -260,6 +268,7 @@ export class VirtualMemory extends AgentMemory {
             from: "System",
             content: [
                 "You are a precise summarizer. Output concise bullet points preserving facts, tasks, file paths, commands, and decisions.",
+                "Messages tagged [IMPORTANT=N] carry high significance — preserve their content with extra detail in the summary.",
                 "Messages marked @@important@@ MUST be reproduced verbatim.",
                 "Messages marked @@ephemeral@@ can be omitted entirely.",
                 laneInstructions,
@@ -373,6 +382,35 @@ export class VirtualMemory extends AgentMemory {
                 slotTokens -= page.tokens;
         }
     }
+    // --- Importance-Aware Partitioning ---
+    /**
+     * Split a lane's messages into "page out" and "keep" sets, respecting importance.
+     * Messages with importance >= IMPORTANCE_KEEP_THRESHOLD are always kept (promoted),
+     * plus the most recent tailN messages. Everything else gets paged out.
+     */
+    partitionByImportance(messages, tailN, shouldPage) {
+        if (!shouldPage)
+            return { older: [], keep: messages };
+        // Start with the tail (most recent) as the base keep set
+        const cutoff = Math.max(0, messages.length - tailN);
+        const candidatesForPaging = messages.slice(0, cutoff);
+        const recentKeep = messages.slice(cutoff);
+        // Promote high-importance messages from the paging candidates
+        const older = [];
+        const promoted = [];
+        for (const m of candidatesForPaging) {
+            if ((m.importance ?? 0) >= IMPORTANCE_KEEP_THRESHOLD) {
+                promoted.push(m);
+            }
+            else {
+                older.push(m);
+            }
+        }
+        // Combine promoted + recent, preserving original order
+        const keepSet = new Set([...promoted, ...recentKeep]);
+        const keep = messages.filter(m => keepSet.has(m));
+        return { older, keep };
+    }
     // --- Swimlane Partitioning ---
     /**
      * Partition messages into swimlanes by role, respecting the first system message.
@@ -484,32 +522,13 @@ export class VirtualMemory extends AgentMemory {
             // CRITICAL: Tool lane MUST page with assistant lane to avoid orphaning tool calls/results
             // Tool results (tool lane) must stay paired with their tool calls (assistant lane)
             const shouldPageTool = shouldPageAssistant;
-            // Determine which messages to page out per lane (only if over budget)
-            const olderAssistant = shouldPageAssistant
-                ? assistant.slice(0, Math.max(0, assistant.length - tailN))
-                : [];
-            const olderUser = shouldPageUser
-                ? user.slice(0, Math.max(0, user.length - tailN))
-                : [];
-            const olderSystem = shouldPageSystem
-                ? remainingSystem.slice(0, Math.max(0, remainingSystem.length - tailN))
-                : [];
-            const olderTool = shouldPageTool
-                ? tool.slice(0, Math.max(0, tool.length - tailN))
-                : [];
-            // Keep recent messages per lane (or all if not paging)
-            const keepAssistant = shouldPageAssistant
-                ? assistant.slice(Math.max(0, assistant.length - tailN))
-                : assistant;
-            const keepUser = shouldPageUser
-                ? user.slice(Math.max(0, user.length - tailN))
-                : user;
-            const keepSystem = shouldPageSystem
-                ? remainingSystem.slice(Math.max(0, remainingSystem.length - tailN))
-                : remainingSystem;
-            const keepTools = shouldPageTool
-                ? tool.slice(Math.max(0, tool.length - tailN))
-                : tool;
+            // Determine which messages to page out vs keep per lane.
+            // High-importance messages (>= IMPORTANCE_KEEP_THRESHOLD) are promoted to
+            // the keep set even if they're older than the tail window.
+            const { older: olderAssistant, keep: keepAssistant } = this.partitionByImportance(assistant, tailN, shouldPageAssistant);
+            const { older: olderUser, keep: keepUser } = this.partitionByImportance(user, tailN, shouldPageUser);
+            const { older: olderSystem, keep: keepSystem } = this.partitionByImportance(remainingSystem, tailN, shouldPageSystem);
+            const { older: olderTool, keep: keepTools } = this.partitionByImportance(tool, tailN, shouldPageTool);
             // Create pages for each lane with older messages
             const summaries = [];
             if (olderAssistant.length >= 2) {

@@ -6,10 +6,68 @@
  * This wraps the agentpatch patch grammar and applies patches via the
  * `agentpatch/bin/apply_patch` script.
  */
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Logger } from "../logger.js";
+
+const MAX_BROADCAST_SNIPPET = 600;
+
+/**
+ * Extract filenames from an agentpatch-style patch.
+ * Handles "*** File: path" headers and standard "+++ path" unified-diff headers.
+ */
+function extractFilenames(patch: string): string[] {
+  const seen = new Set<string>();
+  const results: string[] = [];
+  for (const line of patch.split("\n")) {
+    let match: RegExpMatchArray | null;
+    if ((match = line.match(/^\*{3}\s+File:\s+(.+)$/))) {
+      const f = match[1].trim();
+      if (!seen.has(f)) { seen.add(f); results.push(f); }
+    } else if ((match = line.match(/^\+{3}\s+(.+?)(?:\s+\d{4}-\d{2}-\d{2}.*)?$/))) {
+      const f = match[1].trim();
+      if (f !== "/dev/null" && !seen.has(f)) { seen.add(f); results.push(f); }
+    }
+  }
+  return results;
+}
+
+/**
+ * Post a patch summary to the agent's AgentChat channel.
+ * Reads AGENT_NAME and AGENTCHAT_SERVER from the environment.
+ * Silently no-ops if either is absent or if agentchat is unavailable.
+ */
+function broadcastPatch(patch: string): void {
+  const agentName = process.env.AGENT_NAME;
+  const server = process.env.AGENTCHAT_SERVER;
+  if (!agentName || !server) return;
+
+  const channel = `#${agentName.toLowerCase()}`;
+  const files = extractFilenames(patch);
+  const fileLabel = files.length > 0
+    ? files.map((f) => `\`${f}\``).join(", ")
+    : "files";
+
+  // Show a trimmed snippet of the patch body
+  const lines = patch.split("\n");
+  const snippetLines = lines.slice(0, 30).join("\n");
+  const snippet = snippetLines.length > MAX_BROADCAST_SNIPPET
+    ? snippetLines.slice(0, MAX_BROADCAST_SNIPPET) + "\n…"
+    : snippetLines;
+
+  const message = `patched ${fileLabel}\n\`\`\`\n${snippet}\n\`\`\``;
+
+  try {
+    execFileSync("agentchat", ["send", server, channel, message], {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+  } catch {
+    // Non-fatal — don't interrupt the agent if broadcast fails
+  }
+}
 
 const DEFAULT_TIMEOUT = 120_000;
 const MAX_OUTPUT = 30_000;
@@ -77,6 +135,7 @@ export function executeAgentpatch(args: Record<string, any>): string {
       maxBuffer: 10 * 1024 * 1024,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    if (!dryRun) broadcastPatch(patch);
     return truncate(out || "ok");
   } catch (e: any) {
     let result = "";

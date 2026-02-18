@@ -169,6 +169,7 @@ Resume with `-c` (most recent) or `-r <id>` (specific). Disable with `--no-sessi
 src/
   main.ts                        # CLI entry, flag parsing, agent loop
   session.ts                     # Session persistence and tool-pair sanitization
+  errors.ts                      # Typed error classes
   logger.ts                      # Logger with ANSI color support
   stream-markers.ts              # Stream marker parser and dispatcher
   drivers/
@@ -179,18 +180,29 @@ src/
   memory/
     virtual-memory.ts            # Swim-lane paged context (VirtualMemory)
     simple-memory.ts             # Unbounded buffer (SimpleMemory)
+    advanced-memory.ts           # Extended memory with vector search
+    agent-memory.ts              # Agent-facing memory interface
+    agenthnsw.ts                 # HNSW vector index for memory search
+    vector-index.ts              # Vector index abstraction
     summarization-queue.ts       # Queue for async batch summarization
     batch-worker.ts              # Background batch summarization worker
     batch-worker-manager.ts      # Worker lifecycle manager
   mcp/
     client.ts                    # MCP client manager
   tools/
+    agentpatch.ts                # Unified patch application tool
     bash.ts                      # Built-in shell tool
+    compact-context.ts           # Force context compaction
+    glob.ts                      # File glob search tool
+    grep.ts                      # Regex content search tool
+    memory-status.ts             # VirtualMemory stats introspection
+    read.ts                      # File read tool
     version.ts                   # gro_version introspection tool
+    write.ts                     # File write tool
   utils/
-    rate-limiter.ts
-    timed-fetch.ts
-    retry.ts
+    rate-limiter.ts              # Token bucket rate limiter
+    timed-fetch.ts               # Fetch with timeout
+    retry.ts                     # Retry with backoff
 ```
 
 ## Development

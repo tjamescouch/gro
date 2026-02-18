@@ -12,6 +12,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Logger, C } from "./logger.js";
+import { spendMeter } from "./spend-meter.js";
 import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
 import { makeAnthropicDriver } from "./drivers/anthropic.js";
 import { SimpleMemory } from "./memory/simple-memory.js";
@@ -684,12 +685,15 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
             if (activeThinkingBudget < 0.05)
                 activeThinkingBudget = 0;
         }
-        // Track token usage for niki budget enforcement
+        // Track token usage for niki budget enforcement and spend meter
         if (output.usage) {
             turnTokensIn += output.usage.inputTokens;
             turnTokensOut += output.usage.outputTokens;
             // Log cumulative usage to stderr — niki parses these patterns for budget enforcement
             process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
+            spendMeter.setModel(activeModel);
+            spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
+            Logger.info(spendMeter.format());
         }
         // Accumulate clean text (markers stripped) for the return value
         const cleanText = markerParser.getCleanText();
@@ -850,6 +854,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
             turnTokensIn += finalOutput.usage.inputTokens;
             turnTokensOut += finalOutput.usage.outputTokens;
             process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
+            spendMeter.setModel(activeModel);
+            spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
+            Logger.info(spendMeter.format());
         }
         if (finalOutput.text)
             finalText += finalOutput.text;

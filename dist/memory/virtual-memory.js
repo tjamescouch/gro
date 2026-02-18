@@ -537,9 +537,12 @@ export class VirtualMemory extends AgentMemory {
             const beforeTokens = this.msgTokens(nonSys);
             const beforeMB = (beforeTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
             const beforeMsgCount = nonSys.length;
-            // Separate system prompt from other system messages
-            const sysHead = firstSystemIndex === 0 ? [this.messagesBuffer[0]] : [];
-            const remainingSystem = firstSystemIndex === 0 ? system.slice(1) : system.slice(0);
+            // Protect the original system prompt (set by constructor, identified by from === "System").
+            // Cannot rely on firstSystemIndex === 0 because after compaction, summaries are prepended
+            // and the system prompt may no longer be at index 0.
+            const originalSysPrompt = this.messagesBuffer.find(m => m.role === "system" && m.from === "System");
+            const sysHead = originalSysPrompt ? [originalSysPrompt] : [];
+            const remainingSystem = system.filter(m => m !== originalSysPrompt);
             // Recalculate per-lane token usage
             const assistantTok = this.msgTokens(assistant);
             const userTok = this.msgTokens(user);

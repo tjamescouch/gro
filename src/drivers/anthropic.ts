@@ -5,7 +5,7 @@
 import { Logger, C } from "../logger.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
-import { MAX_RETRIES, isRetryable, retryDelay, sleep } from "../utils/retry.js";
+import { MAX_RETRIES, getMaxRetries, isRetryable, retryDelay, sleep } from "../utils/retry.js";
 import { groError, asError, isGroError, errorLogFields } from "../errors.js";
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall, TokenUsage } from "./types.js";
 
@@ -313,7 +313,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
         if (res.ok) break;
 
         if (isRetryable(res.status) && attempt < MAX_RETRIES) {
-          const delay = retryDelay(attempt);
+          const delay = retryDelay(attempt, res.headers.get("retry-after"));
           Logger.warn(`Anthropic ${res.status}, retry ${attempt + 1}/${MAX_RETRIES} in ${Math.round(delay)}ms`);
           await sleep(delay);
           continue;

@@ -42,7 +42,9 @@ export function executeGlob(args) {
         let output;
         try {
             // Try git-aware glob first
-            output = execSync(`cd ${JSON.stringify(searchPath)} && git ls-files --cached --others --exclude-standard 2>/dev/null | grep -E '${globToRegex(pattern)}' | head -${MAX_RESULTS + 1}`, { encoding: "utf-8", timeout: DEFAULT_TIMEOUT, stdio: ["pipe", "pipe", "pipe"] }).trim();
+            // SECURITY: escapeShellArg the regex for shell context
+            const escapedRegex = escapeShellArg(globToRegex(pattern));
+            output = execSync(`cd ${JSON.stringify(searchPath)} && git ls-files --cached --others --exclude-standard 2>/dev/null | grep -E ${escapedRegex} | head -${MAX_RESULTS + 1}`, { encoding: "utf-8", timeout: DEFAULT_TIMEOUT, stdio: ["pipe", "pipe", "pipe"] }).trim();
         }
         catch {
             // Fall back to find with basic glob
@@ -67,6 +69,7 @@ export function executeGlob(args) {
 /**
  * Convert a simple glob pattern to a regex for grep.
  * Handles **, *, and ? wildcards.
+ * Output is safe to pass through globToShellArg before interpolation.
  */
 function globToRegex(pattern) {
     return pattern
@@ -75,6 +78,13 @@ function globToRegex(pattern) {
         .replace(/\*/g, "[^/]*")
         .replace(/___DOUBLESTAR___/g, ".*")
         .replace(/\?/g, ".");
+}
+/**
+ * Escape a string for safe use in shell command context.
+ * Wraps in single quotes and escapes any embedded single quotes.
+ */
+function escapeShellArg(arg) {
+    return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 /**
  * Extract the base filename pattern from a glob for use with find -name.

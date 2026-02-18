@@ -6,7 +6,7 @@ import { Logger } from "../logger.js";
 import { asError } from "../errors.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
-import { MAX_RETRIES, isRetryable, retryDelay, sleep } from "../utils/retry.js";
+import { getMaxRetries, isRetryable, retryDelay, sleep } from "../utils/retry.js";
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall, TokenUsage } from "./types.js";
 
 export interface OpenAiDriverConfig {
@@ -104,7 +104,9 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (cfg.apiKey) headers["Authorization"] = `Bearer ${cfg.apiKey}`;
 
-    const payload: any = { model, messages, stream: true };
+    // Strip internal-only fields (from, tool_call_id on non-tool roles) before sending
+    const wireMessages = messages.map(({ from: _from, ...m }) => m);
+    const payload: any = { model, messages: wireMessages, stream: true };
     if (tools) {
       payload.tools = tools;
       payload.tool_choice = "auto";
@@ -124,9 +126,9 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
 
         if (res.ok) break;
 
-        if (isRetryable(res.status) && attempt < MAX_RETRIES) {
-          const delay = retryDelay(attempt);
-          Logger.warn(`OpenAI ${res.status}, retry ${attempt + 1}/${MAX_RETRIES} in ${Math.round(delay)}ms`);
+        if (isRetryable(res.status) && attempt < getMaxRetries()) {
+          const delay = retryDelay(attempt, res.headers.get("retry-after"));
+          Logger.warn(`OpenAI ${res.status}, retry ${attempt + 1}/${getMaxRetries()} in ${Math.round(delay)}ms`);
           await sleep(delay);
           continue;
         }

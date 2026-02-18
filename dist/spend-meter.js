@@ -119,10 +119,15 @@ export class SpendMeter {
     format() {
         const cost = this.cost();
         const hrs = this.elapsedHours();
-        const perHour = hrs > 0 ? cost / hrs : 0;
         const tokTotal = this.totalIn + this.totalOut;
-        const tokPerHr = hrs > 0 ? tokTotal / hrs : 0;
         const costStr = `$${cost.toFixed(4)}`;
+        // Suppress rate until at least 60 seconds have elapsed — avoids absurd $/hr on first call
+        const minHrsForRate = 1 / 60;
+        if (hrs < minHrsForRate) {
+            return C.gray(`[spend] ${costStr}`);
+        }
+        const perHour = cost / hrs;
+        const tokPerHr = tokTotal / hrs;
         const rateStr = `$${perHour.toFixed(2)}/hr`;
         const tokStr = `${fmtK(tokPerHr)} tok/hr`;
         return C.gray(`[spend] ${costStr}  ${C.yellow(rateStr)}  ${tokStr}`);

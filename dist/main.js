@@ -179,6 +179,12 @@ function loadConfig() {
         else if (arg === "--max-idle-nudges") {
             flags.maxIdleNudges = args[++i];
         }
+        else if (arg === "--max-retries") {
+            process.env.GRO_MAX_RETRIES = args[++i];
+        }
+        else if (arg === "--retry-base-ms") {
+            process.env.GRO_RETRY_BASE_MS = args[++i];
+        }
         else if (arg === "--max-thinking-tokens") {
             flags.maxThinkingTokens = args[++i];
         } // accepted, not used yet
@@ -263,16 +269,7 @@ function loadConfig() {
             Logger.warn(`Unknown flag: ${arg}`);
         }
     }
-    if (flags.setKey) {
-        // Run key-storage flow and exit — never falls through to agent loop
-        runSetKey(flags.setKey).then(() => process.exit(0)).catch(e => {
-            Logger.error(String(e));
-            process.exit(1);
-        });
-        // Return a dummy config; the async handler exits before it's used
-        return {};
-    }
-    const provider = inferProvider(flags.provider, flags.model || process.env.AGENT_MODEL);
+    const provider = inferProvider(flags.provider || process.env.AGENT_PROVIDER, flags.model || process.env.AGENT_MODEL);
     const apiKey = resolveApiKey(provider);
     const noMcp = flags.noMcp === "true";
     const mcpServers = noMcp ? {} : loadMcpServers(mcpConfigPaths);
@@ -396,7 +393,7 @@ function defaultModel(provider) {
 function defaultBaseUrl(provider) {
     switch (provider) {
         case "openai": return process.env.OPENAI_BASE_URL || "https://api.openai.com";
-        case "groq": return "https://api.groq.com/openai/v1";
+        case "groq": return process.env.GROQ_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.groq.com/openai";
         case "local": return "http://127.0.0.1:11434";
         default: return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
     }
@@ -430,6 +427,8 @@ options:
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
   --max-idle-nudges      max consecutive nudges before giving up (default: 10)
+  --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
+  --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string
@@ -660,13 +659,17 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
      */
     function thinkingTierModel(budget) {
         const provider = inferProvider(cfg.provider, cfg.model);
-        if (budget < 0.25) {
-            return provider === "openai" ? "gpt-4o-mini" : MODEL_ALIASES["haiku"] ?? cfg.model;
-        }
-        else if (budget >= 0.65) {
+        if (budget >= 0.65)
             return cfg.model;
+        switch (provider) {
+            case "openai":
+                return budget < 0.25 ? "gpt-4o-mini" : "gpt-4o";
+            case "groq":
+                // Groq tiers: fast small / mid / cfg.model (user-chosen)
+                return budget < 0.25 ? "llama-3.1-8b-instant" : "llama-3.3-70b-versatile";
+            default: // anthropic + local
+                return budget < 0.25 ? MODEL_ALIASES["haiku"] ?? cfg.model : MODEL_ALIASES["sonnet"] ?? cfg.model;
         }
-        return provider === "openai" ? "gpt-4o" : MODEL_ALIASES["sonnet"] ?? cfg.model;
     }
     let brokeCleanly = false;
     let idleNudges = 0;
@@ -1097,6 +1100,13 @@ async function interactive(cfg, driver, mcp, sessionId) {
 // Entry point
 // ---------------------------------------------------------------------------
 async function main() {
+    // Handle --set-key before loadConfig so we never construct a partial config
+    const setKeyIdx = process.argv.indexOf("--set-key");
+    if (setKeyIdx !== -1) {
+        const provider = process.argv[setKeyIdx + 1];
+        await runSetKey(provider);
+        process.exit(0);
+    }
     const cfg = loadConfig();
     if (cfg.verbose) {
         process.env.GRO_LOG_LEVEL = "debug";
@@ -1144,6 +1154,8 @@ async function main() {
         "--max-thinking-tokens", "--max-budget-usd",
         "--summarizer-model", "--output-format", "--mcp-config",
         "--resume", "-r",
+        "--max-retries", "--retry-base-ms",
+        "--max-idle-nudges", "--wake-notes", "--name", "--set-key",
     ];
     for (let i = 0; i < args.length; i++) {
         if (args[i].startsWith("-")) {

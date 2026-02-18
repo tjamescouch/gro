@@ -292,7 +292,7 @@ export function makeAnthropicDriver(cfg) {
                 if (res.ok)
                     break;
                 if (isRetryable(res.status) && attempt < MAX_RETRIES) {
-                    const delay = retryDelay(attempt);
+                    const delay = retryDelay(attempt, res.headers.get("retry-after"));
                     Logger.warn(`Anthropic ${res.status}, retry ${attempt + 1}/${MAX_RETRIES} in ${Math.round(delay)}ms`);
                     await sleep(delay);
                     continue;

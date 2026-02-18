@@ -12,7 +12,8 @@ export type GroErrorKind =
   | "config_error"
   | "mcp_error"
   | "timeout_error"
-  | "session_error";
+  | "session_error"
+  | "batch_error";
 
 export interface GroError extends Error {
   kind: GroErrorKind;

@@ -12,6 +12,8 @@ export interface McpServerConfig {
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  /** Tool call timeout in ms. Default: 1 hour (for blocking tools like agentchat_listen). */
+  timeout?: number;
 }
 
 export interface McpTool {
@@ -27,6 +29,7 @@ interface ConnectedServer {
   client: Client;
   transport: StdioClientTransport;
   tools: McpTool[];
+  timeout: number;
 }
 
 export class McpManager {
@@ -77,7 +80,8 @@ export class McpManager {
       serverName: name,
     }));
 
-    this.servers.set(name, { name, client, transport, tools });
+    const timeout = cfg.timeout ?? 60 * 60 * 1000; // default: 1 hour
+    this.servers.set(name, { name, client, transport, tools, timeout });
     Logger.debug(`MCP "${name}": ${tools.length} tool(s) available`);
   }
 
@@ -110,7 +114,7 @@ export class McpManager {
       const tool = server.tools.find(t => t.name === name);
       if (tool) {
         try {
-          const result = await server.client.callTool({ name, arguments: args }, undefined, { timeout: 5 * 60 * 1000 });
+          const result = await server.client.callTool({ name, arguments: args }, undefined, { timeout: server.timeout });
           // Extract text content from result
           if (Array.isArray(result.content)) {
             return result.content

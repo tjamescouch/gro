@@ -7,6 +7,9 @@ import assert from "node:assert";
 import type { ChatDriver, ChatMessage, ChatOutput } from "../src/drivers/types.js";
 import { SimpleMemory } from "../src/memory/simple-memory.js";
 import { AdvancedMemory } from "../src/memory/advanced-memory.js";
+import { VirtualMemory } from "../src/memory/virtual-memory.js";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /** Mock driver that returns a canned summary. */
 function mockDriver(response = "Summary bullet point."): ChatDriver {
@@ -165,6 +168,63 @@ describe("AdvancedMemory", () => {
     const msgs = mem.messages();
     const toolMsgs = msgs.filter(m => m.role === "tool");
     assert.strictEqual(toolMsgs.length, 2);
+  });
+
+  test("VirtualMemory swimlane stress test (1 iteration)", async () => {
+    const pagesDir = join(tmpdir(), `vm-stress-${Date.now()}`);
+    let summaryCalls = 0;
+
+    const driver: ChatDriver = {
+      async chat(_msgs: ChatMessage[], _opts?: any): Promise<ChatOutput> {
+        summaryCalls++;
+        return { text: `Summary bullet.\n<@@pg_test@@>`, toolCalls: [] };
+      },
+    };
+
+    const mem = new VirtualMemory({
+      pagesDir,
+      driver,
+      workingMemoryTokens: 3_000,
+      pageSlotTokens: 5_000,
+      avgCharsPerToken: 4,
+      minRecentPerLane: 2,
+      highRatio: 0.70,
+      lowRatio: 0.50,
+      systemPrompt: "You are a test assistant.",
+    });
+
+    const before = Date.now();
+
+    // Feed one iteration of realistic mixed-lane traffic
+    for (let i = 0; i < 20; i++) {
+      await mem.add(msg("user",      `User request ${i}: please do something with padding text here to consume tokens.`));
+      await mem.add(msg("assistant", `Assistant reply ${i}: acknowledging the request and providing detailed context.`));
+      if (i % 4 === 0) {
+        await mem.add(msg("system", `System notice ${i}: checkpoint or instruction update.`));
+      }
+      if (i % 5 === 0) {
+        await mem.add({ role: "tool", content: `Tool result ${i}: data payload from tool call.`, from: "tool", tool_call_id: `tc${i}` });
+      }
+    }
+
+    const elapsed = Date.now() - before;
+    const msgs = mem.messages();
+    const nonSys = msgs.filter(m => m.role !== "system");
+    const hasSummaries = msgs.some(m =>
+      typeof m.content === "string" && m.content.includes("LANE SUMMARY")
+    );
+
+    console.log(`  elapsed: ${elapsed}ms | messages: ${msgs.length} | summaryCalls: ${summaryCalls} | hasSwimlanes: ${hasSummaries}`);
+
+    // Buffer should be compacted — well below the 80+ messages we added
+    assert.ok(msgs.length < 80, `Expected compaction, got ${msgs.length} messages`);
+    assert.ok(msgs.length > 0, "Buffer should not be empty");
+    // System prompt should survive
+    assert.ok(msgs.some(m => m.role === "system" && m.content === "You are a test assistant."), "System prompt must be preserved");
+    // At least one summarization should have fired
+    assert.ok(summaryCalls > 0, `Expected summarization calls, got ${summaryCalls}`);
+    // Lane summaries should appear in buffer
+    assert.ok(hasSummaries, "Expected swimlane summary messages in buffer");
   });
 
   test("config clamps extreme values", async () => {

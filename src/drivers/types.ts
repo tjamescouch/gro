@@ -22,6 +22,8 @@ export interface ChatToolCall {
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
 }
 
 export interface ChatOutput {

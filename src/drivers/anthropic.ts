@@ -15,6 +15,7 @@ export interface AnthropicDriverConfig {
   model?: string;
   maxTokens?: number;
   timeoutMs?: number;
+  enablePromptCaching?: boolean; // Default: true (90% cost savings on system/tools/context)
 }
 
 /**
@@ -136,12 +137,21 @@ function parseResponseContent(data: any, onToken?: (t: string) => void): ChatOut
   const usage: TokenUsage | undefined = data.usage ? {
     inputTokens: data.usage.input_tokens ?? 0,
     outputTokens: data.usage.output_tokens ?? 0,
+    cacheCreationInputTokens: data.usage.cache_creation_input_tokens,
+    cacheReadInputTokens: data.usage.cache_read_input_tokens,
   } : undefined;
 
-  // Log response size
+  // Log response size and cache stats
   const responseSize = JSON.stringify({ text, toolCalls, usage }).length;
   const respMB = (responseSize / (1024 * 1024)).toFixed(2);
-  Logger.info(`[API ←] ${respMB} MB`);
+  let cacheInfo = "";
+  if (usage?.cacheCreationInputTokens || usage?.cacheReadInputTokens) {
+    const parts = [];
+    if (usage.cacheCreationInputTokens) parts.push(`write:${usage.cacheCreationInputTokens}`);
+    if (usage.cacheReadInputTokens) parts.push(`read:${usage.cacheReadInputTokens}`);
+    cacheInfo = ` [cache ${parts.join(", ")}]`;
+  }
+  Logger.info(`[API ←] ${respMB} MB${cacheInfo}`);
 
   return { text, toolCalls, usage };
 }
@@ -171,6 +181,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
   const model = cfg.model ?? "claude-sonnet-4-20250514";
   const maxTokens = cfg.maxTokens ?? 4096;
   const timeoutMs = cfg.timeoutMs ?? 2 * 60 * 60 * 1000;
+  const enablePromptCaching = cfg.enablePromptCaching ?? true;
 
   async function chat(messages: ChatMessage[], opts?: any): Promise<ChatOutput> {
     await rateLimiter.limit("llm-ask", 1);
@@ -189,11 +200,27 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
     if (supportsAdaptiveThinking(resolvedModel)) {
       body.thinking = { type: "adaptive" };
     }
-    if (systemPrompt) body.system = systemPrompt;
+    
+    // Prompt caching: wrap system prompt in content block with cache_control
+    if (systemPrompt) {
+      if (enablePromptCaching) {
+        body.system = [{
+          type: "text",
+          text: systemPrompt,
+          cache_control: { type: "ephemeral" }
+        }];
+      } else {
+        body.system = systemPrompt;
+      }
+    }
 
     // Tools support — convert from OpenAI format to Anthropic format
     if (Array.isArray(opts?.tools) && opts.tools.length) {
       body.tools = convertToolDefs(opts.tools);
+      // Prompt caching: add cache_control to the last tool definition
+      if (enablePromptCaching) {
+        body.tools[body.tools.length - 1].cache_control = { type: "ephemeral" };
+      }
     }
 
     const headers: Record<string, string> = {
@@ -201,6 +228,11 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
       "x-api-key": cfg.apiKey,
       "anthropic-version": "2023-06-01",
     };
+    
+    // Prompt caching requires anthropic-beta header
+    if (enablePromptCaching) {
+      headers["anthropic-beta"] = "prompt-caching-2024-07-31";
+    }
 
     // Always log data size
     const payloadSize = JSON.stringify(body).length;

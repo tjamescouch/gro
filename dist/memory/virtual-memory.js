@@ -4,6 +4,7 @@ import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { SummarizationQueue } from "./summarization-queue.js";
+import { BatchWorkerManager } from "./batch-worker-manager.js";
 import { Logger } from "../logger.js";
 const DEFAULTS = {
     pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
@@ -41,6 +42,8 @@ export class VirtualMemory extends AgentMemory {
         this.model = "unknown";
         /** Summarization queue (if batch mode enabled) */
         this.summaryQueue = null;
+        /** Batch worker manager (spawns background worker if batch mode enabled) */
+        this.batchWorkerManager = null;
         this.forceCompactPending = false;
         this.cfg = {
             pagesDir: config.pagesDir ?? DEFAULTS.pagesDir,
@@ -64,6 +67,7 @@ export class VirtualMemory extends AgentMemory {
         // Initialize summarization queue if batch mode enabled
         if (this.cfg.enableBatchSummarization) {
             this.summaryQueue = new SummarizationQueue(this.cfg.queuePath);
+            this.startBatchWorker();
         }
     }
     setModel(model) {
@@ -622,4 +626,40 @@ export class VirtualMemory extends AgentMemory {
     getActivePageIds() { return Array.from(this.activePageIds); }
     getPageCount() { return this.pages.size; }
     hasPage(id) { return this.pages.has(id); }
+    /**
+     * Start the batch worker subprocess.
+     */
+    startBatchWorker() {
+        // Only start if driver is available (we need API key)
+        if (!this.cfg.driver) {
+            Logger.warn("[VirtualMemory] Cannot start batch worker: driver not configured");
+            return;
+        }
+        // Extract API key from driver (assumes AnthropicDriver)
+        const apiKey = this.cfg.driver.apiKey;
+        if (!apiKey) {
+            Logger.warn("[VirtualMemory] Cannot start batch worker: API key not found in driver");
+            return;
+        }
+        this.batchWorkerManager = new BatchWorkerManager({
+            queuePath: this.cfg.queuePath,
+            pagesDir: this.cfg.pagesDir,
+            apiKey,
+            pollInterval: 60000,
+            batchPollInterval: 300000,
+            batchSize: 10000,
+            model: this.cfg.summarizerModel,
+        });
+        this.batchWorkerManager.start();
+        Logger.info("[VirtualMemory] Batch worker started");
+    }
+    /**
+     * Stop the batch worker subprocess (if running).
+     */
+    stopBatchWorker() {
+        if (this.batchWorkerManager) {
+            this.batchWorkerManager.stop();
+            this.batchWorkerManager = null;
+        }
+    }
 }

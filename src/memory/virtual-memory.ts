@@ -5,6 +5,7 @@ import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { SummarizationQueue } from "./summarization-queue.js";
+import { BatchWorkerManager } from "./batch-worker-manager.js";
 import { Logger } from "../logger.js";
 
 /**
@@ -124,6 +125,8 @@ export class VirtualMemory extends AgentMemory {
   private model = "unknown";
   /** Summarization queue (if batch mode enabled) */
   private summaryQueue: SummarizationQueue | null = null;
+  /** Batch worker manager (spawns background worker if batch mode enabled) */
+  private batchWorkerManager: BatchWorkerManager | null = null;
 
   constructor(config: VirtualMemoryConfig = {}) {
     super(config.systemPrompt);
@@ -149,6 +152,7 @@ export class VirtualMemory extends AgentMemory {
     // Initialize summarization queue if batch mode enabled
     if (this.cfg.enableBatchSummarization) {
       this.summaryQueue = new SummarizationQueue(this.cfg.queuePath);
+      this.startBatchWorker();
     }
   }
 
@@ -793,4 +797,45 @@ export class VirtualMemory extends AgentMemory {
   getActivePageIds(): string[] { return Array.from(this.activePageIds); }
   getPageCount(): number { return this.pages.size; }
   hasPage(id: string): boolean { return this.pages.has(id); }
+
+  /**
+   * Start the batch worker subprocess.
+   */
+  private startBatchWorker(): void {
+    // Only start if driver is available (we need API key)
+    if (!this.cfg.driver) {
+      Logger.warn("[VirtualMemory] Cannot start batch worker: driver not configured");
+      return;
+    }
+
+    // Extract API key from driver (assumes AnthropicDriver)
+    const apiKey = (this.cfg.driver as any).apiKey;
+    if (!apiKey) {
+      Logger.warn("[VirtualMemory] Cannot start batch worker: API key not found in driver");
+      return;
+    }
+
+    this.batchWorkerManager = new BatchWorkerManager({
+      queuePath: this.cfg.queuePath,
+      pagesDir: this.cfg.pagesDir,
+      apiKey,
+      pollInterval: 60000,
+      batchPollInterval: 300000,
+      batchSize: 10000,
+      model: this.cfg.summarizerModel,
+    });
+
+    this.batchWorkerManager.start();
+    Logger.info("[VirtualMemory] Batch worker started");
+  }
+
+  /**
+   * Stop the batch worker subprocess (if running).
+   */
+  private stopBatchWorker(): void {
+    if (this.batchWorkerManager) {
+      this.batchWorkerManager.stop();
+      this.batchWorkerManager = null;
+    }
+  }
 }

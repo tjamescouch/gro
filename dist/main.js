@@ -462,7 +462,7 @@ function createDriver(cfg) {
 function createMemory(cfg, driver) {
     // Opt-out: SimpleMemory only if explicitly requested
     if (process.env.GRO_MEMORY === "simple") {
-        Logger.info("MemoryMode=Simple (GRO_MEMORY=simple)");
+        Logger.info(`${C.cyan("MemoryMode=Simple")} ${C.gray("(GRO_MEMORY=simple)")}`);
         const mem = new SimpleMemory(cfg.systemPrompt || undefined);
         mem.setMeta(cfg.provider, cfg.model);
         return mem;
@@ -476,7 +476,7 @@ function createMemory(cfg, driver) {
         summarizerDriver = createDriverForModel(summarizerProvider, summarizerModel, resolveApiKey(summarizerProvider), defaultBaseUrl(summarizerProvider));
         Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
     }
-    Logger.info(`MemoryMode=Virtual (default) workingMemory=${cfg.contextTokens} tokens`);
+    Logger.info(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
     const vm = new VirtualMemory({
         driver: summarizerDriver ?? driver,
         summarizerModel: summarizerModel ?? cfg.model,
@@ -686,7 +686,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
                     .join(", ");
                 toolCallDisplay = argPairs ? `${fnName}(${argPairs})` : `${fnName}()`;
             }
-            Logger.info(`[Tool call] ${toolCallDisplay}`);
+            Logger.info(`${C.magenta("[Tool call]")} ${C.bold(fnName)}${toolCallDisplay.slice(fnName.length)}`);
             let result;
             try {
                 if (fnName === "apply_patch") {

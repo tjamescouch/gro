@@ -2,7 +2,7 @@
  * Anthropic Messages API driver.
  * Direct HTTP — no SDK dependency.
  */
-import { Logger } from "../logger.js";
+import { Logger, C } from "../logger.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
 import { MAX_RETRIES, isRetryable, retryDelay, sleep } from "../utils/retry.js";
@@ -157,10 +157,10 @@ function parseResponseContent(data, onToken) {
         if (usage.cacheCreationInputTokens)
             parts.push(`write:${usage.cacheCreationInputTokens}`);
         if (usage.cacheReadInputTokens)
-            parts.push(`read:${usage.cacheReadInputTokens}`);
-        cacheInfo = ` [cache ${parts.join(", ")}]`;
+            parts.push(C.green(`read:${usage.cacheReadInputTokens}`));
+        cacheInfo = ` ${C.cyan(`[cache ${parts.join(", ")}]`)}`;
     }
-    Logger.info(`[API ←] ${respMB} MB${cacheInfo}`);
+    Logger.info(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}`);
     return { text, toolCalls, usage };
 }
 /**
@@ -269,7 +269,7 @@ export function makeAnthropicDriver(cfg) {
                 snippet = content.length > 120 ? content.slice(0, 120) + "..." : content;
             }
         }
-        Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` <${snippet}>` : ""}`);
+        Logger.info(`${C.yellow("[API →]")} ${sizeMB} MB (${messages.length} messages)${snippet ? C.gray(` <${snippet}>`) : ""}`);
         const RETRYABLE_STATUS = new Set([429, 503, 529]);
         let requestId;
         try {

@@ -456,7 +456,7 @@ function createDriver(cfg: GroConfig): ChatDriver {
 function createMemory(cfg: GroConfig, driver: ChatDriver): AgentMemory {
   // Opt-out: SimpleMemory only if explicitly requested
   if (process.env.GRO_MEMORY === "simple") {
-    Logger.info("MemoryMode=Simple (GRO_MEMORY=simple)");
+    Logger.info(`${C.cyan("MemoryMode=Simple")} ${C.gray("(GRO_MEMORY=simple)")}`);
     const mem = new SimpleMemory(cfg.systemPrompt || undefined);
     mem.setMeta(cfg.provider, cfg.model);
     return mem;
@@ -478,7 +478,7 @@ function createMemory(cfg: GroConfig, driver: ChatDriver): AgentMemory {
     Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
   }
 
-  Logger.info(`MemoryMode=Virtual (default) workingMemory=${cfg.contextTokens} tokens`);
+  Logger.info(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
   const vm = new VirtualMemory({
     driver: summarizerDriver ?? driver,
     summarizerModel: summarizerModel ?? cfg.model,
@@ -707,7 +707,7 @@ async function executeTurn(
           .join(", ");
         toolCallDisplay = argPairs ? `${fnName}(${argPairs})` : `${fnName}()`;
       }
-      Logger.info(`[Tool call] ${toolCallDisplay}`);
+      Logger.info(`${C.magenta("[Tool call]")} ${C.bold(fnName)}${toolCallDisplay.slice(fnName.length)}`);
 
       let result: string;
       try {

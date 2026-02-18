@@ -696,7 +696,8 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
                     result = executeBash(fnArgs);
                 }
                 else if (fnName === "gro_version") {
-                    result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent });
+                    const memoryMode = process.env.GRO_MEMORY === "simple" ? "simple" : "virtual";
+                    result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode });
                 }
                 else if (fnName === "memory_status") {
                     result = executeMemoryStatus(fnArgs, memory);

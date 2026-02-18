@@ -21,6 +21,7 @@ interface GroRuntimeInfo {
   node_version: string;
   platform: string;
   persistent: boolean;
+  memory_mode: string;
 }
 
 /** Read version from package.json — single source of truth. */
@@ -82,6 +83,7 @@ export function executeGroVersion(cfg: {
   provider: string;
   model: string;
   persistent: boolean;
+  memoryMode?: string;
 }): string {
   const info: GroRuntimeInfo = {
     runtime: "gro",
@@ -93,6 +95,7 @@ export function executeGroVersion(cfg: {
     node_version: process.version,
     platform: process.platform,
     persistent: cfg.persistent,
+    memory_mode: cfg.memoryMode ?? "simple",
   };
   return JSON.stringify(info, null, 2);
 }

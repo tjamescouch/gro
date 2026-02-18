@@ -71,6 +71,7 @@ export function executeGroVersion(cfg) {
         node_version: process.version,
         platform: process.platform,
         persistent: cfg.persistent,
+        memory_mode: cfg.memoryMode ?? "simple",
     };
     return JSON.stringify(info, null, 2);
 }

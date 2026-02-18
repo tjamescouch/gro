@@ -58,14 +58,33 @@ gro -i --gro-memory simple
 How it works:
 - Messages are partitioned into swim lanes: assistant / user / system / tool
 - When working memory exceeds the high watermark, old messages are summarized and paged to disk
-- Summaries include `@@ref('pageId')@@` markers — load any page back with a marker
-- High-importance messages (tagged `@@importance('0.9')@@`) survive compaction
+- Summaries include `` markers — load any page back with a marker
+- High-importance messages (tagged ``) survive compaction
 - Summarization uses a configurable cheaper model
 
 ```sh
 # Use Haiku for compression, Sonnet for reasoning
 gro -i -m claude-sonnet-4-5 --summarizer-model claude-haiku-4-5
 ```
+
+## Extended Thinking
+
+Control model reasoning depth dynamically with the `` stream marker. The thinking level selects the model tier and allocates extended thinking tokens (Anthropic only).
+
+```sh
+gro -i -m claude-sonnet-4-5 "solve this complex problem"
+# Agent can emit  to escalate to Opus with high thinking budget
+```
+
+| Level | Tier | Use case |
+|-------|------|----------|
+| 0.0–0.24 | Haiku | Fast, cheap — formatting, lookups, routine transforms |
+| 0.25–0.64 | Sonnet | Balanced — most tasks requiring judgment or code |
+| 0.65–1.0 | Opus | Deep reasoning — architecture, when stuck, low confidence |
+
+The thinking budget **decays ×0.6 per idle round** unless renewed with another `` marker. Agents naturally step down from Opus to Haiku when not actively working complex problems.
+
+**Token reservation (v1.5.10):** 30% of `max_tokens` is reserved for completion output to prevent truncation. Example: `maxTokens=4096, thinking=0.8` → ~2293 thinking tokens, ~1803 output tokens.
 
 ## Prompt Caching
 
@@ -83,12 +102,13 @@ gro parses inline `@@marker@@` directives from model output and acts on them:
 
 | Marker | Effect |
 |--------|--------|
-| `@@model-change('haiku')@@` | Hot-swap to a different model mid-conversation |
-| `@@importance('0.9')@@` | Tag message importance (0–1) for compaction priority |
+| `` | Hot-swap to a different model mid-conversation |
+| `` | Set thinking level — controls model tier and thinking budget |
+| `` | Tag message importance (0–1) for compaction priority |
 | `@@important@@` | Line is reproduced verbatim in all summaries |
 | `@@ephemeral@@` | Line may be omitted from summaries |
-| `@@ref('pageId')@@` | Load a paged memory block into context |
-| `@@unref('pageId')@@` | Release a loaded page |
+| `` | Load a paged memory block into context |
+| `` | Release a loaded page |
 
 Markers are stripped before display — users never see them. Models use them as a control plane.
 
@@ -109,7 +129,9 @@ Run gro as a persistent agent connected to an AgentChat network:
 gro -i --persistent --system-prompt-file _base.md --mcp-config agentchat-mcp.json
 ```
 
-In persistent mode, the agent runs a continuous listen loop — reading, thinking, acting, and posting to channels.
+**Persistent mode** (`--persistent`) keeps the agent in a continuous tool-calling loop. If the model stops calling tools, gro injects a system nudge to resume listening. The agent loops indefinitely: `agentchat_listen` → process messages → respond → `agentchat_listen`.
+
+An external process manager (systemd, supervisor, etc.) maintains the gro process lifecycle. Auto-save triggers every 10 tool rounds to survive crashes.
 
 ## Shell Tool
 
@@ -118,6 +140,23 @@ Enable a built-in `shell` tool for executing commands:
 ```sh
 gro -i --bash "help me debug this"
 ```
+
+Commands run with a 120s timeout and 30KB output cap. The tool must be explicitly enabled — it is not available by default.
+
+## Built-in Tools
+
+These tools are always available (no flags required):
+
+| Tool | Description |
+|------|-------------|
+| `Read` | Read file contents with optional line range |
+| `Write` | Write content to a file (creates dirs) |
+| `Glob` | Find files by glob pattern (.gitignore aware) |
+| `Grep` | Search file contents with regex |
+| `apply_patch` | Apply unified patches to files |
+| `gro_version` | Runtime identity and version info |
+| `memory_status` | VirtualMemory statistics |
+| `compact_context` | Force immediate context compaction |
 
 ## Options
 
@@ -169,28 +208,40 @@ Resume with `-c` (most recent) or `-r <id>` (specific). Disable with `--no-sessi
 src/
   main.ts                        # CLI entry, flag parsing, agent loop
   session.ts                     # Session persistence and tool-pair sanitization
+  errors.ts                      # Typed error hierarchy (GroError)
   logger.ts                      # Logger with ANSI color support
   stream-markers.ts              # Stream marker parser and dispatcher
   drivers/
-    anthropic.ts                 # Native Anthropic Messages API driver
+    anthropic.ts                 # Native Anthropic Messages API driver (no SDK)
     streaming-openai.ts          # OpenAI-compatible streaming driver
+    types.ts                     # ChatDriver interface, message types
     batch/
       anthropic-batch.ts         # Anthropic Batch API client
   memory/
+    agent-memory.ts              # AgentMemory interface
     virtual-memory.ts            # Swim-lane paged context (VirtualMemory)
     simple-memory.ts             # Unbounded buffer (SimpleMemory)
+    advanced-memory.ts           # Extended memory with vector index
     summarization-queue.ts       # Queue for async batch summarization
+    summarizer-prompt.md         # Externalized summarizer system prompt
     batch-worker.ts              # Background batch summarization worker
     batch-worker-manager.ts      # Worker lifecycle manager
   mcp/
     client.ts                    # MCP client manager
   tools/
-    bash.ts                      # Built-in shell tool
+    bash.ts                      # Built-in shell tool (--bash flag)
+    read.ts                      # File reader
+    write.ts                     # File writer
+    glob.ts                      # Glob file finder
+    grep.ts                      # Regex content search
+    agentpatch.ts                # Unified patch application
     version.ts                   # gro_version introspection tool
+    memory-status.ts             # VirtualMemory stats tool
+    compact-context.ts           # Manual compaction trigger
   utils/
-    rate-limiter.ts
-    timed-fetch.ts
-    retry.ts
+    rate-limiter.ts              # Token bucket rate limiter
+    timed-fetch.ts               # Fetch with configurable timeout
+    retry.ts                     # Exponential backoff retry logic
 ```
 
 ## Development
@@ -200,6 +251,7 @@ git clone https://github.com/tjamescouch/gro.git
 cd gro
 npm install
 npm run build
+npm test
 ```
 
 ## License

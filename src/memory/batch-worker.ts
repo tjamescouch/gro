@@ -56,6 +56,8 @@ export class BatchWorker {
   private cfg: Required<BatchWorkerConfig>;
   private activeBatches: TrackedBatch[] = [];
   private running = false;
+  private processingQueue = false;
+  private pollingBatches = false;
   private queuePollTimer?: NodeJS.Timeout;
   private batchPollTimer?: NodeJS.Timeout;
 
@@ -86,17 +88,21 @@ export class BatchWorker {
 
     // Poll queue for new tasks
     this.queuePollTimer = setInterval(() => {
-      this.processQueue();
+      if (this.processingQueue) return;
+      this.processingQueue = true;
+      this.processQueue().catch(e => Logger.error("[BatchWorker] processQueue error:", e)).finally(() => { this.processingQueue = false; });
     }, this.cfg.pollInterval);
 
     // Poll active batches for completion
     this.batchPollTimer = setInterval(() => {
-      this.pollBatches();
+      if (this.pollingBatches) return;
+      this.pollingBatches = true;
+      this.pollBatches().catch(e => Logger.error("[BatchWorker] pollBatches error:", e)).finally(() => { this.pollingBatches = false; });
     }, this.cfg.batchPollInterval);
 
     // Run immediately on start
-    this.processQueue();
-    this.pollBatches();
+    this.processQueue().catch(e => Logger.error("[BatchWorker] processQueue error:", e));
+    this.pollBatches().catch(e => Logger.error("[BatchWorker] pollBatches error:", e));
   }
 
   /**

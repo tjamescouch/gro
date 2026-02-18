@@ -584,15 +584,18 @@ async function executeTurn(
   const THINKING_DECAY = 0.6; // ×0.6 per idle round → from 0.8 back to haiku in ~5 rounds
   let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
 
-  /** Select model tier based on thinking budget and provider */
+  /** Select model tier based on thinking budget and provider.
+   * cfg.model is always the top tier — unknown models are assumed frontier.
+   * Lower tiers use known cheap/mid models regardless of what cfg.model is.
+   */
   function thinkingTierModel(budget: number): string {
-    const provider = inferProvider(cfg.provider, activeModel);
+    const provider = inferProvider(cfg.provider, cfg.model);
     if (budget < 0.25) {
-      return provider === "openai" ? "gpt-4o-mini" : MODEL_ALIASES["haiku"] ?? activeModel;
+      return provider === "openai" ? "gpt-4o-mini" : MODEL_ALIASES["haiku"] ?? cfg.model;
     } else if (budget >= 0.65) {
-      return provider === "openai" ? "o3" : MODEL_ALIASES["opus"] ?? activeModel;
+      return cfg.model;
     }
-    return provider === "openai" ? "gpt-4o" : MODEL_ALIASES["sonnet"] ?? activeModel;
+    return provider === "openai" ? "gpt-4o" : MODEL_ALIASES["sonnet"] ?? cfg.model;
   }
 
   let brokeCleanly = false;

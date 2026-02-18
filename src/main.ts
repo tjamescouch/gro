@@ -716,7 +716,7 @@ async function executeTurn(
         } else if (fnName === "bash" && cfg.bash) {
           result = executeBash(fnArgs);
         } else if (fnName === "gro_version") {
-          result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent });
+          result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode: memory.constructor.name });
         } else if (fnName === "memory_status") {
           result = executeMemoryStatus(fnArgs, memory);
         } else if (fnName === "compact_context") {

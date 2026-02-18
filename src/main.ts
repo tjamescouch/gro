@@ -531,6 +531,20 @@ function resolveModelAlias(alias: string): string {
   return MODEL_ALIASES[lower] ?? alias;
 }
 
+/** Emotion dimensions routed to visage as state-vector events via @@dim(value)@@ markers. */
+const EMOTION_DIMENSIONS = new Set([
+  "joy", "sadness", "anger", "fear", "surprise", "disgust",
+  "confidence", "uncertainty", "excitement", "calm", "urgency", "reverence",
+]);
+
+/** Emit a state-vector event for visage/dashboard consumption. */
+function emitStateVector(state: Record<string, number>, outputFormat: string): void {
+  if (outputFormat === "stream-json") {
+    process.stdout.write(JSON.stringify({ type: "state-vector", state }) + "\n");
+  } else {
+    process.stderr.write(`STATE_VECTOR: ${JSON.stringify(state)}\n`);
+  }
+}
 
 /**
  * Execute a single turn: call the model, handle tool calls, repeat until
@@ -563,16 +577,19 @@ async function executeTurn(
 
   // Mutable model reference — stream markers can switch this mid-turn
   let activeModel = cfg.model;
-  // Thinking budget: baseline 0.5, modulated by @@thinking(N)@@, regresses to mean each round
-  let activeThinkingBudget = 0.5;
-  const THINKING_DECAY = 0.5; // half-life of 1 round back toward 0.5
+  // Thinking level: 0.0 = idle (haiku), 1.0 = full (opus + max budget).
+  // Decays toward 0 each round without @@thinking()@@ — agents return to haiku when idle.
+  // Emit @@thinking(0.8)@@ to go into the phone booth; let it decay to come back out.
+  let activeThinkingBudget = 0;
+  const THINKING_DECAY = 0.6; // ×0.6 per idle round → from 0.8 back to haiku in ~5 rounds
+  let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
 
   /** Select model tier based on thinking budget and provider */
   function thinkingTierModel(budget: number): string {
     const provider = inferProvider(cfg.provider, activeModel);
-    if (budget < 0.3) {
+    if (budget < 0.25) {
       return provider === "openai" ? "gpt-4o-mini" : MODEL_ALIASES["haiku"] ?? activeModel;
-    } else if (budget > 0.7) {
+    } else if (budget >= 0.65) {
       return provider === "openai" ? "o3" : MODEL_ALIASES["opus"] ?? activeModel;
     }
     return provider === "openai" ? "gpt-4o" : MODEL_ALIASES["sonnet"] ?? activeModel;
@@ -584,6 +601,8 @@ async function executeTurn(
   for (let round = 0; round < cfg.maxToolRounds; round++) {
     let roundHadFailure = false;
     let roundImportance: number | undefined = undefined;
+    let thinkingSeenThisTurn = false;
+
     // Shared marker handler — used by both streaming parser and tool-arg scanner
     const handleMarker = (marker: { name: string; arg: string }) => {
       if (marker.name === "model-change") {
@@ -596,6 +615,7 @@ async function executeTurn(
           activeModel = newModel;
           cfg.model = newModel;       // persist across turns
           memory.setModel(newModel);  // persist in session metadata on save
+          modelExplicitlySet = true;  // suppress thinking-tier auto-select
         }
       } else if (marker.name === "ref" && marker.arg) {
         // VirtualMemory page ref — load a page into context for next turn
@@ -619,24 +639,37 @@ async function executeTurn(
           Logger.warn(`Stream marker: importance('${marker.arg}') — invalid value, must be 0.0–1.0`);
         }
       } else if (marker.name === "thinking") {
-        // Dynamic thinking budget — 0.0 disables, 1.0 = full maxTokens budget
-        const budget = parseFloat(marker.arg);
-        if (!isNaN(budget) && budget >= 0 && budget <= 1) {
-          activeThinkingBudget = budget;
-          Logger.info(`Stream marker: thinking budget set to ${budget}`);
+        // Master lever: controls model tier, extended thinking budget, and summarizer.
+        // 0.0–0.24 → haiku, 0.25–0.64 → sonnet, 0.65–1.0 → opus.
+        // Decays toward 0 each idle round — emit each round to maintain level.
+        const level = parseFloat(marker.arg !== "" ? marker.arg : "0.5");
+        if (!isNaN(level) && level >= 0 && level <= 1) {
+          activeThinkingBudget = level;
+          thinkingSeenThisTurn = true;
+          Logger.info(`Stream marker: thinking(${level}) → budget=${level}`);
+          emitStateVector({ thinking: level }, cfg.outputFormat);
         } else {
           Logger.warn(`Stream marker: thinking('${marker.arg}') — invalid value, must be 0.0–1.0`);
+        }
+      } else if (EMOTION_DIMENSIONS.has(marker.name)) {
+        // Function-form emotion marker @@joy(0.6)@@ — route to visage as state vector.
+        const val = marker.arg !== "" ? parseFloat(marker.arg) : 0.5;
+        if (!isNaN(val) && val >= 0 && val <= 1) {
+          emitStateVector({ [marker.name]: val }, cfg.outputFormat);
+          Logger.debug(`Stream marker: ${marker.name}(${val}) → visage`);
         }
       } else {
         Logger.debug(`Stream marker: ${marker.name}('${marker.arg}')`);
       }
     };
 
-    // Select model tier based on current thinking budget
-    const tierModel = thinkingTierModel(activeThinkingBudget);
-    if (tierModel !== activeModel) {
-      Logger.info(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierModel}`);
-      activeModel = tierModel;
+    // Select model tier based on current thinking budget (unless agent pinned a model explicitly)
+    if (!modelExplicitlySet) {
+      const tierModel = thinkingTierModel(activeThinkingBudget);
+      if (tierModel !== activeModel) {
+        Logger.info(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierModel}`);
+        activeModel = tierModel;
+      }
     }
 
     // Create a fresh marker parser per round so partial state doesn't leak
@@ -655,8 +688,12 @@ async function executeTurn(
     // Flush any remaining buffered tokens from the marker parser
     markerParser.flush();
 
-    // Regress thinking budget toward mean (0.5) after each round
-    activeThinkingBudget = 0.5 + (activeThinkingBudget - 0.5) * THINKING_DECAY;
+    // Decay thinking level toward 0 if not refreshed this round.
+    // Agents return to haiku when idle — emit @@thinking(X)@@ each round to maintain level.
+    if (!thinkingSeenThisTurn) {
+      activeThinkingBudget = activeThinkingBudget * THINKING_DECAY;
+      if (activeThinkingBudget < 0.05) activeThinkingBudget = 0;
+    }
 
     // Track token usage for niki budget enforcement
     if (output.usage) {

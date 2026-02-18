@@ -672,7 +672,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
             }
             // Format tool call for readability
             let toolCallDisplay;
-            if (fnName === "bash" && fnArgs.command) {
+            if (fnName === "shell" && fnArgs.command) {
                 toolCallDisplay = `${fnName}(${fnArgs.command})`;
             }
             else {
@@ -692,7 +692,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
                 if (fnName === "apply_patch") {
                     result = executeAgentpatch(fnArgs);
                 }
-                else if (fnName === "bash" && cfg.bash) {
+                else if (fnName === "shell" && cfg.bash) {
                     result = executeBash(fnArgs);
                 }
                 else if (fnName === "gro_version") {

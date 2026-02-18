@@ -12,8 +12,8 @@ export function bashToolDefinition(): any {
   return {
     type: "function",
     function: {
-      name: "bash",
-      description: "Execute a bash command and return its output (stdout + stderr).",
+      name: "shell",
+      description: "Execute a shell command and return its output (stdout + stderr).",
       parameters: {
         type: "object",
         properties: {

@@ -694,7 +694,7 @@ async function executeTurn(
 
       // Format tool call for readability
       let toolCallDisplay: string;
-      if (fnName === "bash" && fnArgs.command) {
+      if (fnName === "shell" && fnArgs.command) {
         toolCallDisplay = `${fnName}(${fnArgs.command})`;
       } else {
         // For other tools, show args in key=value format
@@ -713,7 +713,7 @@ async function executeTurn(
       try {
         if (fnName === "apply_patch") {
           result = executeAgentpatch(fnArgs);
-        } else if (fnName === "bash" && cfg.bash) {
+        } else if (fnName === "shell" && cfg.bash) {
           result = executeBash(fnArgs);
         } else if (fnName === "gro_version") {
           const memoryMode = process.env.GRO_MEMORY === "simple" ? "simple" : "virtual";

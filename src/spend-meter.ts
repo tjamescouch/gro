@@ -21,6 +21,14 @@ const PRICING: Record<string, { in: number; out: number }> = {
   "gpt-4-turbo":                { in: 10.00, out: 30.00 },
   "o1":                         { in: 15.00, out: 60.00 },
   "o3-mini":                    { in: 1.10,  out: 4.40  },
+  // Groq
+  "llama-3.3-70b-versatile":    { in: 0.59,  out: 0.79  },
+  "llama-3.1-70b-versatile":    { in: 0.59,  out: 0.79  },
+  "llama-3.1-8b-instant":       { in: 0.05,  out: 0.08  },
+  "llama3-70b-8192":            { in: 0.59,  out: 0.79  },
+  "llama3-8b-8192":             { in: 0.05,  out: 0.08  },
+  "gemma2-9b-it":               { in: 0.20,  out: 0.20  },
+  "mixtral-8x7b-32768":         { in: 0.24,  out: 0.24  },
 };
 
 const DEFAULT_PRICING = { in: 3.00, out: 15.00 }; // sonnet fallback

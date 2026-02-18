@@ -10,8 +10,10 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { getKey, setKey, resolveKey, envVarName } from "./keychain.js";
 import { Logger, C } from "./logger.js";
 import { spendMeter } from "./spend-meter.js";
 import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
@@ -65,7 +67,7 @@ const WAKE_NOTES_DEFAULT_PATH = join(process.env.HOME || "", ".claude", "WAKE.md
 // ---------------------------------------------------------------------------
 
 interface GroConfig {
-  provider: "openai" | "anthropic" | "local";
+  provider: "openai" | "anthropic" | "groq" | "local";
   model: string;
   baseUrl: string;
   apiKey: string;
@@ -222,6 +224,7 @@ function loadConfig(): GroConfig {
         if (i + 1 < args.length && !args[i + 1].startsWith("-")) { i++; } // consume filter
       }
     }
+    else if (arg === "--set-key") { flags.setKey = args[++i]; }
     else if (arg === "-V" || arg === "--version") { console.log(`gro ${VERSION}`); process.exit(0); }
     else if (arg === "-h" || arg === "--help") { usage(); process.exit(0); }
     // --- graceful degradation for unsupported claude flags ---
@@ -234,6 +237,16 @@ function loadConfig(): GroConfig {
     }
     else if (!arg.startsWith("-")) { positional.push(arg); }
     else { Logger.warn(`Unknown flag: ${arg}`); }
+  }
+
+  if (flags.setKey) {
+    // Run key-storage flow and exit — never falls through to agent loop
+    runSetKey(flags.setKey).then(() => process.exit(0)).catch(e => {
+      Logger.error(String(e));
+      process.exit(1);
+    });
+    // Return a dummy config; the async handler exits before it's used
+    return {} as GroConfig;
   }
 
   const provider = inferProvider(flags.provider, flags.model || process.env.AGENT_MODEL);
@@ -330,15 +343,17 @@ ${systemPrompt}` : wake;
   };
 }
 
-function inferProvider(explicit?: string, model?: string): "openai" | "anthropic" | "local" {
+function inferProvider(explicit?: string, model?: string): "openai" | "anthropic" | "groq" | "local" {
   if (explicit) {
-    if (explicit === "openai" || explicit === "anthropic" || explicit === "local") return explicit;
+    if (explicit === "openai" || explicit === "anthropic" || explicit === "groq" || explicit === "local") return explicit;
     Logger.warn(`Unknown provider "${explicit}", defaulting to anthropic`);
     return "anthropic";
   }
   if (model) {
     if (/^(gpt-|o1-|o3-|o4-|chatgpt-)/.test(model)) return "openai";
     if (/^(claude-|sonnet|haiku|opus)/.test(model)) return "anthropic";
+    // Groq-hosted models — only matched when base URL implies groq or provider is explicit
+    if (/^(llama-3|gemma2-|gemma-|mixtral-|whisper-)/.test(model)) return "groq";
     if (/^(gemma|llama|mistral|phi|qwen|deepseek)/.test(model)) return "local";
   }
   return "anthropic";
@@ -346,27 +361,25 @@ function inferProvider(explicit?: string, model?: string): "openai" | "anthropic
 
 function defaultModel(provider: string): string {
   switch (provider) {
-    case "openai": return "gpt-4o";
+    case "openai":    return "gpt-4o";
     case "anthropic": return "claude-sonnet-4-20250514";
-    case "local": return "llama3";
-    default: return "claude-sonnet-4-20250514";
+    case "groq":      return "llama-3.3-70b-versatile";
+    case "local":     return "llama3";
+    default:          return "claude-sonnet-4-20250514";
   }
 }
 
 function defaultBaseUrl(provider: string): string {
   switch (provider) {
-    case "openai": return process.env.OPENAI_BASE_URL || "https://api.openai.com";
-    case "local": return "http://127.0.0.1:11434";
-    default: return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
+    case "openai":    return process.env.OPENAI_BASE_URL    || "https://api.openai.com";
+    case "groq":      return "https://api.groq.com/openai/v1";
+    case "local":     return "http://127.0.0.1:11434";
+    default:          return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
   }
 }
 
 function resolveApiKey(provider: string): string {
-  switch (provider) {
-    case "openai": return process.env.OPENAI_API_KEY || "";
-    case "anthropic": return process.env.ANTHROPIC_API_KEY || "";
-    default: return "";
-  }
+  return resolveKey(provider);
 }
 
 function usage() {
@@ -378,7 +391,8 @@ usage:
   gro -i                        # interactive mode
 
 options:
-  -P, --provider         openai | anthropic | local (default: anthropic)
+  --set-key <provider>   store API key in macOS Keychain (anthropic | openai | groq)
+  -P, --provider         openai | anthropic | groq | local (default: anthropic)
   -m, --model            model name (auto-infers provider)
   --base-url             API base URL
   --system-prompt        system prompt text
@@ -411,11 +425,75 @@ session state is stored in .gro/context/<session-id>/`);
 }
 
 // ---------------------------------------------------------------------------
+// Key management
+// ---------------------------------------------------------------------------
+
+async function runSetKey(provider: string): Promise<void> {
+  const known = ["anthropic", "openai", "groq"];
+  if (!known.includes(provider)) {
+    throw new Error(`Unknown provider "${provider}". Valid: ${known.join(", ")}`);
+  }
+
+  const current = getKey(provider);
+  if (current) {
+    process.stdout.write(`Keychain already has a key for ${provider} (${current.slice(0, 8)}…). Overwrite? [y/N] `);
+    const answer = await readLine();
+    if (!answer.toLowerCase().startsWith("y")) {
+      console.log("Aborted.");
+      return;
+    }
+  }
+
+  process.stdout.write(`Enter API key for ${provider}: `);
+  const key = await readLineHidden();
+  process.stdout.write("\n");
+
+  if (!key.trim()) {
+    throw new Error("No key entered — aborted.");
+  }
+
+  setKey(provider, key.trim());
+  console.log(`✓ Key stored in Keychain for provider "${provider}"`);
+}
+
+function readLine(): Promise<string> {
+  return new Promise(resolve => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.once("line", line => { rl.close(); resolve(line); });
+  });
+}
+
+function readLineHidden(): Promise<string> {
+  return new Promise(resolve => {
+    // Disable echo by switching stdin to raw mode
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    process.stdin.resume();
+    let buf = "";
+    const onData = (chunk: Buffer) => {
+      const s = chunk.toString("utf8");
+      for (const ch of s) {
+        if (ch === "\r" || ch === "\n") {
+          process.stdin.removeListener("data", onData);
+          if (process.stdin.isTTY) process.stdin.setRawMode(false);
+          process.stdin.pause();
+          resolve(buf);
+          return;
+        }
+        if (ch === "\x03") { process.exit(1); } // Ctrl-C
+        if (ch === "\x7f" || ch === "\b") { buf = buf.slice(0, -1); } // backspace
+        else { buf += ch; }
+      }
+    };
+    process.stdin.on("data", onData);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Driver factory
 // ---------------------------------------------------------------------------
 
 function createDriverForModel(
-  provider: "openai" | "anthropic" | "local",
+  provider: "openai" | "anthropic" | "groq" | "local",
   model: string,
   apiKey: string,
   baseUrl: string,
@@ -424,17 +502,24 @@ function createDriverForModel(
   switch (provider) {
     case "anthropic":
       if (!apiKey && baseUrl === "https://api.anthropic.com") {
-        Logger.error("gro: ANTHROPIC_API_KEY not set (set ANTHROPIC_BASE_URL for proxy mode)");
+        Logger.error(`gro: no API key for anthropic — run: gro --set-key anthropic`);
         process.exit(1);
       }
       return makeAnthropicDriver({ apiKey: apiKey || "proxy-managed", model, baseUrl, maxTokens });
 
     case "openai":
       if (!apiKey && baseUrl === "https://api.openai.com") {
-        Logger.error("gro: OPENAI_API_KEY not set (set OPENAI_BASE_URL for proxy mode)");
+        Logger.error(`gro: no API key for openai — run: gro --set-key openai`);
         process.exit(1);
       }
       return makeStreamingOpenAiDriver({ baseUrl, model, apiKey: apiKey || undefined });
+
+    case "groq":
+      if (!apiKey) {
+        Logger.error(`gro: no API key for groq — run: gro --set-key groq`);
+        process.exit(1);
+      }
+      return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
 
     case "local":
       return makeStreamingOpenAiDriver({ baseUrl, model });

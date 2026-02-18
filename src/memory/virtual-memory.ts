@@ -2,11 +2,28 @@ import type { ChatDriver, ChatMessage } from "../drivers/types.js";
 import { AgentMemory } from "./agent-memory.js";
 import { saveSession, loadSession, ensureGroDir } from "../session.js";
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { SummarizationQueue } from "./summarization-queue.js";
 import { BatchWorkerManager } from "./batch-worker-manager.js";
 import { Logger } from "../logger.js";
+
+// Load summarizer system prompt from markdown file (next to this module)
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SUMMARIZER_PROMPT_PATH = join(__dirname, "summarizer-prompt.md");
+let _summarizerPromptBase: string | null = null;
+function getSummarizerPromptBase(): string {
+  if (_summarizerPromptBase === null) {
+    try {
+      _summarizerPromptBase = readFileSync(SUMMARIZER_PROMPT_PATH, "utf-8").trim();
+    } catch {
+      // Fallback if file is missing
+      _summarizerPromptBase = "You are a precise summarizer. Output concise bullet points preserving facts, tasks, file paths, commands, and decisions. Messages marked @@important@@ MUST be reproduced verbatim. Messages marked @@ephemeral@@ can be omitted entirely.";
+    }
+  }
+  return _summarizerPromptBase;
+}
 
 /**
  * VirtualMemory — paged context with inline refs, independent budgets, and swimlane awareness.
@@ -393,7 +410,11 @@ export class VirtualMemory extends AgentMemory {
     const importantLines: string[] = [];
     const transcript = messages.map(m => {
       const raw = String(m.content ?? "");
-      const c = raw.slice(0, 4000);
+      // Hard-strip @@ephemeral@@ lines before summarization
+      const stripped = raw.split("\n")
+        .filter(line => !/@@ephemeral@@/i.test(line))
+        .join("\n");
+      const c = stripped.slice(0, 4000);
       // Collect @@important@@ lines verbatim for the summarizer header
       for (const line of raw.split("\n")) {
         if (/@@important@@/i.test(line)) {
@@ -410,31 +431,14 @@ export class VirtualMemory extends AgentMemory {
       ? `\n\nIMPORTANT — preserve these verbatim in the summary:\n${importantLines.map(l => `  • ${l}`).join("\n")}`
       : "";
 
-    // Lane-specific summarization instructions (inspired by AdvancedMemory)
-    const laneInstructions = lane ? (() => {
-      switch (lane) {
-        case "assistant":
-          return "Focus on assistant decisions, plans, code edits, shell commands, and outcomes. Skip ephemeral status messages.";
-        case "system":
-          return "Summarize system instructions, rules, goals, and constraints without changing their intent.";
-        case "user":
-          return "Summarize user requests, feedback, constraints, and acceptance criteria. Skip filler messages.";
-      }
-    })() : "Summarize this conversation segment preserving key context. Skip ephemeral status messages.";
+    const laneNote = lane
+      ? `\n\n## Active Lane: ${lane}\nApply the lane-specific focus rules for the "${lane}" lane from the rules above.`
+      : "";
 
     const sys: ChatMessage = {
       role: "system",
       from: "System",
-      content: [
-        "You are a precise summarizer. Output concise bullet points preserving facts, tasks, file paths, commands, and decisions.",
-        "Messages tagged [IMPORTANT=N] carry high significance — preserve their content with extra detail in the summary.",
-        "Messages marked @@important@@ MUST be reproduced verbatim.",
-        "Messages marked @@ephemeral@@ can be omitted entirely.",
-        laneInstructions,
-        `End the summary with: `,
-        "This ref is a hyperlink to the full conversation. Always include it.",
-        "Hard limit: ~500 characters.",
-      ].join(" "),
+      content: getSummarizerPromptBase() + laneNote,
     };
 
     const usr: ChatMessage = {

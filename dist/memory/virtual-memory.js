@@ -3,6 +3,7 @@ import { saveSession, loadSession, ensureGroDir } from "../session.js";
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { SummarizationQueue } from "./summarization-queue.js";
 import { Logger } from "../logger.js";
 const DEFAULTS = {
     pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
@@ -18,6 +19,8 @@ const DEFAULTS = {
     lowRatio: 0.50,
     systemPrompt: "",
     summarizerModel: "claude-haiku-4-5",
+    enableBatchSummarization: false,
+    queuePath: join(process.env.HOME ?? "/tmp", ".gro", "summarization-queue.jsonl"),
 };
 // --- VirtualMemory ---
 /** Messages with importance >= this threshold are promoted to the keep set during paging */
@@ -36,6 +39,8 @@ export class VirtualMemory extends AgentMemory {
         /** Load order for eviction (oldest first) */
         this.loadOrder = [];
         this.model = "unknown";
+        /** Summarization queue (if batch mode enabled) */
+        this.summaryQueue = null;
         this.forceCompactPending = false;
         this.cfg = {
             pagesDir: config.pagesDir ?? DEFAULTS.pagesDir,
@@ -52,8 +57,14 @@ export class VirtualMemory extends AgentMemory {
             systemPrompt: config.systemPrompt ?? DEFAULTS.systemPrompt,
             driver: config.driver ?? null,
             summarizerModel: config.summarizerModel ?? DEFAULTS.summarizerModel,
+            enableBatchSummarization: config.enableBatchSummarization ?? DEFAULTS.enableBatchSummarization,
+            queuePath: config.queuePath ?? DEFAULTS.queuePath,
         };
         mkdirSync(this.cfg.pagesDir, { recursive: true });
+        // Initialize summarization queue if batch mode enabled
+        if (this.cfg.enableBatchSummarization) {
+            this.summaryQueue = new SummarizationQueue(this.cfg.queuePath);
+        }
     }
     setModel(model) {
         this.model = model;
@@ -223,7 +234,18 @@ export class VirtualMemory extends AgentMemory {
         this.savePage(page);
         // Generate summary with embedded ref
         let summary;
-        if (this.cfg.driver) {
+        if (this.cfg.enableBatchSummarization && this.summaryQueue) {
+            // Queue page for async batch summarization
+            this.summaryQueue.enqueue({
+                pageId: page.id,
+                label,
+                lane,
+                queuedAt: Date.now(),
+            });
+            // Return placeholder summary immediately (non-blocking)
+            summary = `[Pending summary: ${messages.length} messages, ${label}] `;
+        }
+        else if (this.cfg.driver) {
             summary = await this.summarizeWithRef(messages, page.id, label, lane);
         }
         else {

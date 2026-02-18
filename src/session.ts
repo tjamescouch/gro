@@ -99,6 +99,19 @@ export function saveSession(
 function sanitizeToolPairs(messages: ChatMessage[]): ChatMessage[] {
   if (messages.length === 0) return messages;
 
+  // Collect all tool_use IDs from assistant messages
+  const toolUseIds = new Set<string>();
+  for (const m of messages) {
+    if (m.role === "assistant") {
+      const toolCalls = (m as any).tool_calls as Array<{ id: string }> | undefined;
+      if (Array.isArray(toolCalls)) {
+        for (const tc of toolCalls) {
+          if (tc.id) toolUseIds.add(tc.id);
+        }
+      }
+    }
+  }
+
   // Collect all tool_call IDs that have results
   const answeredIds = new Set<string>();
   for (const m of messages) {
@@ -107,9 +120,15 @@ function sanitizeToolPairs(messages: ChatMessage[]): ChatMessage[] {
     }
   }
 
-  // Find assistant messages with unanswered tool_calls and inject placeholders
+  // Find assistant messages with unanswered tool_calls and inject placeholders.
+  // Also drop tool_result messages whose tool_use was removed from history
+  // (e.g. by context truncation) — the API rejects orphaned tool_results with 400.
   const result: ChatMessage[] = [];
   for (const m of messages) {
+    if (m.role === "tool" && m.tool_call_id && !toolUseIds.has(m.tool_call_id)) {
+      Logger.warn(`Session repair: dropping orphaned tool_result for missing call ${m.tool_call_id}`);
+      continue;
+    }
     result.push(m);
     const toolCalls = (m as any).tool_calls as Array<{ id: string; function?: { name?: string } }> | undefined;
     if (m.role === "assistant" && Array.isArray(toolCalls)) {

@@ -51,6 +51,21 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
   let systemPrompt: string | undefined;
   const apiMessages: any[] = [];
 
+  // Pre-scan: collect all tool_use IDs so we can drop orphaned tool_results
+  // (happens when virtual-memory truncation drops the assistant tool_use message
+  //  but keeps the tool_result that follows it — Anthropic rejects with 400)
+  const knownToolUseIds = new Set<string>();
+  for (const m of messages) {
+    if (m.role === "assistant") {
+      const toolCalls = (m as any).tool_calls;
+      if (Array.isArray(toolCalls)) {
+        for (const tc of toolCalls) {
+          if (tc.id) knownToolUseIds.add(tc.id);
+        }
+      }
+    }
+  }
+
   for (const m of messages) {
     if (m.role === "system") {
       systemPrompt = systemPrompt ? systemPrompt + "\n" + m.content : m.content;
@@ -83,6 +98,11 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
     }
 
     if (m.role === "tool") {
+      // Skip orphaned tool_results — their tool_use was truncated from history
+      if (m.tool_call_id && !knownToolUseIds.has(m.tool_call_id)) {
+        Logger.warn(`Dropping orphaned tool_result for missing tool_use id=${m.tool_call_id}`);
+        continue;
+      }
       // Tool results must be in a user message with tool_result content blocks
       const block = {
         type: "tool_result",

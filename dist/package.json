@@ -1,6 +1,6 @@
 {
   "name": "@tjamescouch/gro",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "description": "Provider-agnostic LLM runtime with context management",
   "bin": {
     "gro": "./dist/main.js"

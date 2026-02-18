@@ -39,7 +39,8 @@ function getNumArg(flag: string, envVar?: string, defaultValue?: number): number
 
 const queuePath = getArg("--queue-path", "QUEUE_PATH") || "/tmp/gro-queue.json";
 const pagesDir = getArg("--pages-dir", "PAGES_DIR") || "/tmp/gro-pages";
-const apiKey = getArg("--api-key", "ANTHROPIC_API_KEY");
+// API key: prefer GRO_BATCH_API_KEY (set by BatchWorkerManager) then ANTHROPIC_API_KEY
+const apiKey = process.env.GRO_BATCH_API_KEY || getArg("--api-key", "ANTHROPIC_API_KEY");
 const pollInterval = getNumArg("--poll-interval", "POLL_INTERVAL", 60000);
 const batchPollInterval = getNumArg("--batch-poll-interval", "BATCH_POLL_INTERVAL", 300000);
 const batchSize = getNumArg("--batch-size", "BATCH_SIZE", 10000);

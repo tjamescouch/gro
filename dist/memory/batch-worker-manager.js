@@ -16,6 +16,8 @@ export class BatchWorkerManager {
         this.worker = null;
         this.stopping = false;
         this.cfg = config;
+        // Register cleanup once at construction time
+        process.once("exit", () => this.stop());
     }
     /**
      * Spawn the batch worker process.
@@ -28,11 +30,10 @@ export class BatchWorkerManager {
         Logger.info("[BatchWorkerManager] Starting batch worker subprocess");
         // Path to the standalone worker script (in dist/)
         const workerScript = join(__dirname, "../batch-worker-standalone.js");
-        // Build args from config
+        // Build args from config (no secrets in argv — visible in ps aux)
         const args = [
             "--queue-path", this.cfg.queuePath,
             "--pages-dir", this.cfg.pagesDir,
-            "--api-key", this.cfg.apiKey,
         ];
         if (this.cfg.pollInterval !== undefined) {
             args.push("--poll-interval", this.cfg.pollInterval.toString());
@@ -46,10 +47,11 @@ export class BatchWorkerManager {
         if (this.cfg.model !== undefined) {
             args.push("--model", this.cfg.model);
         }
-        // Fork the worker
+        // Fork the worker — pass API key via env, not argv
         this.worker = fork(workerScript, args, {
             stdio: ["ignore", "inherit", "inherit", "ipc"],
             detached: false,
+            env: { ...process.env, GRO_BATCH_API_KEY: this.cfg.apiKey },
         });
         Logger.info(`[BatchWorkerManager] Worker spawned (PID ${this.worker.pid})`);
         // Handle worker exit
@@ -65,10 +67,6 @@ export class BatchWorkerManager {
         // Handle worker errors
         this.worker.on("error", (err) => {
             Logger.error(`[BatchWorkerManager] Worker error: ${err}`);
-        });
-        // Register cleanup on parent exit
-        process.on("exit", () => {
-            this.stop();
         });
     }
     /**

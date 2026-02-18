@@ -211,13 +211,20 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
 
     const { system: systemPrompt, apiMessages } = convertMessages(messages);
 
+    const thinkingBudget: number = opts?.thinkingBudget ?? 0;
+    const thinkingConfig = thinkingBudget > 0
+      ? { type: "enabled", budget_tokens: Math.round(maxTokens * Math.min(1, thinkingBudget)) }
+      : { type: "disabled" };
+
     const body: any = {
       model: resolvedModel,
       max_tokens: maxTokens,
       messages: apiMessages,
     };
-    // Only include adaptive thinking for models that support it
-    if (supportsAdaptiveThinking(resolvedModel)) {
+    // Apply thinking config: explicit budget takes priority, else adaptive if supported
+    if (thinkingBudget > 0) {
+      body.thinking = thinkingConfig;
+    } else if (supportsAdaptiveThinking(resolvedModel)) {
       body.thinking = { type: "adaptive" };
     }
     

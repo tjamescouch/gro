@@ -40,5 +40,7 @@ export interface ChatDriver {
     onToken?: (s: string) => void;
     onReasoningToken?: (s: string) => void;
     onToolCallDelta?: (s: ChatToolCall) => void;
+    /** 0.0–1.0 fraction of maxTokens to allocate for extended thinking. 0 = disabled. */
+    thinkingBudget?: number;
   }): Promise<ChatOutput>;
 }

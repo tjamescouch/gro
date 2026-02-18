@@ -563,6 +563,20 @@ async function executeTurn(
 
   // Mutable model reference — stream markers can switch this mid-turn
   let activeModel = cfg.model;
+  // Thinking budget: baseline 0.5, modulated by @@thinking(N)@@, regresses to mean each round
+  let activeThinkingBudget = 0.5;
+  const THINKING_DECAY = 0.5; // half-life of 1 round back toward 0.5
+
+  /** Select model tier based on thinking budget and provider */
+  function thinkingTierModel(budget: number): string {
+    const provider = inferProvider(cfg.provider, activeModel);
+    if (budget < 0.3) {
+      return provider === "openai" ? "gpt-4o-mini" : MODEL_ALIASES["haiku"] ?? activeModel;
+    } else if (budget > 0.7) {
+      return provider === "openai" ? "o3" : MODEL_ALIASES["opus"] ?? activeModel;
+    }
+    return provider === "openai" ? "gpt-4o" : MODEL_ALIASES["sonnet"] ?? activeModel;
+  }
 
   let brokeCleanly = false;
   let idleNudges = 0;
@@ -604,10 +618,26 @@ async function executeTurn(
         } else {
           Logger.warn(`Stream marker: importance('${marker.arg}') — invalid value, must be 0.0–1.0`);
         }
+      } else if (marker.name === "thinking") {
+        // Dynamic thinking budget — 0.0 disables, 1.0 = full maxTokens budget
+        const budget = parseFloat(marker.arg);
+        if (!isNaN(budget) && budget >= 0 && budget <= 1) {
+          activeThinkingBudget = budget;
+          Logger.info(`Stream marker: thinking budget set to ${budget}`);
+        } else {
+          Logger.warn(`Stream marker: thinking('${marker.arg}') — invalid value, must be 0.0–1.0`);
+        }
       } else {
         Logger.debug(`Stream marker: ${marker.name}('${marker.arg}')`);
       }
     };
+
+    // Select model tier based on current thinking budget
+    const tierModel = thinkingTierModel(activeThinkingBudget);
+    if (tierModel !== activeModel) {
+      Logger.info(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierModel}`);
+      activeModel = tierModel;
+    }
 
     // Create a fresh marker parser per round so partial state doesn't leak
     const markerParser = createMarkerParser({
@@ -619,10 +649,14 @@ async function executeTurn(
       model: activeModel,
       tools: tools.length > 0 ? tools : undefined,
       onToken: markerParser.onToken,
+      thinkingBudget: activeThinkingBudget,
     });
 
     // Flush any remaining buffered tokens from the marker parser
     markerParser.flush();
+
+    // Regress thinking budget toward mean (0.5) after each round
+    activeThinkingBudget = 0.5 + (activeThinkingBudget - 0.5) * THINKING_DECAY;
 
     // Track token usage for niki budget enforcement
     if (output.usage) {

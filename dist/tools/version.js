@@ -66,6 +66,8 @@ export function executeGroVersion(cfg) {
         version: GRO_VERSION,
         provider: cfg.provider,
         model: cfg.model,
+        thinking_budget: cfg.thinkingBudget ?? 0,
+        active_model: cfg.activeModel ?? cfg.model,
         pid: process.pid,
         uptime_seconds: Math.floor((Date.now() - startTime) / 1000),
         node_version: process.version,

@@ -16,6 +16,8 @@ interface GroRuntimeInfo {
   version: string;
   provider: string;
   model: string;
+  thinking_budget: number;
+  active_model: string;
   pid: number;
   uptime_seconds: number;
   node_version: string;
@@ -84,12 +86,16 @@ export function executeGroVersion(cfg: {
   model: string;
   persistent: boolean;
   memoryMode?: string;
+  thinkingBudget?: number;
+  activeModel?: string;
 }): string {
   const info: GroRuntimeInfo = {
     runtime: "gro",
     version: GRO_VERSION,
     provider: cfg.provider,
     model: cfg.model,
+    thinking_budget: cfg.thinkingBudget ?? 0,
+    active_model: cfg.activeModel ?? cfg.model,
     pid: process.pid,
     uptime_seconds: Math.floor((Date.now() - startTime) / 1000),
     node_version: process.version,

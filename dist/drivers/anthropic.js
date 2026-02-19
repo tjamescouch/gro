@@ -198,8 +198,10 @@ export function makeAnthropicDriver(cfg) {
         const resolvedModel = opts?.model ?? model;
         const { system: systemPrompt, apiMessages } = convertMessages(messages);
         const thinkingBudget = opts?.thinkingBudget ?? 0;
+        // Reserve 30% of max_tokens for completion output, allocate 70% to thinking budget.
+        // E.g., maxTokens=4096, thinkingBudget=0.8 → thinking gets ~2293 tokens, output ~1803
         const thinkingConfig = thinkingBudget > 0
-            ? { type: "enabled", budget_tokens: Math.round(maxTokens * Math.min(1, thinkingBudget)) }
+            ? { type: "enabled", budget_tokens: Math.round(maxTokens * Math.min(1, thinkingBudget) * 0.7) }
             : { type: "disabled" };
         const body = {
             model: resolvedModel,

@@ -107,16 +107,17 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     // Strip internal-only fields (from, tool_call_id on non-tool roles) before sending
     const stripped = messages.map(({ from: _from, ...m }) => m);
 
-    // OpenAI requires tool messages to immediately follow assistant messages with tool_calls.
-    // Filter orphaned tool messages (e.g. from memory compaction where assistant msg was removed).
+    // OpenAI requires strict tool_call/tool message pairing. Memory compaction can break this.
+    // Fix both directions: orphaned tool messages AND orphaned tool_calls.
     const wireMessages: typeof stripped = [];
     for (let i = 0; i < stripped.length; i++) {
       const msg = stripped[i];
+
+      // Case 1: Orphaned tool message (no preceding assistant with tool_calls)
       if (msg.role === "tool") {
-        // Check if previous message is assistant with tool_calls (OpenAI wire format)
         const prev = wireMessages[wireMessages.length - 1] as any;
         if (!prev || prev.role !== "assistant" || !prev.tool_calls || !prev.tool_calls.length) {
-          // Orphaned tool message — insert placeholder assistant with dummy tool_call
+          // Insert placeholder assistant with dummy tool_call
           wireMessages.push({
             role: "assistant",
             content: "[context compressed — tool invocation truncated]",
@@ -128,7 +129,29 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
           } as any);
         }
       }
+
       wireMessages.push(msg);
+
+      // Case 2: Orphaned tool_calls (assistant has tool_calls but responses were removed)
+      if (msg.role === "assistant" && (msg as any).tool_calls && (msg as any).tool_calls.length > 0) {
+        const calls = (msg as any).tool_calls as Array<{id: string; function: {name: string}}>;
+        // Check if next message(s) are tool responses for these call IDs
+        const nextMsgs = stripped.slice(i + 1);
+        const respondedIds = new Set(
+          nextMsgs.filter(m => m.role === "tool").map(m => (m as any).tool_call_id)
+        );
+        // Insert placeholder tool responses for missing IDs
+        for (const call of calls) {
+          if (!respondedIds.has(call.id)) {
+            wireMessages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              name: call.function.name,
+              content: "[context compressed — tool result truncated]"
+            } as any);
+          }
+        }
+      }
     }
 
     const payload: any = { model, messages: wireMessages, stream: true };

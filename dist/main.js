@@ -350,7 +350,7 @@ ${systemPrompt}` : wake;
         persistent: flags.persistent === "true",
         maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
         bash: flags.bash === "true",
-        summarizerModel: flags.summarizerModel || null,
+        summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
         outputFormat: flags.outputFormat || "text",
         continueSession: flags.continue === "true",
         resumeSession: flags.resume || null,
@@ -554,18 +554,24 @@ function createMemory(cfg, driver) {
         return mem;
     }
     // Default: VirtualMemory (safe, cost-controlled)
+    // Default summarizer: Groq llama-3.3-70b-versatile (free tier).
+    // Falls back to main driver if no Groq key is available.
+    const DEFAULT_SUMMARIZER_MODEL = "llama-3.3-70b-versatile";
+    const summarizerModel = cfg.summarizerModel ?? DEFAULT_SUMMARIZER_MODEL;
+    const summarizerProvider = inferProvider(undefined, summarizerModel);
+    const summarizerApiKey = resolveApiKey(summarizerProvider);
     let summarizerDriver;
-    let summarizerModel;
-    if (cfg.summarizerModel) {
-        summarizerModel = cfg.summarizerModel;
-        const summarizerProvider = inferProvider(undefined, summarizerModel);
-        summarizerDriver = createDriverForModel(summarizerProvider, summarizerModel, resolveApiKey(summarizerProvider), defaultBaseUrl(summarizerProvider));
+    if (summarizerApiKey) {
+        summarizerDriver = createDriverForModel(summarizerProvider, summarizerModel, summarizerApiKey, defaultBaseUrl(summarizerProvider));
         Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
+    }
+    else {
+        Logger.info(`Summarizer: no ${summarizerProvider} key — using main driver`);
     }
     Logger.info(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
     const vm = new VirtualMemory({
         driver: summarizerDriver ?? driver,
-        summarizerModel: summarizerModel ?? cfg.model,
+        summarizerModel,
         systemPrompt: cfg.systemPrompt || undefined,
         workingMemoryTokens: cfg.contextTokens,
     });

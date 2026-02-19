@@ -1276,6 +1276,7 @@ async function main() {
     }
     // Set Logger verbose mode
     Logger.setVerbose(cfg.verbose);
+    Logger.info(`${C.cyan("gro")} ${C.gray(VERSION)} ${C.gray(`(${cfg.provider}/${cfg.model})`)}`);
     // Resolve session ID
     let sessionId;
     if (cfg.continueSession) {

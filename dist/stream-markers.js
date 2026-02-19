@@ -4,7 +4,10 @@
  * Intercepts @@name('arg')@@ patterns in the token stream.
  * Generic architecture — any marker type can register a handler.
  *
- * Markers are stripped from the output text that reaches the user.
+ * Markers are replaced with emoji indicators in the output stream:
+ *   💡 for thinking markers (think, relax, thinking)
+ *   🧠 for all other markers (model-change, importance, ref, etc.)
+ *
  * When a complete marker is detected, the registered handler fires.
  *
  * Built-in marker types:
@@ -28,6 +31,11 @@ import { Logger } from "./logger.js";
 const MARKER_RE = /@@([a-zA-Z][a-zA-Z0-9_-]*)(?:\((?:'([^']*)'|"([^"]*)"|([^)]*?))\))?@@/g;
 /** Partial marker detection — we might be mid-stream in a marker */
 const PARTIAL_MARKER_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*)?$/;
+/** Thinking-related marker names get 💡, everything else gets 🧠 */
+const THINKING_MARKERS = new Set(["think", "relax", "thinking"]);
+function markerEmoji(name) {
+    return THINKING_MARKERS.has(name) ? "\u{1F4A1}" : "\u{1F9E0}"; // 💡 or 🧠
+}
 /**
  * Scan a string for markers, fire the handler for each, and return cleaned text.
  * Unlike the streaming parser, this operates on a complete string (e.g. tool call arguments).
@@ -48,6 +56,8 @@ export function extractMarkers(text, onMarker) {
             onMarker(marker);
         }
         catch { /* handled by caller */ }
+        // Emit emoji indicator instead of stripping completely
+        cleaned += markerEmoji(marker.name);
         lastIndex = match.index + match[0].length;
     }
     cleaned += text.slice(lastIndex);
@@ -84,6 +94,11 @@ export function createMarkerParser(opts) {
             catch (e) {
                 Logger.warn(`Marker handler error for ${name}: ${e}`);
             }
+            // Emit emoji indicator into the output stream
+            const emoji = markerEmoji(name);
+            cleanText += emoji;
+            if (onToken)
+                onToken(emoji);
             lastIndex = match.index + match[0].length;
         }
         // Whatever's left after all matches

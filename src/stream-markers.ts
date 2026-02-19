@@ -4,7 +4,10 @@
  * Intercepts @@name('arg')@@ patterns in the token stream.
  * Generic architecture — any marker type can register a handler.
  *
- * Markers are stripped from the output text that reaches the user.
+ * Markers are replaced with emoji indicators in the output stream:
+ *   💡 for thinking markers (think, relax, thinking)
+ *   🧠 for all other markers (model-change, importance, ref, etc.)
+ *
  * When a complete marker is detected, the registered handler fires.
  *
  * Built-in marker types:
@@ -52,6 +55,13 @@ const MARKER_RE = /@@([a-zA-Z][a-zA-Z0-9_-]*)(?:\((?:'([^']*)'|"([^"]*)"|([^)]*?
 /** Partial marker detection — we might be mid-stream in a marker */
 const PARTIAL_MARKER_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*)?$/;
 
+/** Thinking-related marker names get 💡, everything else gets 🧠 */
+const THINKING_MARKERS = new Set(["think", "relax", "thinking"]);
+
+function markerEmoji(name: string): string {
+  return THINKING_MARKERS.has(name) ? "\u{1F4A1}" : "\u{1F9E0}";  // 💡 or 🧠
+}
+
 export interface MarkerParser {
   /** Feed tokens through the parser. Clean text is forwarded to onToken. */
   onToken: (s: string) => void;
@@ -81,6 +91,8 @@ export function extractMarkers(text: string, onMarker: MarkerHandler): string {
       raw: match[0],
     };
     try { onMarker(marker); } catch { /* handled by caller */ }
+    // Emit emoji indicator instead of stripping completely
+    cleaned += markerEmoji(marker.name);
     lastIndex = match.index + match[0].length;
   }
   cleaned += text.slice(lastIndex);
@@ -120,6 +132,11 @@ export function createMarkerParser(opts: MarkerParserOptions): MarkerParser {
       } catch (e: unknown) {
         Logger.warn(`Marker handler error for ${name}: ${e}`);
       }
+
+      // Emit emoji indicator into the output stream
+      const emoji = markerEmoji(name);
+      cleanText += emoji;
+      if (onToken) onToken(emoji);
 
       lastIndex = match.index + match[0].length;
     }

@@ -748,10 +748,10 @@ async function executeTurn(
         const val = marker.arg !== "" ? parseFloat(marker.arg) : 0.5;
         if (!isNaN(val) && val >= 0 && val <= 1) {
           emitStateVector({ [marker.name]: val }, cfg.outputFormat);
-          Logger.debug(`Stream marker: ${marker.name}(${val}) → visage`);
+          Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
         }
       } else {
-        Logger.debug(`Stream marker: ${marker.name}('${marker.arg}')`);
+        Logger.info(`Stream marker: ${marker.name}('${marker.arg}')`);
       }
     };
 

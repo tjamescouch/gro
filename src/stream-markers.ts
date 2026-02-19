@@ -45,9 +45,9 @@ export interface MarkerParserOptions {
 
 /**
  * Regex for matching complete markers.
- * Supports: @@name('arg')@@ and @@name("arg")@@ and @@name(arg)@@
+ * Supports: @@name('arg')@@ and @@name("arg")@@ and @@name(arg)@@ and @@name@@
  */
-const MARKER_RE = /@@([a-zA-Z][a-zA-Z0-9_-]*)\((?:'([^']*)'|"([^"]*)"|([^)]*?))\)@@/g;
+const MARKER_RE = /@@([a-zA-Z][a-zA-Z0-9_-]*)(?:\((?:'([^']*)'|"([^"]*)"|([^)]*?))\))?@@/g;
 
 /** Partial marker detection — we might be mid-stream in a marker */
 const PARTIAL_MARKER_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*)?$/;

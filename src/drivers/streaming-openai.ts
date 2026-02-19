@@ -105,7 +105,32 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     if (cfg.apiKey) headers["Authorization"] = `Bearer ${cfg.apiKey}`;
 
     // Strip internal-only fields (from, tool_call_id on non-tool roles) before sending
-    const wireMessages = messages.map(({ from: _from, ...m }) => m);
+    const stripped = messages.map(({ from: _from, ...m }) => m);
+
+    // OpenAI requires tool messages to immediately follow assistant messages with tool_calls.
+    // Filter orphaned tool messages (e.g. from memory compaction where assistant msg was removed).
+    const wireMessages: typeof stripped = [];
+    for (let i = 0; i < stripped.length; i++) {
+      const msg = stripped[i];
+      if (msg.role === "tool") {
+        // Check if previous message is assistant with tool_calls (OpenAI wire format)
+        const prev = wireMessages[wireMessages.length - 1] as any;
+        if (!prev || prev.role !== "assistant" || !prev.tool_calls || !prev.tool_calls.length) {
+          // Orphaned tool message — insert placeholder assistant with dummy tool_call
+          wireMessages.push({
+            role: "assistant",
+            content: "[context compressed — tool invocation truncated]",
+            tool_calls: [{
+              id: (msg as any).tool_call_id || "truncated",
+              type: "function",
+              function: { name: (msg as any).name || "unknown_tool", arguments: "{}" }
+            }]
+          } as any);
+        }
+      }
+      wireMessages.push(msg);
+    }
+
     const payload: any = { model, messages: wireMessages, stream: true };
     if (tools) {
       payload.tools = tools;

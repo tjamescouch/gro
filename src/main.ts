@@ -323,7 +323,7 @@ ${systemPrompt}` : wake;
     persistent: flags.persistent === "true",
     maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
     bash: flags.bash === "true",
-    summarizerModel: flags.summarizerModel || null,
+    summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
     outputFormat: (flags.outputFormat as GroConfig["outputFormat"]) || "text",
     continueSession: flags.continue === "true",
     resumeSession: flags.resume || null,

@@ -25,8 +25,8 @@ function getSummarizerPromptBase() {
 }
 const DEFAULTS = {
     pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
-    pageSlotTokens: 40_000,
-    workingMemoryTokens: 80_000,
+    pageSlotTokens: 30_000,
+    workingMemoryTokens: 30_000,
     assistantWeight: 8,
     userWeight: 4,
     systemWeight: 3,

@@ -93,12 +93,56 @@ export function makeStreamingOpenAiDriver(cfg) {
         // OpenAI requires strict tool_call/tool message pairing. Memory compaction can break this.
         // Fix both directions: orphaned tool messages AND orphaned tool_calls.
         const wireMessages = [];
+        const consumedIndices = new Set();
         for (let i = 0; i < stripped.length; i++) {
+            if (consumedIndices.has(i))
+                continue;
             const msg = stripped[i];
+            // When we hit an assistant with tool_calls, collect ALL responses immediately
+            if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+                wireMessages.push(msg);
+                const calls = msg.tool_calls;
+                const expectedIds = new Set(calls.map(c => c.id));
+                // Scan ahead to find and collect all tool responses for these call IDs
+                for (let j = i + 1; j < stripped.length; j++) {
+                    const nextMsg = stripped[j];
+                    if (nextMsg.role === "tool" && expectedIds.has(nextMsg.tool_call_id)) {
+                        wireMessages.push(nextMsg);
+                        consumedIndices.add(j);
+                        expectedIds.delete(nextMsg.tool_call_id);
+                    }
+                    else if (nextMsg.role !== "tool") {
+                        // Stop at first non-tool message
+                        break;
+                    }
+                }
+                // Insert placeholders for any missing responses
+                for (const call of calls) {
+                    if (expectedIds.has(call.id)) {
+                        wireMessages.push({
+                            role: "tool",
+                            tool_call_id: call.id,
+                            name: call.function.name,
+                            content: "[context compressed — tool result truncated]"
+                        });
+                    }
+                }
+                continue;
+            }
             // Case 1: Orphaned tool message (no preceding assistant with tool_calls)
             if (msg.role === "tool") {
-                const prev = wireMessages[wireMessages.length - 1];
-                if (!prev || prev.role !== "assistant" || !prev.tool_calls || !prev.tool_calls.length) {
+                // Scan backwards to find the most recent assistant with tool_calls
+                let foundAssistant = false;
+                for (let j = wireMessages.length - 1; j >= 0; j--) {
+                    const prev = wireMessages[j];
+                    if (prev.role === "assistant") {
+                        foundAssistant = !!(prev.tool_calls && prev.tool_calls.length);
+                        break;
+                    }
+                    if (prev.role !== "tool")
+                        break;
+                }
+                if (!foundAssistant) {
                     // Insert placeholder assistant with dummy tool_call
                     wireMessages.push({
                         role: "assistant",
@@ -112,24 +156,6 @@ export function makeStreamingOpenAiDriver(cfg) {
                 }
             }
             wireMessages.push(msg);
-            // Case 2: Orphaned tool_calls (assistant has tool_calls but responses were removed)
-            if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
-                const calls = msg.tool_calls;
-                // Check if next message(s) are tool responses for these call IDs
-                const nextMsgs = stripped.slice(i + 1);
-                const respondedIds = new Set(nextMsgs.filter(m => m.role === "tool").map(m => m.tool_call_id));
-                // Insert placeholder tool responses for missing IDs
-                for (const call of calls) {
-                    if (!respondedIds.has(call.id)) {
-                        wireMessages.push({
-                            role: "tool",
-                            tool_call_id: call.id,
-                            name: call.function.name,
-                            content: "[context compressed — tool result truncated]"
-                        });
-                    }
-                }
-            }
         }
         const payload = { model, messages: wireMessages, stream: true };
         if (tools) {

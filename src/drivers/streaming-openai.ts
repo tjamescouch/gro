@@ -110,13 +110,61 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     // OpenAI requires strict tool_call/tool message pairing. Memory compaction can break this.
     // Fix both directions: orphaned tool messages AND orphaned tool_calls.
     const wireMessages: typeof stripped = [];
+    const consumedIndices = new Set<number>();
+
     for (let i = 0; i < stripped.length; i++) {
+      if (consumedIndices.has(i)) continue;
+
       const msg = stripped[i];
+
+      // When we hit an assistant with tool_calls, collect ALL responses immediately
+      if (msg.role === "assistant" && (msg as any).tool_calls && (msg as any).tool_calls.length > 0) {
+        wireMessages.push(msg);
+
+        const calls = (msg as any).tool_calls as Array<{id: string; function: {name: string}}>;
+        const expectedIds = new Set(calls.map(c => c.id));
+
+        // Scan ahead to find and collect all tool responses for these call IDs
+        for (let j = i + 1; j < stripped.length; j++) {
+          const nextMsg = stripped[j];
+          if (nextMsg.role === "tool" && expectedIds.has((nextMsg as any).tool_call_id)) {
+            wireMessages.push(nextMsg);
+            consumedIndices.add(j);
+            expectedIds.delete((nextMsg as any).tool_call_id);
+          } else if (nextMsg.role !== "tool") {
+            // Stop at first non-tool message
+            break;
+          }
+        }
+
+        // Insert placeholders for any missing responses
+        for (const call of calls) {
+          if (expectedIds.has(call.id)) {
+            wireMessages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              name: call.function.name,
+              content: "[context compressed — tool result truncated]"
+            } as any);
+          }
+        }
+        continue;
+      }
 
       // Case 1: Orphaned tool message (no preceding assistant with tool_calls)
       if (msg.role === "tool") {
-        const prev = wireMessages[wireMessages.length - 1] as any;
-        if (!prev || prev.role !== "assistant" || !prev.tool_calls || !prev.tool_calls.length) {
+        // Scan backwards to find the most recent assistant with tool_calls
+        let foundAssistant = false;
+        for (let j = wireMessages.length - 1; j >= 0; j--) {
+          const prev = wireMessages[j] as any;
+          if (prev.role === "assistant") {
+            foundAssistant = !!(prev.tool_calls && prev.tool_calls.length);
+            break;
+          }
+          if (prev.role !== "tool") break;
+        }
+
+        if (!foundAssistant) {
           // Insert placeholder assistant with dummy tool_call
           wireMessages.push({
             role: "assistant",
@@ -131,27 +179,6 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
       }
 
       wireMessages.push(msg);
-
-      // Case 2: Orphaned tool_calls (assistant has tool_calls but responses were removed)
-      if (msg.role === "assistant" && (msg as any).tool_calls && (msg as any).tool_calls.length > 0) {
-        const calls = (msg as any).tool_calls as Array<{id: string; function: {name: string}}>;
-        // Check if next message(s) are tool responses for these call IDs
-        const nextMsgs = stripped.slice(i + 1);
-        const respondedIds = new Set(
-          nextMsgs.filter(m => m.role === "tool").map(m => (m as any).tool_call_id)
-        );
-        // Insert placeholder tool responses for missing IDs
-        for (const call of calls) {
-          if (!respondedIds.has(call.id)) {
-            wireMessages.push({
-              role: "tool",
-              tool_call_id: call.id,
-              name: call.function.name,
-              content: "[context compressed — tool result truncated]"
-            } as any);
-          }
-        }
-      }
     }
 
     const payload: any = { model, messages: wireMessages, stream: true };

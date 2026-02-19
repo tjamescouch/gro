@@ -40,7 +40,9 @@ Inline directives stripped before display. Emit when appropriate.
 **Thinking lever:**
 `@@thinking(0.0–1.0)@@` — controls model tier and reasoning budget.
 0.0–0.24 → cheapest tier. 0.25–0.64 → mid tier. 0.65–1.0 → top tier.
-Decays ×0.6 per round without refresh. Emit each round to maintain level.
+Regresses toward 0.5 (mid-tier) each idle round. Emit each round to maintain level.
+`@@think@@` — shorthand: bump intensity +0.3 (capped at 1.0).
+`@@relax@@` — shorthand: reduce intensity -0.3 (floored at 0.0).
 
 **Emotion state:**
 `@@dim:value@@` — e.g. `@@calm:0.9,confidence:0.8@@`

@@ -764,14 +764,14 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     const rawOnToken = cfg.outputFormat === "stream-json"
         ? (t) => process.stdout.write(JSON.stringify({ type: "token", token: t }) + "\n")
         : (t) => process.stdout.write(t);
-    const THINKING_MEAN = 0.35; // cruising altitude — sonnet-tier, not idle
-    const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle
+    const THINKING_MEAN = 0.5; // cruising altitude — mid-tier, not idle
+    const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle round
     // Mutable model reference — stream markers can switch this mid-turn
     let activeModel = cfg.model;
     // Thinking level: 0.0 = idle (haiku), 1.0 = full (opus + max budget).
-    // Decays toward 0 each round without @@thinking()@@ — agents return to haiku when idle.
+    // Decays toward THINKING_MEAN each round without @@thinking()@@ — agents coast at mid-tier.
     // Emit @@thinking(0.8)@@ to go into the phone booth; let it decay to come back out.
-    let activeThinkingBudget = 0;
+    let activeThinkingBudget = 0.5;
     let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
     /** Select model tier based on thinking budget and provider.
      * cfg.model is always the top tier — unknown models are assumed frontier.
@@ -845,7 +845,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             else if (marker.name === "thinking") {
                 // Master lever: controls model tier, extended thinking budget, and summarizer.
                 // 0.0–0.24 → haiku, 0.25–0.64 → sonnet, 0.65–1.0 → opus.
-                // Decays toward 0 each idle round — emit each round to maintain level.
+                // Decays toward THINKING_MEAN each idle round — emit each round to maintain level.
                 const level = parseFloat(marker.arg !== "" ? marker.arg : "0.5");
                 if (!isNaN(level) && level >= 0 && level <= 1) {
                     activeThinkingBudget = level;
@@ -856,6 +856,20 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 else {
                     Logger.warn(`Stream marker: thinking('${marker.arg}') — invalid value, must be 0.0–1.0`);
                 }
+            }
+            else if (marker.name === "think") {
+                // Shorthand: bump thinking intensity by 0.3, capped at 1.0
+                activeThinkingBudget = Math.min(1.0, activeThinkingBudget + 0.3);
+                thinkingSeenThisTurn = true;
+                Logger.info(`Stream marker: think → budget=${activeThinkingBudget.toFixed(2)}`);
+                emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
+            }
+            else if (marker.name === "relax") {
+                // Shorthand: reduce thinking intensity by 0.3, floored at 0.0
+                activeThinkingBudget = Math.max(0.0, activeThinkingBudget - 0.3);
+                thinkingSeenThisTurn = true;
+                Logger.info(`Stream marker: relax → budget=${activeThinkingBudget.toFixed(2)}`);
+                emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
             }
             else if (EMOTION_DIMENSIONS.has(marker.name)) {
                 // Function-form emotion marker @@joy(0.6)@@ — route to visage as state vector.
@@ -890,12 +904,12 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         });
         // Flush any remaining buffered tokens from the marker parser
         markerParser.flush();
-        // Decay thinking level toward 0 if not refreshed this round.
-        // Agents return to haiku when idle — emit @@thinking(X)@@ each round to maintain level.
+        // Decay thinking level toward THINKING_MEAN if not refreshed this round.
+        // Agents coast at mid-tier when idle — emit @@thinking(X)@@ each round to maintain level.
         if (!thinkingSeenThisTurn) {
             // Regress toward mean — agents coast at cruising altitude, not idle.
-            // From opus (0.8) → settles at ~0.35 (sonnet) in ~4 rounds.
-            // From haiku (0.1) → pulls UP to ~0.35 (sonnet) in ~3 rounds.
+            // From opus (0.8) → settles at ~0.5 (mid-tier) in ~4 rounds.
+            // From haiku (0.1) → pulls UP to ~0.5 (mid-tier) in ~3 rounds.
             activeThinkingBudget += (THINKING_MEAN - activeThinkingBudget) * THINKING_REGRESSION_RATE;
         }
         // Track token usage for niki budget enforcement and spend meter

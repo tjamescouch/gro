@@ -11,8 +11,9 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { getKey, setKey, resolveKey, envVarName } from "./keychain.js";
 import { Logger, C } from "./logger.js";
 import { spendMeter } from "./spend-meter.js";
@@ -37,6 +38,7 @@ import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
+import { ViolationTracker } from "./violations.js";
 
 const VERSION = getGroVersion();
 
@@ -63,11 +65,101 @@ function sleep(ms: number): Promise<void> {
 const WAKE_NOTES_DEFAULT_PATH = join(process.env.HOME || "", ".claude", "WAKE.md");
 
 // ---------------------------------------------------------------------------
+// Boot Layers — system prompt assembly
+// ---------------------------------------------------------------------------
+
+const __filename_url = import.meta.url;
+const __dirname_resolved = dirname(fileURLToPath(__filename_url));
+
+/** Load Layer 1 runtime.md from the gro package (bundled). */
+function loadRuntimeBoot(): string {
+  // In dist/ after build: dist/boot/runtime.md
+  // In src/ during dev: src/boot/runtime.md
+  const candidates = [
+    join(__dirname_resolved, "boot", "runtime.md"),
+    join(__dirname_resolved, "..", "src", "boot", "runtime.md"),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      return readFileSync(p, "utf-8").trim();
+    }
+  }
+  Logger.warn("runtime.md not found — Layer 1 boot missing");
+  return "";
+}
+
+interface BootLayers {
+  runtime: string;      // Layer 1: gro runtime (always first, non-negotiable)
+  extensions: string[]; // Layer 2: repo _base.md, SKILL.md, --append-system-prompt-file
+  role: string[];       // Layer 3: WAKE.md, --system-prompt, --system-prompt-file
+}
+
+function assembleSystemPrompt(layers: BootLayers): string {
+  const sections: string[] = [];
+
+  // Layer 1: Runtime (always first, non-negotiable)
+  if (layers.runtime) {
+    sections.push(`<!-- LAYER 1: RUNTIME -->\n${layers.runtime}`);
+  }
+
+  // Layer 2: Extensions (additive)
+  for (const ext of layers.extensions) {
+    if (ext.trim()) {
+      sections.push(`<!-- LAYER 2: EXTENSION -->\n${ext.trim()}`);
+    }
+  }
+
+  // Layer 3: Role/Personality
+  for (const role of layers.role) {
+    if (role.trim()) {
+      sections.push(`<!-- LAYER 3: ROLE -->\n${role.trim()}`);
+    }
+  }
+
+  return sections.join("\n\n---\n\n");
+}
+
+/** Discover Layer 2 extension files from repo root and known locations. */
+function discoverExtensions(mcpConfigPaths: string[]): string[] {
+  const extensions: string[] = [];
+
+  // Check repo root for _base.md
+  const repoBase = join(process.cwd(), "_base.md");
+  if (existsSync(repoBase)) {
+    try {
+      extensions.push(readFileSync(repoBase, "utf-8").trim());
+    } catch {
+      Logger.warn(`Failed to read _base.md at ${repoBase}`);
+    }
+  }
+
+  // Check for agentchat SKILL.md in common locations
+  const skillCandidates = [
+    join(process.cwd(), "SKILL.md"),
+    join(process.cwd(), ".claude", "SKILL.md"),
+  ];
+  for (const p of skillCandidates) {
+    if (existsSync(p)) {
+      try {
+        extensions.push(readFileSync(p, "utf-8").trim());
+      } catch {
+        Logger.warn(`Failed to read SKILL.md at ${p}`);
+      }
+      break; // only load the first found
+    }
+  }
+
+  return extensions;
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
+type Provider = "openai" | "anthropic" | "groq" | "google" | "xai" | "local";
+
 interface GroConfig {
-  provider: "openai" | "anthropic" | "groq" | "local";
+  provider: Provider;
   model: string;
   baseUrl: string;
   apiKey: string;
@@ -170,13 +262,6 @@ function loadConfig(): GroConfig {
   const positional: string[] = [];
   const mcpConfigPaths: string[] = [];
 
-  // Wake file: global startup instructions injected into the system prompt.
-  // This is intentionally runner-level (not per-repo) so agents reliably see
-  // the same rules on boot.
-  const defaultWakeFile = join(homedir(), ".claude", "WAKE.md");
-  let wakeFile: string | null = defaultWakeFile;
-  let disableWake = false;
-
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
@@ -246,59 +331,55 @@ function loadConfig(): GroConfig {
   const noMcp = flags.noMcp === "true";
   const mcpServers = noMcp ? {} : loadMcpServers(mcpConfigPaths);
 
-  // Resolve system prompt
-  let systemPrompt = flags.systemPrompt || "";
+  // --- Layered system prompt assembly ---
+  // Layer 1: Runtime boot (gro internal, always loaded)
+  const runtime = loadRuntimeBoot();
 
-  // Inject wake notes by default (runner-global), unless explicitly disabled.
-  // This ensures the model always sees workflow + memory pointers on wake.
-  const wakeNotesPath = flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH;
-  const wakeNotesEnabled = flags.noWakeNotes !== "true";
-  if (wakeNotesEnabled && wakeNotesPath && existsSync(wakeNotesPath)) {
-    try {
-      const wake = readFileSync(wakeNotesPath, "utf-8").trim();
-      if (wake) systemPrompt = systemPrompt ? `${wake}
-
-${systemPrompt}` : wake;
-    } catch (e) {
-      // Non-fatal: if wake notes can't be read, proceed without them.
-      Logger.warn(`Failed to read wake notes at ${wakeNotesPath}: ${asError(e).message}`);
-    }
-  }
-  if (flags.systemPromptFile) {
-    try {
-      systemPrompt = readFileSync(flags.systemPromptFile, "utf-8").trim();
-    } catch (e: unknown) {
-      const ge = groError("config_error", `Failed to read system prompt file: ${asError(e).message}`, { cause: e });
-      Logger.error(ge.message, errorLogFields(ge));
-      process.exit(1);
-    }
-  }
-  if (flags.appendSystemPrompt) {
-    systemPrompt = systemPrompt ? `${systemPrompt}\n\n${flags.appendSystemPrompt}` : flags.appendSystemPrompt;
-  }
+  // Layer 2: Extensions (_base.md, SKILL.md, --append-system-prompt-file, --append-system-prompt)
+  const extensions = discoverExtensions(mcpConfigPaths);
   if (flags.appendSystemPromptFile) {
     try {
       const extra = readFileSync(flags.appendSystemPromptFile, "utf-8").trim();
-      systemPrompt = systemPrompt ? `${systemPrompt}\n\n${extra}` : extra;
+      if (extra) extensions.push(extra);
     } catch (e: unknown) {
       const ge = groError("config_error", `Failed to read append system prompt file: ${asError(e).message}`, { cause: e });
       Logger.error(ge.message, errorLogFields(ge));
       process.exit(1);
     }
   }
+  if (flags.appendSystemPrompt) {
+    extensions.push(flags.appendSystemPrompt);
+  }
 
-  // Default wake injection: prepend runner-global WAKE.md unless explicitly disabled.
-  // Soft dependency: if missing, warn and continue.
-  if (!disableWake && wakeFile) {
+  // Layer 3: Role/Personality (WAKE.md, --system-prompt, --system-prompt-file)
+  const role: string[] = [];
+
+  // WAKE.md (runner-global) — loaded once, not twice
+  const wakeNotesPath = flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH;
+  const wakeNotesEnabled = flags.noWakeNotes !== "true";
+  if (wakeNotesEnabled && wakeNotesPath && existsSync(wakeNotesPath)) {
     try {
-      const wake = readFileSync(wakeFile, "utf-8").trim();
-      if (wake) systemPrompt = systemPrompt ? `${wake}\n\n${systemPrompt}` : wake;
-    } catch (e: unknown) {
-      Logger.warn(`Wake file not found/readable (${wakeFile}); continuing without it`);
+      const wake = readFileSync(wakeNotesPath, "utf-8").trim();
+      if (wake) role.push(wake);
+    } catch (e) {
+      Logger.warn(`Failed to read wake notes at ${wakeNotesPath}: ${asError(e).message}`);
     }
   }
 
+  // --system-prompt-file overrides --system-prompt (not additive)
+  if (flags.systemPromptFile) {
+    try {
+      role.push(readFileSync(flags.systemPromptFile, "utf-8").trim());
+    } catch (e: unknown) {
+      const ge = groError("config_error", `Failed to read system prompt file: ${asError(e).message}`, { cause: e });
+      Logger.error(ge.message, errorLogFields(ge));
+      process.exit(1);
+    }
+  } else if (flags.systemPrompt) {
+    role.push(flags.systemPrompt);
+  }
 
+  const systemPrompt = assembleSystemPrompt({ runtime, extensions, role });
 
   // Mode resolution: -p forces non-interactive, -i forces interactive
   // Default: interactive if TTY and no prompt given
@@ -335,16 +416,19 @@ ${systemPrompt}` : wake;
   };
 }
 
-function inferProvider(explicit?: string, model?: string): "openai" | "anthropic" | "groq" | "local" {
+function inferProvider(explicit?: string, model?: string): "openai" | "anthropic" | "groq" | "google" | "xai" | "local" {
   if (explicit) {
-    if (explicit === "openai" || explicit === "anthropic" || explicit === "groq" || explicit === "local") return explicit;
+    const known = ["openai", "anthropic", "groq", "google", "xai", "local"] as const;
+    if ((known as readonly string[]).includes(explicit)) return explicit as typeof known[number];
     Logger.warn(`Unknown provider "${explicit}", defaulting to anthropic`);
     return "anthropic";
   }
   if (model) {
-    if (/^(gpt-|o1-|o3-|o4-|chatgpt-)/.test(model)) return "openai";
+    if (/^(gpt-|o1-|o3|o4-|chatgpt-)/.test(model)) return "openai";
     if (/^(claude-|sonnet|haiku|opus)/.test(model)) return "anthropic";
-    // Groq-hosted models — only matched when base URL implies groq or provider is explicit
+    if (/^gemini-/.test(model)) return "google";
+    if (/^grok-/.test(model)) return "xai";
+    // Groq-hosted models
     if (/^(llama-3|gemma2-|gemma-|mixtral-|whisper-)/.test(model)) return "groq";
     if (/^(gemma|llama|mistral|phi|qwen|deepseek)/.test(model)) return "local";
   }
@@ -353,11 +437,13 @@ function inferProvider(explicit?: string, model?: string): "openai" | "anthropic
 
 function defaultModel(provider: string): string {
   switch (provider) {
-    case "openai":    return "gpt-4o";
-    case "anthropic": return "claude-sonnet-4-20250514";
+    case "openai":    return "gpt-5.2-codex";
+    case "anthropic": return "claude-sonnet-4-5";
     case "groq":      return "llama-3.3-70b-versatile";
+    case "google":    return "gemini-2.5-flash";
+    case "xai":       return "grok-4.1-fast";
     case "local":     return "llama3";
-    default:          return "claude-sonnet-4-20250514";
+    default:          return "claude-sonnet-4-5";
   }
 }
 
@@ -365,6 +451,8 @@ function defaultBaseUrl(provider: string): string {
   switch (provider) {
     case "openai":    return process.env.OPENAI_BASE_URL    || "https://api.openai.com";
     case "groq":      return process.env.GROQ_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.groq.com/openai";
+    case "google":    return process.env.GOOGLE_BASE_URL    || "https://generativelanguage.googleapis.com/v1beta/openai";
+    case "xai":       return process.env.XAI_BASE_URL       || "https://api.x.ai/v1";
     case "local":     return "http://127.0.0.1:11434";
     default:          return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
   }
@@ -383,8 +471,8 @@ usage:
   gro -i                        # interactive mode
 
 options:
-  --set-key <provider>   store API key in macOS Keychain (anthropic | openai | groq)
-  -P, --provider         openai | anthropic | groq | local (default: anthropic)
+  --set-key <provider>   store API key in macOS Keychain (anthropic | openai | groq | google | xai)
+  -P, --provider         openai | anthropic | groq | google | xai | local (default: anthropic)
   -m, --model            model name (auto-infers provider)
   --base-url             API base URL
   --system-prompt        system prompt text
@@ -423,7 +511,7 @@ session state is stored in .gro/context/<session-id>/`);
 // ---------------------------------------------------------------------------
 
 async function runSetKey(provider: string): Promise<void> {
-  const known = ["anthropic", "openai", "groq"];
+  const known = ["anthropic", "openai", "groq", "google", "xai"];
   if (!known.includes(provider)) {
     throw new Error(`Unknown provider "${provider}". Valid: ${known.join(", ")}`);
   }
@@ -487,7 +575,7 @@ function readLineHidden(): Promise<string> {
 // ---------------------------------------------------------------------------
 
 function createDriverForModel(
-  provider: "openai" | "anthropic" | "groq" | "local",
+  provider: Provider,
   model: string,
   apiKey: string,
   baseUrl: string,
@@ -511,6 +599,22 @@ function createDriverForModel(
     case "groq":
       if (!apiKey) {
         Logger.error(`gro: no API key for groq — run: gro --set-key groq`);
+        process.exit(1);
+      }
+      return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
+
+    case "google":
+      // Google Gemini via OpenAI-compatible endpoint
+      if (!apiKey) {
+        Logger.error(`gro: no API key for google — set GOOGLE_API_KEY or run: gro --set-key google`);
+        process.exit(1);
+      }
+      return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
+
+    case "xai":
+      // xAI Grok via OpenAI-compatible endpoint
+      if (!apiKey) {
+        Logger.error(`gro: no API key for xai — set XAI_API_KEY or run: gro --set-key xai`);
         process.exit(1);
       }
       return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
@@ -602,13 +706,41 @@ function formatOutput(text: string, format: GroConfig["outputFormat"]): string {
  * the model needing to know the full versioned name.
  */
 const MODEL_ALIASES: Record<string, string> = {
+  // Anthropic
   "haiku": "claude-haiku-4-5",
   "sonnet": "claude-sonnet-4-5",
   "opus": "claude-opus-4-6",
-  "gpt4": "gpt-4o",
+  // OpenAI — GPT-5 family
+  "gpt5-nano": "gpt-5-nano",
+  "gpt5-mini": "gpt-5-mini",
+  "gpt5": "gpt-5",
+  "gpt5.2": "gpt-5.2",
+  "gpt5.2-codex": "gpt-5.2-codex",
+  "gpt5.2-pro": "gpt-5.2-pro",
+  // OpenAI — GPT-4.1 family
+  "gpt4.1-nano": "gpt-4.1-nano",
+  "gpt4.1-mini": "gpt-4.1-mini",
+  "gpt4.1": "gpt-4.1",
+  // OpenAI — reasoning
+  "o3": "o3",
+  "o4-mini": "o4-mini",
+  // OpenAI — legacy
   "gpt4o": "gpt-4o",
   "gpt4o-mini": "gpt-4o-mini",
-  "o3": "o3",
+  "gpt4": "gpt-4o",
+  // Google
+  "flash-lite": "gemini-2.5-flash-lite",
+  "flash": "gemini-2.5-flash",
+  "gemini-pro": "gemini-2.5-pro",
+  "gemini3-flash": "gemini-3-flash",
+  "gemini3-pro": "gemini-3-pro",
+  // xAI
+  "grok-fast": "grok-4.1-fast",
+  "grok": "grok-4",
+  // Local
+  "llama3": "llama3",
+  "qwen": "qwen",
+  "deepseek": "deepseek",
 };
 
 function resolveModelAlias(alias: string): string {
@@ -641,6 +773,7 @@ async function executeTurn(
   mcp: McpManager,
   cfg: GroConfig,
   sessionId?: string,
+  violations?: ViolationTracker,
 ): Promise<string> {
   const tools = mcp.getToolDefinitions();
   tools.push(agentpatchToolDefinition());
@@ -678,10 +811,13 @@ async function executeTurn(
     if (budget >= 0.65) return cfg.model;
     switch (provider) {
       case "openai":
-        return budget < 0.25 ? "gpt-4o" : "gpt-5.2";
+        return budget < 0.25 ? "gpt-4.1-nano" : "gpt-4.1-mini";
       case "groq":
-        // Groq tiers: fast small / mid / cfg.model (user-chosen)
         return budget < 0.25 ? "llama-3.1-8b-instant" : "llama-3.3-70b-versatile";
+      case "google":
+        return budget < 0.25 ? "gemini-2.5-flash-lite" : "gemini-2.5-flash";
+      case "xai":
+        return budget < 0.25 ? "grok-4.1-fast" : "grok-4.1-fast";
       default: // anthropic + local
         return budget < 0.25 ? MODEL_ALIASES["haiku"] ?? cfg.model : MODEL_ALIASES["sonnet"] ?? cfg.model;
     }
@@ -820,6 +956,11 @@ async function executeTurn(
         break;
       }
 
+      // Persistent mode violation: plain text without tool call
+      if (violations) {
+        await violations.inject(memory, "plain_text");
+      }
+
       // Persistent mode: nudge the model to resume tool use
       idleNudges++;
       if (idleNudges > cfg.maxIdleNudges) {
@@ -921,6 +1062,14 @@ async function executeTurn(
         tool_call_id: tc.id,
         name: fnName,
       });
+    }
+
+    // Check for idle violation (consecutive listen-only rounds)
+    if (violations) {
+      const toolNames = output.toolCalls.map(tc => tc.function.name);
+      if (violations.checkIdleRound(toolNames)) {
+        await violations.inject(memory, "idle");
+      }
     }
 
     // Auto-save periodically in persistent mode to survive SIGTERM/crashes
@@ -1029,10 +1178,13 @@ async function singleShot(
 
   await memory.add({ role: "user", from: "User", content: prompt });
 
+  // Violation tracker for persistent mode
+  const tracker = cfg.persistent ? new ViolationTracker() : undefined;
+
   let text: string | undefined;
   let fatalError = false;
   try {
-    text = await executeTurn(driver, memory, mcp, cfg, sessionId);
+    text = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
   } catch (e: unknown) {
     const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
     Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
@@ -1071,6 +1223,9 @@ async function interactive(
 ): Promise<void> {
   const memory = createMemory(cfg, driver);
   const readline = await import("readline");
+
+  // Violation tracker for persistent mode
+  const tracker = cfg.persistent ? new ViolationTracker() : undefined;
 
   // Register for graceful shutdown
   _shutdownMemory = memory;
@@ -1121,7 +1276,7 @@ async function interactive(
 
     try {
       await memory.add({ role: "user", from: "User", content: input });
-      await executeTurn(driver, memory, mcp, cfg, sessionId);
+      await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
     } catch (e: unknown) {
       const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
       Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));

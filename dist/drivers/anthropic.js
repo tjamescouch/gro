@@ -5,7 +5,7 @@
 import { Logger, C } from "../logger.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
-import { MAX_RETRIES, isRetryable, retryDelay, sleep } from "../utils/retry.js";
+import { getMaxRetries, isRetryable, retryDelay, sleep } from "../utils/retry.js";
 import { groError, asError, isGroError, errorLogFields } from "../errors.js";
 /**
  * Convert tool definitions from OpenAI format to Anthropic format.
@@ -291,9 +291,9 @@ export function makeAnthropicDriver(cfg) {
                 });
                 if (res.ok)
                     break;
-                if (isRetryable(res.status) && attempt < MAX_RETRIES) {
+                if (isRetryable(res.status) && attempt < getMaxRetries()) {
                     const delay = retryDelay(attempt, res.headers.get("retry-after"));
-                    Logger.warn(`Anthropic ${res.status}, retry ${attempt + 1}/${MAX_RETRIES} in ${Math.round(delay)}ms`);
+                    Logger.warn(`Anthropic ${res.status}, retry ${attempt + 1}/${getMaxRetries()} in ${Math.round(delay)}ms`);
                     await sleep(delay);
                     continue;
                 }
@@ -325,9 +325,9 @@ export function makeAnthropicDriver(cfg) {
             const isTransient = TRANSIENT_ERROR_RE.test(errMsg);
             if (isTransient) {
                 // Retry transient network errors (e.g. auth proxy down during container restart)
-                for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+                for (let attempt = 0; attempt < getMaxRetries(); attempt++) {
                     const delay = retryDelay(attempt);
-                    Logger.warn(`Transient error: ${errMsg.substring(0, 120)}, retry ${attempt + 1}/${MAX_RETRIES} in ${Math.round(delay)}ms`);
+                    Logger.warn(`Transient error: ${errMsg.substring(0, 120)}, retry ${attempt + 1}/${getMaxRetries()} in ${Math.round(delay)}ms`);
                     await sleep(delay);
                     try {
                         const retryRes = await timedFetch(endpoint, {
@@ -339,7 +339,7 @@ export function makeAnthropicDriver(cfg) {
                         });
                         if (!retryRes.ok) {
                             const text = await retryRes.text().catch(() => "");
-                            if (isRetryable(retryRes.status) && attempt < MAX_RETRIES - 1)
+                            if (isRetryable(retryRes.status) && attempt < getMaxRetries() - 1)
                                 continue;
                             throw groError("provider_error", `Anthropic API failed (${retryRes.status}): ${text}`, {
                                 provider: "anthropic", model: resolvedModel, retryable: false, cause: new Error(text),
@@ -353,9 +353,9 @@ export function makeAnthropicDriver(cfg) {
                     catch (retryErr) {
                         if (isGroError(retryErr))
                             throw retryErr;
-                        if (attempt === MAX_RETRIES - 1) {
+                        if (attempt === getMaxRetries() - 1) {
                             // Exhausted retries — throw with context
-                            const ge = groError("provider_error", `Anthropic driver error (after ${MAX_RETRIES} retries): ${errMsg}`, {
+                            const ge = groError("provider_error", `Anthropic driver error (after ${getMaxRetries()} retries): ${errMsg}`, {
                                 provider: "anthropic", model: resolvedModel, request_id: requestId,
                                 retryable: false, cause: e,
                             });

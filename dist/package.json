@@ -1,6 +1,6 @@
 {
   "name": "@tjamescouch/gro",
-  "version": "1.6.1",
+  "version": "1.6.4",
   "description": "Provider-agnostic LLM runtime with context management",
   "bin": {
     "gro": "./dist/main.js"
@@ -15,7 +15,7 @@
   "type": "module",
   "scripts": {
     "start": "npx tsx src/main.ts",
-    "build": "tsc && chmod +x dist/main.js && cp package.json dist/ && cp src/memory/summarizer-prompt.md dist/memory/",
+    "build": "tsc && chmod +x dist/main.js && cp package.json dist/ && cp src/memory/summarizer-prompt.md dist/memory/ && mkdir -p dist/boot && cp src/boot/runtime.md dist/boot/",
     "prepare": "npm run build || true",
     "prepublishOnly": "npm run build",
     "build:bun": "bun build src/main.ts --outdir dist --target bun",

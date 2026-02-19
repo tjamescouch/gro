@@ -826,6 +826,7 @@ async function executeTurn(
   let brokeCleanly = false;
   let idleNudges = 0;
   let consecutiveFailedRounds = 0;
+  let pendingNarration = "";  // Buffer for plain text emitted between tool calls
   for (let round = 0; round < cfg.maxToolRounds; round++) {
     let roundHadFailure = false;
     let roundImportance: number | undefined = undefined;
@@ -968,30 +969,44 @@ async function executeTurn(
         break;
       }
 
-      // Persistent mode violation: plain text without tool call
-      if (violations) {
+      // Persistent mode: buffer plain text narration instead of hard violation.
+      // The narration will be prepended to the next agentchat_send so nothing
+      // is lost, but we avoid expensive violation + nudge cycles.
+      const narration = (cleanText || "").trim();
+      if (narration) {
+        pendingNarration += (pendingNarration ? "\n" : "") + narration;
+        Logger.debug(`Buffered narration (${narration.length} chars), will attach to next send`);
+      }
+
+      // Still count for budgeting — but softer than a full violation.
+      // Only fire a real violation after 3+ consecutive narration-only rounds.
+      idleNudges++;
+      if (idleNudges >= 3 && violations) {
         await violations.inject(memory, "plain_text");
       }
 
-      // Persistent mode: nudge the model to resume tool use
-      idleNudges++;
       if (idleNudges > cfg.maxIdleNudges) {
         Logger.debug(`Persistent mode: ${idleNudges} consecutive idle responses — giving up`);
         brokeCleanly = true;
         break;
       }
 
-      Logger.debug(`Persistent mode: model stopped calling tools (nudge ${idleNudges}/${cfg.maxIdleNudges})`);
+      // Light nudge — much shorter than before to save tokens
       await memory.add({
         role: "user",
         from: "System",
-        content: "[SYSTEM] You stopped calling tools. You are a persistent agent — you MUST continue your tool loop. Call agentchat_listen now to resume listening for messages. Do not respond with text only.",
+        content: "[SYSTEM] Continue tool loop.",
       });
       continue;
     }
 
-    // Model used tools — reset idle nudge counter
+    // Model used tools — reset idle nudge counter and clear narration buffer
     idleNudges = 0;
+    if (pendingNarration) {
+      // Tool calls happened but no agentchat_send to flush into — discard silently
+      Logger.debug(`Discarding ${pendingNarration.length} chars of orphaned narration (no agentchat_send this round)`);
+      pendingNarration = "";
+    }
 
     // Process tool calls
     for (const tc of output.toolCalls) {
@@ -1011,6 +1026,21 @@ async function executeTurn(
         if (typeof fnArgs[key] === "string") {
           fnArgs[key] = extractMarkers(fnArgs[key], handleMarker);
         }
+      }
+
+      // Flush buffered narration into agentchat_send messages.
+      // This captures plain text the model emitted between tool calls
+      // and surfaces it in chat instead of losing it to violations.
+      if (fnName === "agentchat_send" && pendingNarration && typeof fnArgs.message === "string") {
+        const msg = fnArgs.message.trim();
+        // Prepend narration only if the send has actual content (skip empty sends)
+        if (msg) {
+          fnArgs.message = `[narration] ${pendingNarration}\n\n${msg}`;
+        } else {
+          fnArgs.message = pendingNarration;
+        }
+        Logger.debug(`Flushed ${pendingNarration.length} chars of buffered narration into agentchat_send`);
+        pendingNarration = "";
       }
 
       // Format tool call for readability

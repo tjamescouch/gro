@@ -32,7 +32,7 @@ describe("createMarkerParser", () => {
     parser.onToken("before @@model-change('haiku')@@ after");
     parser.flush();
 
-    assert.equal(tokens.join(""), "before  after");
+    assert.equal(tokens.join(""), "before \u{1F9E0} after");
     assert.equal(markers.length, 1);
     assert.equal(markers[0].name, "model-change");
     assert.equal(markers[0].arg, "haiku");
@@ -51,7 +51,7 @@ describe("createMarkerParser", () => {
     parser.onToken("net')@@ more text");
     parser.flush();
 
-    assert.equal(parser.getCleanText(), "text  more text");
+    assert.equal(parser.getCleanText(), "text \u{1F9E0} more text");
     assert.equal(markers.length, 1);
     assert.equal(markers[0].name, "model-change");
     assert.equal(markers[0].arg, "sonnet");
@@ -101,7 +101,8 @@ describe("createMarkerParser", () => {
     assert.equal(markers[1].arg, "opus");
     assert.equal(markers[2].name, "emotion");
     assert.equal(markers[2].arg, "eureka");
-    assert.equal(parser.getCleanText(), " Let me think...  deep thought ");
+    // emotion and model-change are non-thinking markers → 🧠
+    assert.equal(parser.getCleanText(), "\u{1F9E0} Let me think... \u{1F9E0} deep thought \u{1F9E0}");
   });
 
   it("buffers partial markers at end of chunk", () => {
@@ -121,7 +122,7 @@ describe("createMarkerParser", () => {
     parser.onToken("tion('sad')@@ bye");
     parser.flush();
 
-    assert.equal(parser.getCleanText(), "hello  bye");
+    assert.equal(parser.getCleanText(), "hello \u{1F9E0} bye");
     assert.equal(markers.length, 1);
     assert.equal(markers[0].arg, "sad");
   });
@@ -140,7 +141,7 @@ describe("createMarkerParser", () => {
     assert.equal(parser.getCleanText(), "hello @@broken");
   });
 
-  it("handles no-arg markers like @@think@@", () => {
+  it("handles no-arg markers like @@think@@ with 💡 emoji", () => {
     const markers: StreamMarker[] = [];
     const parser = createMarkerParser({
       onMarker: (m) => markers.push(m),
@@ -152,10 +153,11 @@ describe("createMarkerParser", () => {
     assert.equal(markers.length, 1);
     assert.equal(markers[0].name, "think");
     assert.equal(markers[0].arg, "");
-    assert.equal(parser.getCleanText(), "Let me  about this");
+    // think is a thinking marker → 💡
+    assert.equal(parser.getCleanText(), "Let me \u{1F4A1} about this");
   });
 
-  it("handles no-arg markers like @@relax@@", () => {
+  it("handles no-arg markers like @@relax@@ with 💡 emoji", () => {
     const markers: StreamMarker[] = [];
     const parser = createMarkerParser({
       onMarker: (m) => markers.push(m),
@@ -167,10 +169,11 @@ describe("createMarkerParser", () => {
     assert.equal(markers.length, 1);
     assert.equal(markers[0].name, "relax");
     assert.equal(markers[0].arg, "");
-    assert.equal(parser.getCleanText(), "Done  now");
+    // relax is a thinking marker → 💡
+    assert.equal(parser.getCleanText(), "Done \u{1F4A1} now");
   });
 
-  it("handles mixed no-arg and arg markers", () => {
+  it("handles mixed no-arg and arg markers with correct emoji", () => {
     const markers: StreamMarker[] = [];
     const parser = createMarkerParser({
       onMarker: (m) => markers.push(m),
@@ -186,7 +189,8 @@ describe("createMarkerParser", () => {
     assert.equal(markers[1].arg, "opus");
     assert.equal(markers[2].name, "relax");
     assert.equal(markers[2].arg, "");
-    assert.equal(parser.getCleanText(), " Let me think...   done");
+    // think/relax → 💡, model-change → 🧠
+    assert.equal(parser.getCleanText(), "\u{1F4A1} Let me think... \u{1F9E0} \u{1F4A1} done");
   });
 
   it("handles no-arg marker split across chunks", () => {
@@ -202,6 +206,36 @@ describe("createMarkerParser", () => {
     assert.equal(markers.length, 1);
     assert.equal(markers[0].name, "think");
     assert.equal(markers[0].arg, "");
-    assert.equal(parser.getCleanText(), "text  more");
+    assert.equal(parser.getCleanText(), "text \u{1F4A1} more");
+  });
+
+  it("@@thinking(0.8)@@ gets 💡 emoji", () => {
+    const markers: StreamMarker[] = [];
+    const parser = createMarkerParser({
+      onMarker: (m) => markers.push(m),
+    });
+
+    parser.onToken("@@thinking(0.8)@@ deep work");
+    parser.flush();
+
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0].name, "thinking");
+    assert.equal(markers[0].arg, "0.8");
+    assert.equal(parser.getCleanText(), "\u{1F4A1} deep work");
+  });
+
+  it("@@importance('0.9')@@ gets 🧠 emoji", () => {
+    const markers: StreamMarker[] = [];
+    const parser = createMarkerParser({
+      onMarker: (m) => markers.push(m),
+    });
+
+    parser.onToken("@@importance('0.9')@@ critical info");
+    parser.flush();
+
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0].name, "importance");
+    assert.equal(markers[0].arg, "0.9");
+    assert.equal(parser.getCleanText(), "\u{1F9E0} critical info");
   });
 });

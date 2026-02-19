@@ -554,18 +554,24 @@ function createMemory(cfg, driver) {
         return mem;
     }
     // Default: VirtualMemory (safe, cost-controlled)
+    // Default summarizer: Groq llama-3.3-70b-versatile (free tier).
+    // Falls back to main driver if no Groq key is available.
+    const DEFAULT_SUMMARIZER_MODEL = "llama-3.3-70b-versatile";
+    const summarizerModel = cfg.summarizerModel ?? DEFAULT_SUMMARIZER_MODEL;
+    const summarizerProvider = inferProvider(undefined, summarizerModel);
+    const summarizerApiKey = resolveApiKey(summarizerProvider);
     let summarizerDriver;
-    let summarizerModel;
-    if (cfg.summarizerModel) {
-        summarizerModel = cfg.summarizerModel;
-        const summarizerProvider = inferProvider(undefined, summarizerModel);
-        summarizerDriver = createDriverForModel(summarizerProvider, summarizerModel, resolveApiKey(summarizerProvider), defaultBaseUrl(summarizerProvider));
+    if (summarizerApiKey) {
+        summarizerDriver = createDriverForModel(summarizerProvider, summarizerModel, summarizerApiKey, defaultBaseUrl(summarizerProvider));
         Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
+    }
+    else {
+        Logger.info(`Summarizer: no ${summarizerProvider} key — using main driver`);
     }
     Logger.info(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
     const vm = new VirtualMemory({
         driver: summarizerDriver ?? driver,
-        summarizerModel: summarizerModel ?? cfg.model,
+        summarizerModel,
         systemPrompt: cfg.systemPrompt || undefined,
         workingMemoryTokens: cfg.contextTokens,
     });
@@ -956,6 +962,15 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
 // ---------------------------------------------------------------------------
 // Main modes
 // ---------------------------------------------------------------------------
+/** Check if --model was explicitly passed on the CLI. */
+function wasModelExplicitlyPassed() {
+    for (let i = 0; i < process.argv.length; i++) {
+        if ((process.argv[i] === "-m" || process.argv[i] === "--model") && i + 1 < process.argv.length) {
+            return true;
+        }
+    }
+    return false;
+}
 async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     let prompt = (positionalArgs || []).join(" ").trim();
     if (!prompt && !process.stdin.isTTY) {
@@ -977,7 +992,17 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     _shutdownSessionPersistence = cfg.sessionPersistence;
     // Resume existing session if requested
     if (cfg.continueSession || cfg.resumeSession) {
+        const sess = loadSession(sessionId);
         await memory.load(sessionId);
+        // Restore the model from the previous session if no model was explicitly passed.
+        // This ensures that @@model-change@@ applied in a previous turn persists
+        // across session resume, since the model is stored in session metadata.
+        if (sess && sess.meta.provider === cfg.provider && sess.meta.model) {
+            if (!wasModelExplicitlyPassed()) {
+                cfg.model = sess.meta.model;
+                Logger.info(`Restored model from session: ${cfg.model}`);
+            }
+        }
     }
     await memory.add({ role: "user", from: "User", content: prompt });
     let text;
@@ -1031,6 +1056,11 @@ async function interactive(cfg, driver, mcp, sessionId) {
         else {
             await memory.load(sessionId);
             if (sess) {
+                // Restore the model from the previous session if no model was explicitly passed.
+                if (!wasModelExplicitlyPassed() && sess.meta.model) {
+                    cfg.model = sess.meta.model;
+                    Logger.info(`Restored model from session: ${cfg.model}`);
+                }
                 const msgCount = sess.messages.filter((m) => m.role !== "system").length;
                 Logger.info(C.gray(`Resumed session ${sessionId} (${msgCount} messages)`));
             }

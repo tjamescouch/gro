@@ -7,7 +7,7 @@ import { OutputParser } from "./subprocess/output-parser.js";
 function main(): void {
   const config = parseConfig(process.argv.slice(2));
   const screen = createScreen();
-  const { chatPanel, toolsPanel, logsPanel, inputBox, focusables } =
+  const { chatPanel, toolsPanel, logsPanel, inputBox, helpBar, focusables } =
     createLayout(screen, config);
   const parser = new OutputParser();
 
@@ -41,7 +41,6 @@ function main(): void {
       }
     },
     onExit(code: number | null) {
-      // Flush any remaining stdout buffer
       for (const event of parser.flushStdout()) {
         if (event.type === "token") {
           chatPanel.appendToken(event.content);
@@ -49,15 +48,15 @@ function main(): void {
       }
       chatPanel.finalizeResponse();
       logsPanel.appendLog(`Process exited (code ${code})`, "debug");
-      // Re-enable input
       inputBox.style.border = { fg: "green" } as any;
-      (inputBox as any).setLabel(" > ");
+      (inputBox as any).setLabel(" Type here > ");
       screen.render();
+      // Re-activate input
+      inputBox.readInput();
     },
   });
 
-  // Handle input submission
-  inputBox.key("enter", () => {
+  function submitInput() {
     const text = inputBox.getValue().trim();
     if (!text) return;
     if (subprocess.isBusy()) return;
@@ -66,17 +65,30 @@ function main(): void {
     inputBox.clearValue();
     screen.render();
 
-    // Show busy state
     inputBox.style.border = { fg: "yellow" } as any;
-    (inputBox as any).setLabel(" ... ");
+    (inputBox as any).setLabel(" Waiting... ");
     screen.render();
 
     subprocess.sendPrompt(text);
+  }
+
+  // Handle enter key for submission
+  inputBox.key("enter", () => {
+    submitInput();
   });
 
-  // Keep input focused after clearing
+  // When textarea submits or cancels, re-activate it
   inputBox.on("submit", () => {
+    inputBox.readInput();
+  });
+  inputBox.on("cancel", () => {
+    inputBox.readInput();
+  });
+
+  // Click on input box should activate it
+  inputBox.on("click", () => {
     inputBox.focus();
+    inputBox.readInput();
   });
 
   setupGlobalKeys(screen, focusables, inputBox, () => {
@@ -85,10 +97,15 @@ function main(): void {
     process.exit(0);
   });
 
-  // Initial focus and render
+  // Start with input active
   inputBox.focus();
-  logsPanel.appendLog(`grotui v0.1.0 — command: ${config.command} ${config.args.join(" ")}`, "info");
-  logsPanel.appendLog("Type a prompt and press Enter. Ctrl+C to quit.", "info");
+  inputBox.readInput();
+
+  logsPanel.appendLog(`grotui v0.1.0`, "info");
+  logsPanel.appendLog(`cmd: ${config.command} ${config.args.join(" ")}`, "info");
+  logsPanel.appendLog("", "info");
+  logsPanel.appendLog("Enter: send | Tab: switch panel", "info");
+  logsPanel.appendLog("Ctrl+C: quit", "info");
   screen.render();
 }
 

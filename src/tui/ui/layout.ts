@@ -9,6 +9,7 @@ export interface Layout {
   toolsPanel: ToolsPanel;
   logsPanel: LogsPanel;
   inputBox: blessed.Widgets.TextareaElement;
+  helpBar: blessed.Widgets.BoxElement;
   focusables: blessed.Widgets.BlessedElement[];
 }
 
@@ -21,14 +22,26 @@ export function createLayout(
   const chatWidth = Math.round((chatPct / total) * 100);
   const toolsWidth = Math.round((toolsPct / total) * 100);
 
-  // Chat history box (top portion of left panel)
+  // Help bar at very bottom
+  const helpBar = blessed.box({
+    parent: screen,
+    bottom: 0,
+    left: 0,
+    width: "100%",
+    height: 1,
+    tags: true,
+    style: { bg: "blue", fg: "white" },
+    content: " {bold}Enter{/bold}: Send  {bold}Tab{/bold}: Switch Panel  {bold}Esc{/bold}: Focus Input  {bold}Ctrl+C{/bold}: Quit  {bold}Up/Down{/bold}: Scroll",
+  });
+
+  // Chat history box
   const chatBox = blessed.box({
     parent: screen,
     label: " Chat ",
     left: 0,
     top: 0,
     width: `${chatWidth}%`,
-    height: "100%-3",
+    height: "100%-4",
     border: { type: "line" },
     scrollable: true,
     alwaysScroll: true,
@@ -43,12 +56,12 @@ export function createLayout(
     },
   });
 
-  // Input box (bottom of left panel)
+  // Input box above help bar
   const inputBox = blessed.textarea({
     parent: screen,
-    label: " > ",
+    label: " Type here > ",
     left: 0,
-    bottom: 0,
+    bottom: 1,
     width: `${chatWidth}%`,
     height: 3,
     border: { type: "line" },
@@ -58,17 +71,20 @@ export function createLayout(
     style: {
       border: { fg: "green" },
       label: { fg: "green", bold: true },
+      focus: {
+        border: { fg: "white" },
+      },
     },
   }) as blessed.Widgets.TextareaElement;
 
-  // Tools panel (middle)
+  // Tools panel
   const toolsBox = blessed.box({
     parent: screen,
     label: " Tools ",
     left: `${chatWidth}%`,
     top: 0,
     width: `${toolsWidth}%`,
-    height: "100%",
+    height: "100%-1",
     border: { type: "line" },
     scrollable: true,
     alwaysScroll: true,
@@ -83,14 +99,14 @@ export function createLayout(
     },
   });
 
-  // Logs panel (right)
+  // Logs panel
   const logsBox = blessed.log({
     parent: screen,
     label: " Logs ",
     left: `${chatWidth + toolsWidth}%`,
     top: 0,
     width: `${100 - chatWidth - toolsWidth}%`,
-    height: "100%",
+    height: "100%-1",
     border: { type: "line" },
     scrollable: true,
     alwaysScroll: true,
@@ -114,6 +130,7 @@ export function createLayout(
     toolsPanel,
     logsPanel,
     inputBox,
+    helpBar,
     focusables: [inputBox, chatBox, toolsBox, logsBox],
   };
 }

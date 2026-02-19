@@ -660,15 +660,15 @@ async function executeTurn(
     ? (t: string) => process.stdout.write(JSON.stringify({ type: "token", token: t }) + "\n")
     : (t: string) => process.stdout.write(t);
 
+  const THINKING_MEAN = 0.35;  // cruising altitude — sonnet-tier, not idle
+  const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle
   // Mutable model reference — stream markers can switch this mid-turn
   let activeModel = cfg.model;
   // Thinking level: 0.0 = idle (haiku), 1.0 = full (opus + max budget).
   // Decays toward 0 each round without @@thinking()@@ — agents return to haiku when idle.
   // Emit @@thinking(0.8)@@ to go into the phone booth; let it decay to come back out.
   let activeThinkingBudget = 0;
-  const THINKING_DECAY = 0.6; // ×0.6 per idle round → from 0.8 back to haiku in ~5 rounds
   let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
-
   /** Select model tier based on thinking budget and provider.
    * cfg.model is always the top tier — unknown models are assumed frontier.
    * Lower tiers use known cheap/mid models regardless of what cfg.model is.
@@ -678,7 +678,7 @@ async function executeTurn(
     if (budget >= 0.65) return cfg.model;
     switch (provider) {
       case "openai":
-        return budget < 0.25 ? "gpt-4o-mini" : "gpt-4o";
+        return budget < 0.25 ? "gpt-4o" : "gpt-5.2";
       case "groq":
         // Groq tiers: fast small / mid / cfg.model (user-chosen)
         return budget < 0.25 ? "llama-3.1-8b-instant" : "llama-3.3-70b-versatile";
@@ -783,8 +783,10 @@ async function executeTurn(
     // Decay thinking level toward 0 if not refreshed this round.
     // Agents return to haiku when idle — emit @@thinking(X)@@ each round to maintain level.
     if (!thinkingSeenThisTurn) {
-      activeThinkingBudget = activeThinkingBudget * THINKING_DECAY;
-      if (activeThinkingBudget < 0.05) activeThinkingBudget = 0;
+      // Regress toward mean — agents coast at cruising altitude, not idle.
+      // From opus (0.8) → settles at ~0.35 (sonnet) in ~4 rounds.
+      // From haiku (0.1) → pulls UP to ~0.35 (sonnet) in ~3 rounds.
+      activeThinkingBudget += (THINKING_MEAN - activeThinkingBudget) * THINKING_REGRESSION_RATE;
     }
 
     // Track token usage for niki budget enforcement and spend meter

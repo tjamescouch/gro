@@ -139,4 +139,69 @@ describe("createMarkerParser", () => {
     // Incomplete marker should be emitted as regular text
     assert.equal(parser.getCleanText(), "hello @@broken");
   });
+
+  it("handles no-arg markers like @@think@@", () => {
+    const markers: StreamMarker[] = [];
+    const parser = createMarkerParser({
+      onMarker: (m) => markers.push(m),
+    });
+
+    parser.onToken("Let me @@think@@ about this");
+    parser.flush();
+
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0].name, "think");
+    assert.equal(markers[0].arg, "");
+    assert.equal(parser.getCleanText(), "Let me  about this");
+  });
+
+  it("handles no-arg markers like @@relax@@", () => {
+    const markers: StreamMarker[] = [];
+    const parser = createMarkerParser({
+      onMarker: (m) => markers.push(m),
+    });
+
+    parser.onToken("Done @@relax@@ now");
+    parser.flush();
+
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0].name, "relax");
+    assert.equal(markers[0].arg, "");
+    assert.equal(parser.getCleanText(), "Done  now");
+  });
+
+  it("handles mixed no-arg and arg markers", () => {
+    const markers: StreamMarker[] = [];
+    const parser = createMarkerParser({
+      onMarker: (m) => markers.push(m),
+    });
+
+    parser.onToken("@@think@@ Let me think... @@model-change('opus')@@ @@relax@@ done");
+    parser.flush();
+
+    assert.equal(markers.length, 3);
+    assert.equal(markers[0].name, "think");
+    assert.equal(markers[0].arg, "");
+    assert.equal(markers[1].name, "model-change");
+    assert.equal(markers[1].arg, "opus");
+    assert.equal(markers[2].name, "relax");
+    assert.equal(markers[2].arg, "");
+    assert.equal(parser.getCleanText(), " Let me think...   done");
+  });
+
+  it("handles no-arg marker split across chunks", () => {
+    const markers: StreamMarker[] = [];
+    const parser = createMarkerParser({
+      onMarker: (m) => markers.push(m),
+    });
+
+    parser.onToken("text @@thi");
+    parser.onToken("nk@@ more");
+    parser.flush();
+
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0].name, "think");
+    assert.equal(markers[0].arg, "");
+    assert.equal(parser.getCleanText(), "text  more");
+  });
 });

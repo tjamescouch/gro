@@ -895,6 +895,7 @@ async function executeTurn(
   let activeTemperature: number | undefined = undefined;
   let activeTopK: number | undefined = undefined;
   let activeTopP: number | undefined = undefined;
+
   /** Select model tier based on thinking budget and provider.
    * Loads tier ladders from providers/*.json config files.
    */

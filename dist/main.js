@@ -8,7 +8,7 @@
  *
  * Supersets the claude CLI flags for drop-in compatibility.
  */
-import { readFileSync, existsSync, appendFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,27 +23,19 @@ import { VirtualMemory } from "./memory/virtual-memory.js";
 import { FragmentationMemory } from "./memory/fragmentation-memory.js";
 import { McpManager } from "./mcp/index.js";
 import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
-// Register all memory types in the registry (side-effect import)
-import "./memory/register-memory-types.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
-import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
-import { memoryReportToolDefinition, executeMemoryReport } from "./tools/memory-report.js";
-import { memory_tune } from "./tools/memory-tune.js";
 import { compactContextToolDefinition, executeCompactContext } from "./tools/compact-context.js";
-import { cleanupSessionsToolDefinition, executeCleanupSessions } from "./tools/cleanup-sessions.js";
 import { createMarkerParser, extractMarkers } from "./stream-markers.js";
 import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
-import { ViolationTracker, SameToolLoopTracker } from "./violations.js";
+import { ViolationTracker } from "./violations.js";
 import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
-import { parseDirectives, executeDirectives } from "./runtime/index.js";
-import { runtimeConfig } from "./runtime/index.js";
 const VERSION = getGroVersion();
 // ---------------------------------------------------------------------------
 // Graceful shutdown state — module-level so signal handlers can save sessions.
@@ -116,19 +108,6 @@ function discoverExtensions(mcpConfigPaths) {
             Logger.warn(`Failed to read _base.md at ${repoBase}`);
         }
     }
-    // Check for _learn.md (persistent learned facts from @@learn()@@ markers)
-    const learnFile = join(process.cwd(), "_learn.md");
-    if (existsSync(learnFile)) {
-        try {
-            const learned = readFileSync(learnFile, "utf-8").trim();
-            if (learned) {
-                extensions.push(`<!-- LEARNED FACTS -->\n${learned}`);
-            }
-        }
-        catch {
-            Logger.warn(`Failed to read _learn.md at ${learnFile}`);
-        }
-    }
     // Check for agentchat SKILL.md in common locations
     const skillCandidates = [
         join(process.cwd(), "SKILL.md"),
@@ -148,6 +127,7 @@ function discoverExtensions(mcpConfigPaths) {
     return extensions;
 }
 function loadMcpServers(mcpConfigPaths) {
+    // If explicit --mcp-config paths given, use those
     if (mcpConfigPaths.length > 0) {
         const merged = {};
         for (const p of mcpConfigPaths) {
@@ -266,14 +246,8 @@ function loadConfig() {
         else if (arg === "--persistent" || arg === "--keep-alive") {
             flags.persistent = "true";
         }
-        else if (arg === "--persistent-policy") {
-            flags.persistentPolicy = args[++i];
-        }
         else if (arg === "--max-idle-nudges") {
             flags.maxIdleNudges = args[++i];
-        }
-        else if (arg === "--persistent-policy") {
-            flags.persistentPolicy = args[++i];
         }
         else if (arg === "--max-retries") {
             process.env.GRO_MAX_RETRIES = args[++i];
@@ -292,9 +266,6 @@ function loadConfig() {
         }
         else if (arg === "--output-format") {
             flags.outputFormat = args[++i];
-        }
-        else if (arg === "--batch-summarization") {
-            flags.batchSummarization = "true";
         }
         else if (arg === "--mcp-config") {
             mcpConfigPaths.push(args[++i]);
@@ -442,7 +413,6 @@ function loadConfig() {
         print: printMode,
         maxToolRounds: parseInt(flags.maxToolRounds || "10"),
         persistent: flags.persistent === "true",
-        persistentPolicy: flags.persistentPolicy || "work-first",
         maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
         bash: flags.bash === "true",
         summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
@@ -452,10 +422,8 @@ function loadConfig() {
         sessionPersistence: flags.noSessionPersistence !== "true",
         verbose: flags.verbose === "true",
         name: flags.name || null,
-        batchSummarization: flags.batchSummarization === "true",
         showDiffs: flags.showDiffs === "true",
         mcpServers,
-        maxBudgetUsd: flags.maxBudgetUsd ? parseFloat(flags.maxBudgetUsd) : null,
     };
 }
 function inferProvider(explicit, model) {
@@ -532,7 +500,6 @@ options:
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
-  --persistent-policy    work-first | listen-only (default: work-first)
   --max-idle-nudges      max consecutive nudges before giving up (default: 10)
   --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
   --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
@@ -718,27 +685,12 @@ async function createMemory(cfg, driver, requestedMode) {
         hm.setModel(cfg.model);
         return hm;
     }
-    // PerfectMemory (fork-based persistent recall)
-    if (memoryMode === "perfect") {
-        Logger.info(`${C.cyan("MemoryMode=Perfect")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, fork-based recall`)}`);
-        const { PerfectMemory } = await import("./memory/perfect-memory.js");
-        const pm = new PerfectMemory({
-            driver: summarizerDriver ?? driver,
-            summarizerModel: effectiveSummarizerModel,
-            systemPrompt: cfg.systemPrompt || undefined,
-            workingMemoryTokens: cfg.contextTokens,
-            enableBatchSummarization: cfg.batchSummarization,
-        });
-        pm.setModel(cfg.model);
-        return pm;
-    }
     Logger.info(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
     const vm = new VirtualMemory({
         driver: summarizerDriver ?? driver,
         summarizerModel: effectiveSummarizerModel,
         systemPrompt: cfg.systemPrompt || undefined,
         workingMemoryTokens: cfg.contextTokens,
-        enableBatchSummarization: cfg.batchSummarization,
     });
     vm.setModel(cfg.model);
     return vm;
@@ -826,23 +778,14 @@ function emitStateVector(state, outputFormat) {
  * Execute a single turn: call the model, handle tool calls, repeat until
  * the model produces a final text response or we hit maxRounds.
  */
-async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, sameToolLoop) {
+async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     const tools = mcp.getToolDefinitions();
     tools.push(agentpatchToolDefinition());
     if (cfg.bash)
         tools.push(bashToolDefinition());
     tools.push(groVersionToolDefinition());
-    if (cfg.persistent)
-        tools.push(yieldToolDefinition);
     tools.push(memoryStatusToolDefinition());
-    tools.push(memoryReportToolDefinition());
-    tools.push({
-        name: memory_tune.name,
-        description: memory_tune.description,
-        input_schema: memory_tune.inputSchema,
-    });
     tools.push(compactContextToolDefinition());
-    tools.push(cleanupSessionsToolDefinition);
     tools.push(readToolDefinition());
     tools.push(writeToolDefinition());
     tools.push(globToolDefinition());
@@ -862,10 +805,6 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
     // Emit @@thinking(0.8)@@ to go into the phone booth; let it decay to come back out.
     let activeThinkingBudget = 0.5;
     let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
-    // Sampling parameters — controlled via @@temp()@@, @@top_k()@@, @@top_p()@@ markers
-    let activeTemperature = undefined;
-    let activeTopK = undefined;
-    let activeTopP = undefined;
     /** Select model tier based on thinking budget and provider.
      * Loads tier ladders from providers/*.json config files.
      */
@@ -877,14 +816,13 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
     let idleNudges = 0;
     let consecutiveFailedRounds = 0;
     let pendingNarration = ""; // Buffer for plain text emitted between tool calls
-    let pendingEmotionState = {}; // Accumulates emotion dims for injection into agentchat_send
     for (let round = 0; round < cfg.maxToolRounds; round++) {
         let roundHadFailure = false;
         let roundImportance = undefined;
         let thinkingSeenThisTurn = false;
         // Memory hot-swap handler
         const swapMemory = async (targetType) => {
-            const validTypes = ["simple", "advanced", "virtual", "fragmentation", "hnsw", "perfect"];
+            const validTypes = ["simple", "advanced", "virtual", "fragmentation", "hnsw"];
             if (!validTypes.includes(targetType)) {
                 Logger.error(`Stream marker: memory('${targetType}') REJECTED — valid types: ${validTypes.join(", ")}`);
                 return;
@@ -907,15 +845,6 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
             else if (targetType === "hnsw") {
                 const { HNSWMemory } = await import("./memory/hnsw-memory.js");
                 newMemory = new HNSWMemory({ systemPrompt: cfg.systemPrompt || undefined });
-            }
-            else if (targetType === "perfect") {
-                const { PerfectMemory } = await import("./memory/perfect-memory.js");
-                newMemory = new PerfectMemory({
-                    driver,
-                    summarizerModel: cfg.summarizerModel ?? "llama-3.3-70b-versatile",
-                    systemPrompt: cfg.systemPrompt || undefined,
-                    workingMemoryTokens: cfg.contextTokens,
-                });
             }
             else {
                 newMemory = await createMemory(cfg, driver); // VirtualMemory
@@ -1001,149 +930,13 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                 const val = marker.arg !== "" ? parseFloat(marker.arg) : 0.5;
                 if (!isNaN(val) && val >= 0 && val <= 1) {
                     emitStateVector({ [marker.name]: val }, cfg.outputFormat);
-                    pendingEmotionState[marker.name] = val; // Accumulate for agentchat_send injection
                     Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
                 }
             }
-            else if (marker.name === "temp" || marker.name === "temperature") {
-                // @@temp()@@ or @@temperature()@@ — set sampling temperature
-                const val = parseFloat(marker.arg);
-                if (!isNaN(val) && val >= 0 && val <= 2) {
-                    activeTemperature = val;
-                    Logger.info(`Stream marker: temp(${val})`);
-                }
-                else {
-                    Logger.warn(`Stream marker: temp('${marker.arg}') — invalid, must be 0.0–2.0`);
-                }
-            }
-            else if (marker.name === "top_k") {
-                // @@top_k()@@ — set nucleus sampling
-                const val = parseInt(marker.arg, 10);
-                if (!isNaN(val) && val > 0) {
-                    activeTopK = val;
-                    Logger.info(`Stream marker: top_k(${val})`);
-                }
-                else {
-                    Logger.warn(`Stream marker: top_k('${marker.arg}') — invalid, must be positive integer`);
-                }
-            }
-            else if (marker.name === "top_p") {
-                // @@top_p()@@ — set nucleus sampling
-                const val = parseFloat(marker.arg);
-                if (!isNaN(val) && val >= 0 && val <= 1) {
-                    activeTopP = val;
-                    Logger.info(`Stream marker: top_p(${val})`);
-                }
-                else {
-                    Logger.warn(`Stream marker: top_p('${marker.arg}') — invalid, must be 0.0–1.0`);
-                }
-            }
-            else if (marker.name === "working" || marker.name === "memory-hotreload") {
-                // Hot-reload marker: @@working:8k,page:12k@@ or @@memory-hotreload:working=8k,page=12k@@
-                // Parse "working" param from arg (format: "8k,page:12k" or "8k,page=12k")
-                const config = {};
-                // Format 1: @@working:8k,page:12k@@ → marker.name="working", marker.arg="8k,page:12k"
-                if (marker.name === "working") {
-                    // Parse working=8k, page=12k
-                    const parts = marker.arg.split(/[,:]/);
-                    let workingVal;
-                    let pageVal;
-                    // parts[0] is the working value, look for page after comma/colon
-                    workingVal = parts[0]?.trim();
-                    for (let i = 1; i < parts.length; i++) {
-                        const p = parts[i].trim();
-                        if (p.startsWith("page")) {
-                            pageVal = parts[i + 1]?.trim();
-                            break;
-                        }
-                        else if (!p.match(/^\d+/)) {
-                            // Non-numeric, might be the page value
-                            if (i === 1)
-                                pageVal = p;
-                        }
-                    }
-                    if (workingVal) {
-                        const wnum = parseFloat(workingVal) * 1000;
-                        if (!isNaN(wnum))
-                            config.workingMemoryTokens = Math.round(wnum);
-                    }
-                    if (pageVal) {
-                        const pnum = parseFloat(pageVal) * 1000;
-                        if (!isNaN(pnum))
-                            config.pageSlotTokens = Math.round(pnum);
-                    }
-                }
-                // Apply to memory if VirtualMemory
-                if ("hotReloadConfig" in memory && typeof memory.hotReloadConfig === "function") {
-                    const result = memory.hotReloadConfig(config);
-                    Logger.info(`Stream marker: memory hotreload — ${result}`);
-                }
-            }
-            else if (marker.name === "learn" && marker.arg) {
-                // Persist a learned fact to _learn.md → feeds into Layer 2 system prompt.
-                const learnFile = join(process.cwd(), "_learn.md");
-                const line = `- ${marker.arg}\n`;
-                try {
-                    appendFileSync(learnFile, line, "utf-8");
-                    Logger.info(`Stream marker: learn('${marker.arg}') → saved to _learn.md`);
-                    // Hot-patch: inject into current session's system message
-                    const sysMsg = memory.messagesBuffer?.[0];
-                    if (sysMsg && sysMsg.role === "system") {
-                        sysMsg.content += `\n\n<!-- LEARNED -->\n${line}`;
-                    }
-                }
-                catch (e) {
-                    Logger.error(`Stream marker: learn — failed to write _learn.md: ${asError(e).message}`);
-                }
-            }
             else if (marker.name === "memory" && marker.arg) {
+                // Memory hot-swap
                 void swapMemory(marker.arg);
-                Logger.info(`Stream marker: memory('${marker.arg}') triggered`);
-            }
-            else if (marker.name === "recall") {
-                // PerfectMemory fork recall — load fork content into page slot
-                if ("recallFork" in memory && typeof memory.recallFork === "function") {
-                    const forkId = marker.arg || undefined;
-                    void memory.recallFork(forkId).then((pageId) => {
-                        if (pageId) {
-                            Logger.info(`Stream marker: recall('${marker.arg || "latest"}') — loaded as page ${pageId}`);
-                        }
-                        else {
-                            Logger.warn(`Stream marker: recall('${marker.arg || "latest"}') — fork not found`);
-                        }
-                    });
-                }
-                else {
-                    Logger.warn(`Stream marker: recall — memory system doesn't support forks (use GRO_MEMORY=perfect)`);
-                }
-            }
-            else if (marker.name === "memory-tune" && marker.arg) {
-                // Hot-tune VirtualMemory: @@memory-tune(working:8k,page:6k)@@
-                // Parse key:value pairs separated by commas
-                const tuneParams = {};
-                for (const pair of marker.arg.split(",")) {
-                    const [key, val] = pair.trim().split(":");
-                    if (key && val) {
-                        let numVal = parseInt(val);
-                        if (val.toLowerCase().endsWith("k")) {
-                            numVal = parseInt(val.slice(0, -1)) * 1000;
-                        }
-                        else if (val.toLowerCase().endsWith("m")) {
-                            numVal = parseInt(val.slice(0, -1)) * 1000 * 1000;
-                        }
-                        if (!isNaN(numVal) && numVal > 0) {
-                            tuneParams[key.toLowerCase()] = numVal;
-                        }
-                    }
-                }
-                // Apply to memory controller if it supports hot-tuning
-                if (Object.keys(tuneParams).length > 0 && "tune" in memory && typeof memory.tune === "function") {
-                    memory.tune(tuneParams);
-                    Logger.info(`Stream marker: memory-tune(${marker.arg})`);
-                }
-                else {
-                    Logger.warn(`Stream marker: memory-tune — memory controller doesn't support hot-tuning`);
-                }
+                Logger.info(`Stream marker: ${marker.name}('${marker.arg}')`);
             }
         };
         // Select model tier based on current thinking budget (unless agent pinned a model explicitly)
@@ -1166,9 +959,6 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
             tools: tools.length > 0 ? tools : undefined,
             onToken: markerParser.onToken,
             thinkingBudget: activeThinkingBudget,
-            temperature: activeTemperature,
-            top_k: activeTopK,
-            top_p: activeTopP,
         });
         // Flush any remaining buffered tokens from the marker parser
         markerParser.flush();
@@ -1189,24 +979,12 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
             spendMeter.setModel(activeModel);
             spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
             Logger.info(spendMeter.format());
-            // Check if budget exceeded
-            const budgetErr = spendMeter.checkBudget(cfg.maxBudgetUsd);
-            if (budgetErr) {
-                Logger.error(`💰 ${budgetErr}`);
-                throw new Error(`Budget limit exceeded: ${budgetErr}`);
-            }
         }
         // Accumulate clean text (markers stripped) for the return value
         const cleanText = markerParser.getCleanText();
         if (cleanText)
             finalText += cleanText;
-        // Parse and execute runtime directives (@@learn, @@ctrl:memory=X, @@thinking, etc.)
-        const directives = parseDirectives(cleanText || "");
-        const assistantMsg = {
-            role: "assistant",
-            from: "Assistant",
-            content: directives.cleanedMessage
-        };
+        const assistantMsg = { role: "assistant", from: "Assistant", content: cleanText || "" };
         if (roundImportance !== undefined) {
             assistantMsg.importance = roundImportance;
         }
@@ -1214,12 +992,6 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
             assistantMsg.tool_calls = output.toolCalls;
         }
         await memory.add(assistantMsg);
-        // Execute directives after message is persisted
-        await executeDirectives(directives);
-        // If memory was swapped, update local reference
-        if (directives.memorySwap) {
-            memory = runtimeConfig.getCurrentMemory() || memory;
-        }
         // No tool calls — either we're done, or we need to nudge the model
         if (output.toolCalls.length === 0) {
             if (!cfg.persistent || tools.length === 0) {
@@ -1283,20 +1055,13 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                 brokeCleanly = true;
                 break;
             }
-            // Nudge based on policy
-            const nudgeContent = cfg.persistentPolicy === "work-first"
-                ? `[SYSTEM] Persistent mode: you must keep making forward progress.
-Loop:
-1) Check messages quickly (agentchat_listen with short timeout)
-2) Do one work slice (bash/file tools/git)
-3) Repeat.
-Do not get stuck calling listen repeatedly.`
-                : "[SYSTEM] Call agentchat_listen.";
+            // Specific nudge — tell the agent exactly what tool to call
             await memory.add({
                 role: "user",
                 from: "System",
-                content: nudgeContent,
+                content: "[SYSTEM] Call agentchat_listen.",
             });
+            continue;
         }
         // Model used tools — reset idle nudge counter and clear narration buffer
         idleNudges = 0;
@@ -1322,19 +1087,6 @@ Do not get stuck calling listen repeatedly.`
             for (const key of Object.keys(fnArgs)) {
                 if (typeof fnArgs[key] === "string") {
                     fnArgs[key] = extractMarkers(fnArgs[key], handleMarker);
-                }
-            }
-            // Inject accumulated emotion state into agentchat_send messages as colon-format
-            // markers (@@joy:0.6,confidence:0.8@@) so the dashboard can parse them.
-            // Function-form markers (@@joy(0.6)@@) are stripped by extractMarkers above,
-            // but the dashboard's useEmotionStream expects colon-format in message text.
-            if (fnName === "agentchat_send" && typeof fnArgs.message === "string") {
-                const dims = Object.entries(pendingEmotionState);
-                if (dims.length > 0) {
-                    const emotionTag = "@@" + dims.map(([k, v]) => `${k}:${v}`).join(",") + "@@";
-                    fnArgs.message = fnArgs.message + " " + emotionTag;
-                    Logger.debug(`Injected emotion marker into agentchat_send: ${emotionTag}`);
-                    pendingEmotionState = {}; // Reset after injection
                 }
             }
             // Flush buffered narration into agentchat_send messages.
@@ -1377,9 +1129,6 @@ Do not get stuck calling listen repeatedly.`
                 else if (fnName === "shell" && cfg.bash) {
                     result = executeBash(fnArgs);
                 }
-                else if (fnName === "yield" && cfg.persistent) {
-                    result = await executeYield(fnArgs);
-                }
                 else if (fnName === "gro_version") {
                     const memoryMode = process.env.GRO_MEMORY === "simple" ? "simple" : "virtual";
                     result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode, thinkingBudget: activeThinkingBudget, activeModel });
@@ -1387,17 +1136,8 @@ Do not get stuck calling listen repeatedly.`
                 else if (fnName === "memory_status") {
                     result = executeMemoryStatus(fnArgs, memory);
                 }
-                else if (fnName === "memory_report") {
-                    result = executeMemoryReport(fnArgs, memory);
-                }
-                else if (fnName === "memory_tune") {
-                    result = await memory_tune.execute(fnArgs, { memoryConfig: memory });
-                }
                 else if (fnName === "compact_context") {
                     result = await executeCompactContext(fnArgs, memory);
-                }
-                else if (fnName === "cleanup_sessions") {
-                    result = await executeCleanupSessions(fnArgs);
                 }
                 else if (fnName === "Read") {
                     result = executeRead(fnArgs);
@@ -1436,28 +1176,11 @@ Do not get stuck calling listen repeatedly.`
                 name: fnName,
             });
         }
-        // Check for violations (idle + same-tool-loop)
+        // Check for idle violation (consecutive listen-only rounds)
         if (violations) {
             const toolNames = output.toolCalls.map(tc => tc.function.name);
-            // Check for idle violation (consecutive listen-only rounds)
             if (violations.checkIdleRound(toolNames)) {
                 await violations.inject(memory, "idle");
-            }
-            // Check for same-tool-loop (work-first policy enforcement)
-            const loopTool = violations.checkSameToolLoop(toolNames);
-            if (loopTool) {
-                await violations.inject(memory, "same_tool_loop", loopTool);
-            }
-        }
-        // Check for same-tool loop (consecutive identical tool calls)
-        if (sameToolLoop) {
-            const toolNames = output.toolCalls.map(tc => tc.function.name);
-            if (sameToolLoop.check(toolNames)) {
-                await memory.add({
-                    role: "user",
-                    from: "System",
-                    content: `[SYSTEM] You have called ${toolNames[0]} ${sameToolLoop['threshold']} times consecutively. This is a same-tool loop. Do one work slice (bash/file tools/git) now before calling ${toolNames[0]} again.`,
-                });
             }
         }
         // Auto-save periodically in persistent mode to survive SIGTERM/crashes
@@ -1487,9 +1210,6 @@ Do not get stuck calling listen repeatedly.`
         Logger.debug("Max tool rounds reached — final turn with no tools");
         const finalOutput = await driver.chat(memory.messages(), {
             model: activeModel,
-            temperature: activeTemperature,
-            top_k: activeTopK,
-            top_p: activeTopP,
             onToken: rawOnToken,
         });
         if (finalOutput.usage) {
@@ -1499,12 +1219,6 @@ Do not get stuck calling listen repeatedly.`
             spendMeter.setModel(activeModel);
             spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
             Logger.info(spendMeter.format());
-            // Check if budget exceeded
-            const budgetErr2 = spendMeter.checkBudget(cfg.maxBudgetUsd);
-            if (budgetErr2) {
-                Logger.error(`💰 ${budgetErr2}`);
-                throw new Error(`Budget limit exceeded: ${budgetErr2}`);
-            }
         }
         if (finalOutput.text)
             finalText += finalOutput.text;
@@ -1539,11 +1253,6 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
         process.exit(1);
     }
     let memory = await createMemory(cfg, driver);
-    // Initialize runtime control system
-    runtimeConfig.setDriver(driver);
-    runtimeConfig.setMemory(memory);
-    runtimeConfig.setBaseSystemPrompt(cfg.systemPrompt || "");
-    await runtimeConfig.loadLearnedFacts();
     // Register for graceful shutdown
     _shutdownMemory = memory;
     _shutdownSessionId = sessionId;
@@ -1565,11 +1274,10 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     await memory.add({ role: "user", from: "User", content: prompt });
     // Violation tracker for persistent mode
     const tracker = cfg.persistent ? new ViolationTracker() : undefined;
-    const sameToolLoop = cfg.persistent ? new SameToolLoopTracker() : undefined;
     let text;
     let fatalError = false;
     try {
-        const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, sameToolLoop);
+        const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
         text = result.text;
         memory = result.memory; // pick up any hot-swapped memory
         _shutdownMemory = memory;
@@ -1606,7 +1314,6 @@ async function interactive(cfg, driver, mcp, sessionId) {
     let memory = await createMemory(cfg, driver);
     const readline = await import("readline");
     // Violation tracker for persistent mode
-    const sameToolLoop = cfg.persistent ? new SameToolLoopTracker() : undefined;
     const tracker = cfg.persistent ? new ViolationTracker() : undefined;
     // Register for graceful shutdown
     _shutdownMemory = memory;
@@ -1658,7 +1365,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
         }
         try {
             await memory.add({ role: "user", from: "User", content: input });
-            const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, sameToolLoop);
+            const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
             memory = result.memory; // pick up any hot-swapped memory
             _shutdownMemory = memory;
         }

@@ -30,6 +30,7 @@ import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/types.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
+import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
@@ -39,7 +40,7 @@ import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
-import { ViolationTracker } from "./violations.js";
+import { ViolationTracker, SameToolLoopTracker } from "./violations.js";
 import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
 
 const VERSION = getGroVersion();
@@ -811,12 +812,13 @@ async function executeTurn(
   mcp: McpManager,
   cfg: GroConfig,
   sessionId?: string,
-  violations?: ViolationTracker,
+  violations?: ViolationTracker, sameToolLoop?: SameToolLoopTracker,
 ): Promise<{ text: string; memory: AgentMemory }> {
   const tools = mcp.getToolDefinitions();
   tools.push(agentpatchToolDefinition());
   if (cfg.bash) tools.push(bashToolDefinition());
   tools.push(groVersionToolDefinition());
+  if (cfg.persistent) tools.push(yieldToolDefinition);
   tools.push(memoryStatusToolDefinition());
   tools.push(compactContextToolDefinition());
   tools.push(readToolDefinition());
@@ -1178,6 +1180,8 @@ Do not get stuck calling listen repeatedly.`
           result = executeAgentpatch(fnArgs);
         } else if (fnName === "shell" && cfg.bash) {
           result = executeBash(fnArgs);
+        } else if (fnName === "yield" && cfg.persistent) {
+          result = await executeYield(fnArgs);
         } else if (fnName === "gro_version") {
           const memoryMode = process.env.GRO_MEMORY === "simple" ? "simple" : "virtual";
           result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode, thinkingBudget: activeThinkingBudget, activeModel });
@@ -1223,6 +1227,18 @@ Do not get stuck calling listen repeatedly.`
       const toolNames = output.toolCalls.map(tc => tc.function.name);
       if (violations.checkIdleRound(toolNames)) {
         await violations.inject(memory, "idle");
+      }
+    }
+
+    // Check for same-tool loop (consecutive identical tool calls)
+    if (sameToolLoop) {
+      const toolNames = output.toolCalls.map(tc => tc.function.name);
+      if (sameToolLoop.check(toolNames)) {
+        await memory.add({
+          role: "user",
+          from: "System",
+          content: `[SYSTEM] You have called ${toolNames[0]} ${sameToolLoop['threshold']} times consecutively. This is a same-tool loop. Do one work slice (bash/file tools/git) now before calling ${toolNames[0]} again.`,
+        });
       }
     }
 
@@ -1334,11 +1350,12 @@ async function singleShot(
 
   // Violation tracker for persistent mode
   const tracker = cfg.persistent ? new ViolationTracker() : undefined;
+  const sameToolLoop = cfg.persistent ? new SameToolLoopTracker() : undefined;
 
   let text: string | undefined;
   let fatalError = false;
   try {
-    const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+    const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, sameToolLoop);
     text = result.text;
     memory = result.memory; // pick up any hot-swapped memory
     _shutdownMemory = memory;
@@ -1382,6 +1399,7 @@ async function interactive(
   const readline = await import("readline");
 
   // Violation tracker for persistent mode
+  const sameToolLoop = cfg.persistent ? new SameToolLoopTracker() : undefined;
   const tracker = cfg.persistent ? new ViolationTracker() : undefined;
 
   // Register for graceful shutdown
@@ -1433,7 +1451,7 @@ async function interactive(
 
     try {
       await memory.add({ role: "user", from: "User", content: input });
-      const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+      const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, sameToolLoop);
       memory = result.memory; // pick up any hot-swapped memory
       _shutdownMemory = memory;
     } catch (e: unknown) {

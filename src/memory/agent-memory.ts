@@ -37,6 +37,9 @@ export abstract class AgentMemory {
   /** Update the active model (used by stream markers to persist model changes across turns). */
   setModel(_model: string): void {}
 
+  /** Update thinking budget — VirtualMemory uses this to scale compaction aggressiveness. */
+  setThinkingBudget(_budget: number): void {}
+
   messages(): ChatMessage[] {
     return [...this.messagesBuffer];
   }

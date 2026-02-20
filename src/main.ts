@@ -922,6 +922,9 @@ async function executeTurn(
       }
     }
 
+    // Sync thinking budget to memory — scales compaction aggressiveness
+    memory.setThinkingBudget(activeThinkingBudget);
+
     // Create a fresh marker parser per round so partial state doesn't leak
     const markerParser = createMarkerParser({
       onToken: rawOnToken,

@@ -101,9 +101,13 @@ export class FragmentationMemory extends VirtualMemory {
     };
 
     // Save page to disk
-    mkdirSync(this.pagesDir, { recursive: true });
-    const pagePath = join(this.pagesDir, `${page.id}.json`);
-    writeFileSync(pagePath, JSON.stringify(page, null, 2) + "\n");
+    try {
+      mkdirSync(this.pagesDir, { recursive: true });
+      const pagePath = join(this.pagesDir, `${page.id}.json`);
+      writeFileSync(pagePath, JSON.stringify(page, null, 2) + "\n");
+    } catch (err) {
+      Logger.error(`[FragMem] Failed to save page ${page.id}: ${err}`);
+    }
 
     // Register page in parent's page map (access via any cast)
     (this as any).pages.set(page.id, page);

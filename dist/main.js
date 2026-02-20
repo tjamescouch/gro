@@ -253,6 +253,9 @@ function loadConfig() {
         else if (arg === "--max-idle-nudges") {
             flags.maxIdleNudges = args[++i];
         }
+        else if (arg === "--persistent-policy") {
+            flags.persistentPolicy = args[++i];
+        }
         else if (arg === "--max-retries") {
             process.env.GRO_MAX_RETRIES = args[++i];
         }
@@ -422,6 +425,7 @@ function loadConfig() {
         persistent: flags.persistent === "true",
         persistentPolicy: flags.persistentPolicy || "work-first",
         maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
+        persistentPolicy: flags.persistentPolicy || "work-first",
         bash: flags.bash === "true",
         summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
         outputFormat: flags.outputFormat || "text",

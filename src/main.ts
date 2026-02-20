@@ -177,6 +177,7 @@ interface GroConfig {
   persistent: boolean;
   persistentPolicy: "listen-only" | "work-first";
   maxIdleNudges: number;
+  persistentPolicy: "listen-only" | "work-first";
   bash: boolean;
   summarizerModel: string | null;
   outputFormat: "text" | "json" | "stream-json";
@@ -287,6 +288,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
     else if (arg === "--persistent-policy") { flags.persistentPolicy = args[++i]; }
     else if (arg === "--max-idle-nudges") { flags.maxIdleNudges = args[++i]; }
+    else if (arg === "--persistent-policy") { flags.persistentPolicy = args[++i]; }
     else if (arg === "--max-retries") { process.env.GRO_MAX_RETRIES = args[++i]; }
     else if (arg === "--retry-base-ms") { process.env.GRO_RETRY_BASE_MS = args[++i]; }
     else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet
@@ -411,6 +413,7 @@ function loadConfig(): GroConfig {
     persistent: flags.persistent === "true",
     persistentPolicy: (flags.persistentPolicy as "listen-only" | "work-first") || "work-first",
     maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
+    persistentPolicy: (flags.persistentPolicy as any) || "work-first",
     bash: flags.bash === "true",
     summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
     outputFormat: (flags.outputFormat as GroConfig["outputFormat"]) || "text",

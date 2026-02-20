@@ -50,8 +50,15 @@ export function saveSession(id, messages, meta) {
         ...meta,
         updatedAt: new Date().toISOString(),
     };
-    writeFileSync(join(dir, "messages.json"), JSON.stringify(messages, null, 2));
-    writeFileSync(join(dir, "meta.json"), JSON.stringify(fullMeta, null, 2));
+    try {
+        writeFileSync(join(dir, "messages.json"), JSON.stringify(messages, null, 2));
+        writeFileSync(join(dir, "meta.json"), JSON.stringify(fullMeta, null, 2));
+    }
+    catch (e) {
+        const ge = groError("session_error", `Failed to save session ${id}: ${asError(e).message}`, { cause: e });
+        Logger.error("Session save failed:", errorLogFields(ge));
+        throw ge;
+    }
 }
 /**
  * Sanitize a message array so every assistant tool_use has a matching tool_result.

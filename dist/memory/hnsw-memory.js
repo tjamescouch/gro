@@ -1,5 +1,7 @@
 import { VirtualMemory } from "./virtual-memory.js";
 import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 const HNSW_DEFAULTS = {
     dimension: 384,
     retrievalCount: 3,
@@ -20,73 +22,82 @@ function defaultEmbedFn(text) {
     }
     return Promise.resolve(vec);
 }
-/** Cosine similarity between two vectors */
+/**
+ * Cosine similarity between two vectors.
+ */
 function cosineSimilarity(a, b) {
     if (a.length !== b.length)
         return 0;
-    let dot = 0, magA = 0, magB = 0;
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
     for (let i = 0; i < a.length; i++) {
-        dot += a[i] * b[i];
-        magA += a[i] * a[i];
-        magB += b[i] * b[i];
+        dotProduct += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
     }
-    const denom = Math.sqrt(magA) * Math.sqrt(magB);
-    return denom === 0 ? 0 : dot / denom;
+    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+    return denominator === 0 ? 0 : dotProduct / denominator;
 }
 export class HNSWMemory extends VirtualMemory {
     constructor(config = {}) {
         super(config);
         this.index = [];
-        this.hnswCfg = {
-            dimension: config.dimension ?? HNSW_DEFAULTS.dimension,
-            retrievalCount: config.retrievalCount ?? HNSW_DEFAULTS.retrievalCount,
-            similarityThreshold: config.similarityThreshold ?? HNSW_DEFAULTS.similarityThreshold,
-            embedFn: config.embedFn ?? defaultEmbedFn,
-        };
+        this.dimension = config.dimension ?? HNSW_DEFAULTS.dimension;
+        this.retrievalCount = config.retrievalCount ?? HNSW_DEFAULTS.retrievalCount;
+        this.similarityThreshold = config.similarityThreshold ?? HNSW_DEFAULTS.similarityThreshold;
+        this.embedFn = config.embedFn ?? defaultEmbedFn;
+        // Index path: ~/.gro/indices/<session_id>.hnsw.json (determined on save/load)
+        const groDir = process.env.HOME ? join(process.env.HOME, ".gro") : "/tmp/gro";
+        this.hnswIndexPath = join(groDir, "indices");
+        mkdirSync(this.hnswIndexPath, { recursive: true });
     }
+    /**
+     * Override add to index messages as they arrive.
+     */
     async add(msg) {
-        // Embed and index the message
-        await this.indexMessage(msg);
-        // Retrieve semantically similar past messages
-        const similar = await this.retrieveSimilar(msg.content);
-        // Log retrieval for observability
-        if (similar.length > 0) {
-            console.log(`[HNSWMemory] Retrieved ${similar.length} similar messages for: "${msg.content.slice(0, 60)}..."`);
-        }
-        // Add to buffer (VirtualMemory handles paging/compaction)
         await super.add(msg);
+        await this.indexMessage(msg);
     }
     async indexMessage(msg) {
-        try {
-            const vector = await this.hnswCfg.embedFn(msg.content);
-            // Generate unique ID for this message
-            const msgId = this.hashMessage(msg);
-            // Add to flat index
-            this.index.push({ id: msgId, vector, message: msg });
-        }
-        catch (error) {
-            console.error(`[HNSWMemory] Failed to index message: ${error}`);
-        }
+        const text = String(msg.content ?? "");
+        if (!text.trim())
+            return;
+        const embedding = await this.embedFn(text);
+        const msgId = this.hashMessage(msg);
+        this.index.push({
+            msgId,
+            embedding,
+            role: msg.role,
+            preview: text.slice(0, 100),
+        });
     }
-    async retrieveSimilar(query) {
-        try {
-            const queryVector = await this.hnswCfg.embedFn(query);
-            // Compute similarities for all indexed messages (O(n) flat search)
-            const scored = [];
-            for (const item of this.index) {
-                const similarity = cosineSimilarity(queryVector, item.vector);
-                if (similarity >= this.hnswCfg.similarityThreshold) {
-                    scored.push({ message: item.message, similarity });
-                }
-            }
-            // Sort by similarity descending and take top k
-            scored.sort((a, b) => b.similarity - a.similarity);
-            return scored.slice(0, this.hnswCfg.retrievalCount).map(s => s.message);
-        }
-        catch (error) {
-            console.error(`[HNSWMemory] Failed to retrieve similar messages: ${error}`);
+    /**
+     * Retrieve semantically similar messages from the index.
+     */
+    async retrieve(query) {
+        if (this.index.length === 0)
             return [];
+        const queryEmbedding = await this.embedFn(query);
+        const similarities = this.index.map(entry => ({
+            entry,
+            score: cosineSimilarity(queryEmbedding, entry.embedding),
+        }));
+        // Sort by similarity descending
+        similarities.sort((a, b) => b.score - a.score);
+        // Filter by threshold and take top-k
+        const topResults = similarities
+            .filter(s => s.score >= this.similarityThreshold)
+            .slice(0, this.retrievalCount);
+        // Map back to messages (lookup in memory by msg ID)
+        const messages = this.messages();
+        const retrieved = [];
+        for (const { entry } of topResults) {
+            const msg = messages.find(m => this.hashMessage(m) === entry.msgId);
+            if (msg)
+                retrieved.push(msg);
         }
+        return retrieved;
     }
     hashMessage(msg) {
         return createHash("sha256")
@@ -95,15 +106,45 @@ export class HNSWMemory extends VirtualMemory {
             .slice(0, 16);
     }
     async save(id) {
-        // TODO: Serialize index to disk alongside session
-        // For now, just save base VirtualMemory state
-        // Index will be rebuilt on load from messages
+        // Save base VirtualMemory state
         await super.save(id);
+        // Serialize index to disk
+        const indexFile = join(this.hnswIndexPath, `${id}.hnsw.json`);
+        const indexData = {
+            version: 1,
+            dimension: this.dimension,
+            entries: this.index,
+            timestamp: new Date().toISOString(),
+        };
+        writeFileSync(indexFile, JSON.stringify(indexData, null, 2));
+        console.log(`[HNSWMemory] Index saved to ${indexFile} (${this.index.length} entries)`);
     }
     async load(id) {
         // Load base VirtualMemory state
         await super.load(id);
-        // Rebuild index from loaded messages
+        // Load index from disk if it exists
+        const indexFile = join(this.hnswIndexPath, `${id}.hnsw.json`);
+        if (existsSync(indexFile)) {
+            const indexData = JSON.parse(readFileSync(indexFile, "utf-8"));
+            if (indexData.version !== 1) {
+                console.warn(`[HNSWMemory] Unknown index version ${indexData.version}, rebuilding...`);
+                await this.rebuildIndex();
+                return;
+            }
+            if (indexData.dimension !== this.dimension) {
+                console.warn(`[HNSWMemory] Index dimension mismatch (${indexData.dimension} vs ${this.dimension}), rebuilding...`);
+                await this.rebuildIndex();
+                return;
+            }
+            this.index = indexData.entries;
+            console.log(`[HNSWMemory] Index loaded from ${indexFile} (${this.index.length} entries)`);
+        }
+        else {
+            console.log(`[HNSWMemory] No index found at ${indexFile}, rebuilding...`);
+            await this.rebuildIndex();
+        }
+    }
+    async rebuildIndex() {
         console.log(`[HNSWMemory] Rebuilding index from ${this.messages().length} messages...`);
         this.index = [];
         for (const msg of this.messages()) {

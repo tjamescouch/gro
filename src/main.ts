@@ -802,24 +802,33 @@ async function executeTurn(
   // Emit @@thinking(0.8)@@ to go into the phone booth; let it decay to come back out.
   let activeThinkingBudget = 0.5;
   let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
+  // TODO: move tier ladders to a config file so operators can customize per-provider
   /** Select model tier based on thinking budget and provider.
-   * cfg.model is always the top tier — unknown models are assumed frontier.
-   * Lower tiers use known cheap/mid models regardless of what cfg.model is.
+   * Each provider has an if-ladder: low → mid → high (cfg.model).
    */
   function thinkingTierModel(budget: number): string {
     const provider = inferProvider(cfg.provider, cfg.model);
-    if (budget >= 0.65) return cfg.model;
     switch (provider) {
       case "openai":
-        return budget < 0.25 ? "gpt-4.1-mini" : "gpt-5-mini";
+        if (budget < 0.25) return "gpt-4.1-mini";
+        if (budget < 0.65) return "gpt-5-mini";
+        return "gpt-5.2";
       case "groq":
-        return budget < 0.25 ? "llama-3.1-8b-instant" : "llama-3.3-70b-versatile";
+        if (budget < 0.25) return "llama-3.1-8b-instant";
+        if (budget < 0.65) return "llama-3.3-70b-versatile";
+        return cfg.model;
       case "google":
-        return budget < 0.25 ? "gemini-2.5-flash-lite" : "gemini-2.5-flash";
+        if (budget < 0.25) return "gemini-2.5-flash-lite";
+        if (budget < 0.65) return "gemini-2.5-flash";
+        return "gemini-2.5-pro";
       case "xai":
-        return budget < 0.25 ? "grok-4.1-fast" : "grok-4.1-fast";
+        if (budget < 0.25) return "grok-4.1-fast";
+        if (budget < 0.65) return "grok-4.1-fast";
+        return "grok-4";
       default: // anthropic + local
-        return budget < 0.25 ? MODEL_ALIASES["haiku"] ?? cfg.model : MODEL_ALIASES["sonnet"] ?? cfg.model;
+        if (budget < 0.25) return MODEL_ALIASES["haiku"] ?? cfg.model;
+        if (budget < 0.65) return MODEL_ALIASES["sonnet"] ?? cfg.model;
+        return MODEL_ALIASES["opus"] ?? cfg.model;
     }
   }
 

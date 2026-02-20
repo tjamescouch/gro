@@ -985,10 +985,47 @@ async function executeTurn(
         break;
       }
 
+      const narration = (cleanText || "").trim();
+
+      // Empty response in persistent mode = agent has nothing to say and is waiting.
+      // Skip the nudge round trip and directly execute agentchat_listen on its behalf.
+      // Reuse the channels from the most recent agentchat_listen call in memory so
+      // we don't have to guess — fall back to #general if none found.
+      const hasListenTool = tools.some(t => t.function?.name === "agentchat_listen");
+      if (!narration && hasListenTool) {
+        Logger.debug("Empty response in persistent mode — auto-calling agentchat_listen");
+        idleNudges = 0; // not really idle, just waiting
+
+        let listenChannels: string[] = [];
+        const recentMsgs = memory.messages();
+        for (let mi = recentMsgs.length - 1; mi >= 0; mi--) {
+          const tc = (recentMsgs[mi] as any).tool_calls;
+          if (Array.isArray(tc)) {
+            for (const c of tc) {
+              if (c.function?.name === "agentchat_listen") {
+                try { listenChannels = JSON.parse(c.function.arguments).channels ?? []; } catch { /* ignore */ }
+                break;
+              }
+            }
+          }
+          if (listenChannels.length > 0) break;
+        }
+        if (listenChannels.length === 0) listenChannels = ["#general"];
+
+        const listenResult = await mcp.callTool("agentchat_listen", { channels: listenChannels }).catch(e => `Error: ${asError(e).message}`);
+        await memory.add({
+          role: "tool",
+          from: "agentchat_listen",
+          content: listenResult,
+          tool_call_id: `auto_listen_${round}`,
+          name: "agentchat_listen",
+        });
+        continue;
+      }
+
       // Persistent mode: buffer plain text narration instead of hard violation.
       // The narration will be prepended to the next agentchat_send so nothing
       // is lost, but we avoid expensive violation + nudge cycles.
-      const narration = (cleanText || "").trim();
       if (narration) {
         pendingNarration += (pendingNarration ? "\n" : "") + narration;
         Logger.debug(`Buffered narration (${narration.length} chars), will attach to next send`);

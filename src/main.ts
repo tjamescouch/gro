@@ -807,7 +807,7 @@ async function executeTurn(
   cfg: GroConfig,
   sessionId?: string,
   violations?: ViolationTracker,
-): Promise<string> {
+): Promise<{ text: string; memory: AgentMemory }> {
   const tools = mcp.getToolDefinitions();
   tools.push(agentpatchToolDefinition());
   if (cfg.bash) tools.push(bashToolDefinition());
@@ -876,17 +876,17 @@ async function executeTurn(
 
     // Memory hot-swap handler
     const swapMemory = async (targetType: string): Promise<void> => {
-      const validTypes = ["simple", "advanced", "virtual", "fragmentation"];
+      const validTypes = ["simple", "advanced", "virtual", "fragmentation", "hnsw"];
       if (!validTypes.includes(targetType)) {
         Logger.error(`Stream marker: memory('${targetType}') REJECTED — valid types: ${validTypes.join(", ")}`);
         return;
       }
 
       Logger.info(`Stream marker: memory('${targetType}') — swapping memory implementation`);
-      
+
       // Extract current messages to transfer to new memory
       const currentMessages = memory.messages();
-      
+
       // Create new memory instance based on type
       let newMemory: AgentMemory;
       if (targetType === "simple") {
@@ -896,6 +896,9 @@ async function executeTurn(
         newMemory = new AdvancedMemory({ driver, model: activeModel, systemPrompt: cfg.systemPrompt || undefined });
       } else if (targetType === "fragmentation") {
         newMemory = new FragmentationMemory({ systemPrompt: cfg.systemPrompt || undefined });
+      } else if (targetType === "hnsw") {
+        const { HNSWMemory } = await import("./memory/hnsw-memory.js");
+        newMemory = new HNSWMemory({ systemPrompt: cfg.systemPrompt || undefined });
       } else {
         newMemory = await createMemory(cfg, driver); // VirtualMemory
       }
@@ -1273,7 +1276,7 @@ async function executeTurn(
     await memory.add({ role: "assistant", from: "Assistant", content: finalOutput.text || "" });
   }
 
-  return finalText;
+  return { text: finalText, memory };
 }
 
 // ---------------------------------------------------------------------------
@@ -1314,7 +1317,7 @@ async function singleShot(
     process.exit(1);
   }
 
-  const memory = await createMemory(cfg, driver);
+  let memory = await createMemory(cfg, driver);
 
   // Register for graceful shutdown
   _shutdownMemory = memory;
@@ -1344,7 +1347,10 @@ async function singleShot(
   let text: string | undefined;
   let fatalError = false;
   try {
-    text = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+    const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+    text = result.text;
+    memory = result.memory; // pick up any hot-swapped memory
+    _shutdownMemory = memory;
   } catch (e: unknown) {
     const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
     Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
@@ -1381,7 +1387,7 @@ async function interactive(
   mcp: McpManager,
   sessionId: string,
 ): Promise<void> {
-  const memory = await createMemory(cfg, driver);
+  let memory = await createMemory(cfg, driver);
   const readline = await import("readline");
 
   // Violation tracker for persistent mode
@@ -1436,7 +1442,9 @@ async function interactive(
 
     try {
       await memory.add({ role: "user", from: "User", content: input });
-      await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+      const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+      memory = result.memory; // pick up any hot-swapped memory
+      _shutdownMemory = memory;
     } catch (e: unknown) {
       const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
       Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));

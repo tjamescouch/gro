@@ -853,7 +853,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         let thinkingSeenThisTurn = false;
         // Memory hot-swap handler
         const swapMemory = async (targetType) => {
-            const validTypes = ["simple", "advanced", "virtual", "fragmentation"];
+            const validTypes = ["simple", "advanced", "virtual", "fragmentation", "hnsw"];
             if (!validTypes.includes(targetType)) {
                 Logger.error(`Stream marker: memory('${targetType}') REJECTED — valid types: ${validTypes.join(", ")}`);
                 return;
@@ -872,6 +872,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             }
             else if (targetType === "fragmentation") {
                 newMemory = new FragmentationMemory({ systemPrompt: cfg.systemPrompt || undefined });
+            }
+            else if (targetType === "hnsw") {
+                const { HNSWMemory } = await import("./memory/hnsw-memory.js");
+                newMemory = new HNSWMemory({ systemPrompt: cfg.systemPrompt || undefined });
             }
             else {
                 newMemory = await createMemory(cfg, driver); // VirtualMemory
@@ -1251,7 +1255,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             finalText += finalOutput.text;
         await memory.add({ role: "assistant", from: "Assistant", content: finalOutput.text || "" });
     }
-    return finalText;
+    return { text: finalText, memory };
 }
 // ---------------------------------------------------------------------------
 // Main modes
@@ -1279,7 +1283,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
         usage();
         process.exit(1);
     }
-    const memory = await createMemory(cfg, driver);
+    let memory = await createMemory(cfg, driver);
     // Register for graceful shutdown
     _shutdownMemory = memory;
     _shutdownSessionId = sessionId;
@@ -1304,7 +1308,10 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     let text;
     let fatalError = false;
     try {
-        text = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+        const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+        text = result.text;
+        memory = result.memory; // pick up any hot-swapped memory
+        _shutdownMemory = memory;
     }
     catch (e) {
         const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
@@ -1335,7 +1342,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     }
 }
 async function interactive(cfg, driver, mcp, sessionId) {
-    const memory = await createMemory(cfg, driver);
+    let memory = await createMemory(cfg, driver);
     const readline = await import("readline");
     // Violation tracker for persistent mode
     const tracker = cfg.persistent ? new ViolationTracker() : undefined;
@@ -1389,7 +1396,9 @@ async function interactive(cfg, driver, mcp, sessionId) {
         }
         try {
             await memory.add({ role: "user", from: "User", content: input });
-            await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+            const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+            memory = result.memory; // pick up any hot-swapped memory
+            _shutdownMemory = memory;
         }
         catch (e) {
             const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });

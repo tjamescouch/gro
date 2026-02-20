@@ -783,7 +783,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             return cfg.model;
         switch (provider) {
             case "openai":
-                return budget < 0.25 ? "gpt-4.1-nano" : "gpt-4.1-mini";
+                return budget < 0.25 ? "gpt-5-mini" : "gpt-4.1-mini";
             case "groq":
                 return budget < 0.25 ? "llama-3.1-8b-instant" : "llama-3.3-70b-versatile";
             case "google":

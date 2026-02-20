@@ -195,22 +195,32 @@ export class VirtualMemory extends AgentMemory {
         }
     }
     savePageIndex() {
-        mkdirSync(this.cfg.pagesDir, { recursive: true });
-        writeFileSync(this.indexPath(), JSON.stringify({
-            pages: Array.from(this.pages.values()),
-            activePageIds: Array.from(this.activePageIds),
-            loadOrder: this.loadOrder,
-            savedAt: new Date().toISOString(),
-        }, null, 2) + "\n");
+        try {
+            mkdirSync(this.cfg.pagesDir, { recursive: true });
+            writeFileSync(this.indexPath(), JSON.stringify({
+                pages: Array.from(this.pages.values()),
+                activePageIds: Array.from(this.activePageIds),
+                loadOrder: this.loadOrder,
+                savedAt: new Date().toISOString(),
+            }, null, 2) + "\n");
+        }
+        catch (err) {
+            Logger.error(`[VirtualMemory] Failed to save page index to ${this.indexPath()}: ${err}`);
+        }
     }
     // --- Page Storage ---
     pagePath(id) {
         return join(this.cfg.pagesDir, `${id}.json`);
     }
     savePage(page) {
-        mkdirSync(this.cfg.pagesDir, { recursive: true });
-        writeFileSync(this.pagePath(page.id), JSON.stringify(page, null, 2) + "\n");
-        this.pages.set(page.id, page);
+        try {
+            mkdirSync(this.cfg.pagesDir, { recursive: true });
+            writeFileSync(this.pagePath(page.id), JSON.stringify(page, null, 2) + "\n");
+            this.pages.set(page.id, page);
+        }
+        catch (err) {
+            Logger.error(`[VirtualMemory] Failed to save page ${page.id} to ${this.pagePath(page.id)}: ${err}`);
+        }
     }
     loadPageContent(id) {
         const cached = this.pages.get(id);
@@ -224,18 +234,10 @@ export class VirtualMemory extends AgentMemory {
             this.pages.set(id, page);
             return page.content;
         }
-        catch {
+        catch (err) {
+            Logger.error(`[VirtualMemory] Failed to load page ${id} from ${p}: ${err}`);
             return null;
         }
-    }
-    // --- Ref/Unref (called by marker handler) ---
-    ref(pageId) {
-        this.pendingRefs.add(pageId);
-        this.pendingUnrefs.delete(pageId);
-    }
-    unref(pageId) {
-        this.pendingUnrefs.add(pageId);
-        this.pendingRefs.delete(pageId);
     }
     // --- Token Math ---
     tokensFor(text) {

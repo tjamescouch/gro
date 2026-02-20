@@ -1,9 +1,10 @@
 /**
  * ViolationTracker — monitors agent behavior in persistent mode.
  *
- * Tracks two violation types:
+ * Tracks violation types:
  *   - plain_text: agent emitted text without a tool call
  *   - idle: agent called listen-only tools without follow-up action
+ *   - same_tool_loop: agent called the same tool N+ times consecutively
  *
  * Violations are logged to stderr in a parseable format for niki/supervisor
  * consumption and injected as system warnings into context.
@@ -18,9 +19,13 @@ export class ViolationTracker {
     constructor(opts) {
         this.plainTextResponses = 0;
         this.idleRounds = 0;
+        this.sameToolLoops = 0;
         this.totalViolations = 0;
         this.consecutiveListenOnly = 0;
+        this.consecutiveSameToolCount = 0;
+        this.lastToolName = null;
         this.idleThreshold = opts?.idleThreshold ?? 3;
+        this.sameToolThreshold = opts?.sameToolThreshold ?? 5;
     }
     /**
      * Record a violation and emit it to stderr.
@@ -32,19 +37,32 @@ export class ViolationTracker {
         else if (type === "idle") {
             this.idleRounds++;
         }
+        else if (type === "same_tool_loop") {
+            this.sameToolLoops++;
+        }
         this.totalViolations++;
         // Parseable line for niki/supervisor
-        process.stderr.write(`VIOLATION: type=${type} count=${type === "plain_text" ? this.plainTextResponses : this.idleRounds} total=${this.totalViolations}\n`);
-        Logger.warn(`Violation #${this.totalViolations}: ${type} (${type === "plain_text" ? this.plainTextResponses : this.idleRounds} of this type)`);
+        const count = type === "plain_text" ? this.plainTextResponses
+            : type === "idle" ? this.idleRounds
+                : this.sameToolLoops;
+        process.stderr.write(`VIOLATION: type=${type} count=${count} total=${this.totalViolations}\n`);
+        Logger.warn(`Violation #${this.totalViolations}: ${type} (${count} of this type)`);
     }
     /**
      * Inject a violation warning into the agent's context.
      */
-    async inject(memory, type) {
+    async inject(memory, type, toolName) {
         this.record(type);
-        const msg = type === "plain_text"
-            ? `[VIOLATION #${this.totalViolations}: plain_text. You have ${this.totalViolations} violations this session. You emitted text without a tool call. Resume tool loop immediately.]`
-            : `[VIOLATION #${this.totalViolations}: idle. You have ${this.totalViolations} violations this session. You are listening without taking action. Find work or report status. Repeated violations result in budget reduction.]`;
+        let msg;
+        if (type === "plain_text") {
+            msg = `[VIOLATION #${this.totalViolations}: plain_text. You have ${this.totalViolations} violations this session. You emitted text without a tool call. Resume tool loop immediately.]`;
+        }
+        else if (type === "idle") {
+            msg = `[VIOLATION #${this.totalViolations}: idle. You have ${this.totalViolations} violations this session. You are listening without taking action. Find work or report status. Repeated violations result in budget reduction.]`;
+        }
+        else {
+            msg = `[VIOLATION #${this.totalViolations}: same_tool_loop. You have ${this.totalViolations} violations this session. You have called ${toolName} ${this.consecutiveSameToolCount} times consecutively without doing any work. Do one work slice (bash/tool) now before calling ${toolName} again.]`;
+        }
         await memory.add({
             role: "user",
             from: "System",
@@ -68,6 +86,32 @@ export class ViolationTracker {
             this.consecutiveListenOnly = 0;
         }
         return false;
+    }
+    /**
+     * Check for consecutive same-tool usage (work-first policy enforcement).
+     * Returns the tool name if a same_tool_loop violation should fire, null otherwise.
+     */
+    checkSameToolLoop(toolNames) {
+        // Only track single-tool rounds
+        if (toolNames.length !== 1) {
+            this.consecutiveSameToolCount = 0;
+            this.lastToolName = null;
+            return null;
+        }
+        const currentTool = toolNames[0];
+        if (currentTool === this.lastToolName) {
+            this.consecutiveSameToolCount++;
+            if (this.consecutiveSameToolCount >= this.sameToolThreshold) {
+                this.consecutiveSameToolCount = 0; // reset after firing
+                this.lastToolName = null;
+                return currentTool;
+            }
+        }
+        else {
+            this.consecutiveSameToolCount = 1;
+            this.lastToolName = currentTool;
+        }
+        return null;
     }
     /**
      * Compute a penalty factor for the spend meter.

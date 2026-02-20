@@ -174,6 +174,7 @@ interface GroConfig {
   print: boolean;
   maxToolRounds: number;
   persistent: boolean;
+  persistentPolicy: "listen-only" | "work-first";
   maxIdleNudges: number;
   bash: boolean;
   summarizerModel: string | null;
@@ -282,6 +283,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
     else if (arg === "--bash") { flags.bash = "true"; }
     else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
+    else if (arg === "--persistent-policy") { flags.persistentPolicy = args[++i]; }
     else if (arg === "--max-idle-nudges") { flags.maxIdleNudges = args[++i]; }
     else if (arg === "--max-retries") { process.env.GRO_MAX_RETRIES = args[++i]; }
     else if (arg === "--retry-base-ms") { process.env.GRO_RETRY_BASE_MS = args[++i]; }
@@ -404,6 +406,7 @@ function loadConfig(): GroConfig {
     print: printMode,
     maxToolRounds: parseInt(flags.maxToolRounds || "10"),
     persistent: flags.persistent === "true",
+    persistentPolicy: (flags.persistentPolicy as "listen-only" | "work-first") || "work-first",
     maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
     bash: flags.bash === "true",
     summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
@@ -489,6 +492,7 @@ options:
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
+  --persistent-policy    "work-first" (default) or "listen-only" for persistent mode
   --max-idle-nudges      max consecutive nudges before giving up (default: 10)
   --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
   --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
@@ -1091,13 +1095,15 @@ async function executeTurn(
         break;
       }
 
-      // Specific nudge — tell the agent exactly what tool to call
+      // Nudge message depends on persistent policy
+      const nudgeMessage = cfg.persistentPolicy === "work-first"
+        ? "[SYSTEM] Persistent mode: you must keep making forward progress.\nLoop:\n1) Check messages quickly (agentchat_listen with short timeout)\n2) Do one work slice (bash/tool)\n3) Repeat.\nDo not get stuck calling listen repeatedly."
+        : "[SYSTEM] Call agentchat_listen.";
       await memory.add({
         role: "user",
         from: "System",
-        content: "[SYSTEM] Call agentchat_listen.",
+        content: nudgeMessage,
       });
-      continue;
     }
 
     // Model used tools — reset idle nudge counter and clear narration buffer
@@ -1206,11 +1212,19 @@ async function executeTurn(
       });
     }
 
-    // Check for idle violation (consecutive listen-only rounds)
+    // Check for violations (idle + same-tool-loop)
     if (violations) {
       const toolNames = output.toolCalls.map(tc => tc.function.name);
+      
+      // Check for idle violation (consecutive listen-only rounds)
       if (violations.checkIdleRound(toolNames)) {
         await violations.inject(memory, "idle");
+      }
+      
+      // Check for same-tool-loop (work-first policy enforcement)
+      const loopTool = violations.checkSameToolLoop(toolNames);
+      if (loopTool) {
+        await violations.inject(memory, "same_tool_loop", loopTool);
       }
     }
 

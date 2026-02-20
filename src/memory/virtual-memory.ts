@@ -373,7 +373,11 @@ export class VirtualMemory extends AgentMemory {
     let chars = 0;
     for (const m of msgs) {
       const s = String(m.content ?? "");
-      chars += (s.length > 24_000 ? 24_000 : s.length) + 32;
+      // No per-message cap — use full length for accurate estimation.
+      // A cap here caused severe under-counting: a 300K-char tool output was
+      // estimated as ~8K tokens but sent ~107K actual tokens, allowing 7+ such
+      // messages through the wmBudget * 2 window guard → context_length_exceeded.
+      chars += s.length + 32;
     }
     return Math.ceil(chars / this.cfg.avgCharsPerToken);
   }

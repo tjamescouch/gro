@@ -655,6 +655,7 @@ function createMemory(cfg: GroConfig, driver: ChatDriver): AgentMemory {
   const summarizerApiKey = resolveApiKey(summarizerProvider);
 
   let summarizerDriver: ChatDriver | undefined;
+  let effectiveSummarizerModel = summarizerModel;
   if (summarizerApiKey) {
     summarizerDriver = createDriverForModel(
       summarizerProvider,
@@ -664,13 +665,16 @@ function createMemory(cfg: GroConfig, driver: ChatDriver): AgentMemory {
     );
     Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
   } else {
-    Logger.info(`Summarizer: no ${summarizerProvider} key — using main driver`);
+    // No key for the desired summarizer provider — fall back to main driver.
+    // Use the main model name so the driver doesn't reject an incompatible model name.
+    effectiveSummarizerModel = cfg.model;
+    Logger.info(`Summarizer: no ${summarizerProvider} key — using main driver (${cfg.provider}/${cfg.model})`);
   }
 
   Logger.info(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
   const vm = new VirtualMemory({
     driver: summarizerDriver ?? driver,
-    summarizerModel,
+    summarizerModel: effectiveSummarizerModel,
     systemPrompt: cfg.systemPrompt || undefined,
     workingMemoryTokens: cfg.contextTokens,
   });

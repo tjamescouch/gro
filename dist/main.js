@@ -9,21 +9,34 @@
  * Supersets the claude CLI flags for drop-in compatibility.
  */
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { createInterface } from "node:readline";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { getKey, setKey, resolveKey } from "./keychain.js";
 import { Logger, C } from "./logger.js";
+import { spendMeter } from "./spend-meter.js";
 import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
 import { makeAnthropicDriver } from "./drivers/anthropic.js";
 import { SimpleMemory } from "./memory/simple-memory.js";
+import { AdvancedMemory } from "./memory/advanced-memory.js";
 import { VirtualMemory } from "./memory/virtual-memory.js";
+import { FragmentationMemory } from "./memory/fragmentation-memory.js";
 import { McpManager } from "./mcp/index.js";
 import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
+import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
+import { compactContextToolDefinition, executeCompactContext } from "./tools/compact-context.js";
 import { createMarkerParser, extractMarkers } from "./stream-markers.js";
+import { readToolDefinition, executeRead } from "./tools/read.js";
+import { writeToolDefinition, executeWrite } from "./tools/write.js";
+import { globToolDefinition, executeGlob } from "./tools/glob.js";
+import { grepToolDefinition, executeGrep } from "./tools/grep.js";
+import { ViolationTracker, SameToolLoopTracker } from "./violations.js";
+import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
 const VERSION = getGroVersion();
 // ---------------------------------------------------------------------------
 // Graceful shutdown state — module-level so signal handlers can save sessions.
@@ -42,6 +55,78 @@ function sleep(ms) {
 // Wake notes: a runner-global file that is prepended to the system prompt on process start
 // so agents reliably see dev workflow + memory pointers on wake.
 const WAKE_NOTES_DEFAULT_PATH = join(process.env.HOME || "", ".claude", "WAKE.md");
+// ---------------------------------------------------------------------------
+// Boot Layers — system prompt assembly
+// ---------------------------------------------------------------------------
+const __filename_url = import.meta.url;
+const __dirname_resolved = dirname(fileURLToPath(__filename_url));
+/** Load Layer 1 runtime.md from the gro package (bundled). */
+function loadRuntimeBoot() {
+    // In dist/ after build: dist/boot/runtime.md
+    // In src/ during dev: src/boot/runtime.md
+    const candidates = [
+        join(__dirname_resolved, "boot", "runtime.md"),
+        join(__dirname_resolved, "..", "src", "boot", "runtime.md"),
+    ];
+    for (const p of candidates) {
+        if (existsSync(p)) {
+            return readFileSync(p, "utf-8").trim();
+        }
+    }
+    Logger.warn("runtime.md not found — Layer 1 boot missing");
+    return "";
+}
+function assembleSystemPrompt(layers) {
+    const sections = [];
+    // Layer 1: Runtime (always first, non-negotiable)
+    if (layers.runtime) {
+        sections.push(`<!-- LAYER 1: RUNTIME -->\n${layers.runtime}`);
+    }
+    // Layer 2: Extensions (additive)
+    for (const ext of layers.extensions) {
+        if (ext.trim()) {
+            sections.push(`<!-- LAYER 2: EXTENSION -->\n${ext.trim()}`);
+        }
+    }
+    // Layer 3: Role/Personality
+    for (const role of layers.role) {
+        if (role.trim()) {
+            sections.push(`<!-- LAYER 3: ROLE -->\n${role.trim()}`);
+        }
+    }
+    return sections.join("\n\n---\n\n");
+}
+/** Discover Layer 2 extension files from repo root and known locations. */
+function discoverExtensions(mcpConfigPaths) {
+    const extensions = [];
+    // Check repo root for _base.md
+    const repoBase = join(process.cwd(), "_base.md");
+    if (existsSync(repoBase)) {
+        try {
+            extensions.push(readFileSync(repoBase, "utf-8").trim());
+        }
+        catch {
+            Logger.warn(`Failed to read _base.md at ${repoBase}`);
+        }
+    }
+    // Check for agentchat SKILL.md in common locations
+    const skillCandidates = [
+        join(process.cwd(), "SKILL.md"),
+        join(process.cwd(), ".claude", "SKILL.md"),
+    ];
+    for (const p of skillCandidates) {
+        if (existsSync(p)) {
+            try {
+                extensions.push(readFileSync(p, "utf-8").trim());
+            }
+            catch {
+                Logger.warn(`Failed to read SKILL.md at ${p}`);
+            }
+            break; // only load the first found
+        }
+    }
+    return extensions;
+}
 function loadMcpServers(mcpConfigPaths) {
     // If explicit --mcp-config paths given, use those
     if (mcpConfigPaths.length > 0) {
@@ -117,12 +202,6 @@ function loadConfig() {
     const flags = {};
     const positional = [];
     const mcpConfigPaths = [];
-    // Wake file: global startup instructions injected into the system prompt.
-    // This is intentionally runner-level (not per-repo) so agents reliably see
-    // the same rules on boot.
-    const defaultWakeFile = join(homedir(), ".claude", "WAKE.md");
-    let wakeFile = defaultWakeFile;
-    let disableWake = false;
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         // --- gro native flags ---
@@ -170,6 +249,15 @@ function loadConfig() {
         }
         else if (arg === "--max-idle-nudges") {
             flags.maxIdleNudges = args[++i];
+        }
+        else if (arg === "--persistent-policy") {
+            flags.persistentPolicy = args[++i];
+        }
+        else if (arg === "--max-retries") {
+            process.env.GRO_MAX_RETRIES = args[++i];
+        }
+        else if (arg === "--retry-base-ms") {
+            process.env.GRO_RETRY_BASE_MS = args[++i];
         }
         else if (arg === "--max-thinking-tokens") {
             flags.maxThinkingTokens = args[++i];
@@ -228,6 +316,9 @@ function loadConfig() {
                 } // consume filter
             }
         }
+        else if (arg === "--set-key") {
+            flags.setKey = args[++i];
+        }
         else if (arg === "-V" || arg === "--version") {
             console.log(`gro ${VERSION}`);
             process.exit(0);
@@ -252,46 +343,20 @@ function loadConfig() {
             Logger.warn(`Unknown flag: ${arg}`);
         }
     }
-    const provider = inferProvider(flags.provider, flags.model || process.env.AGENT_MODEL);
+    const provider = inferProvider(flags.provider || process.env.AGENT_PROVIDER, flags.model || process.env.AGENT_MODEL);
     const apiKey = resolveApiKey(provider);
     const noMcp = flags.noMcp === "true";
     const mcpServers = noMcp ? {} : loadMcpServers(mcpConfigPaths);
-    // Resolve system prompt
-    let systemPrompt = flags.systemPrompt || "";
-    // Inject wake notes by default (runner-global), unless explicitly disabled.
-    // This ensures the model always sees workflow + memory pointers on wake.
-    const wakeNotesPath = flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH;
-    const wakeNotesEnabled = flags.noWakeNotes !== "true";
-    if (wakeNotesEnabled && wakeNotesPath && existsSync(wakeNotesPath)) {
-        try {
-            const wake = readFileSync(wakeNotesPath, "utf-8").trim();
-            if (wake)
-                systemPrompt = systemPrompt ? `${wake}
-
-${systemPrompt}` : wake;
-        }
-        catch (e) {
-            // Non-fatal: if wake notes can't be read, proceed without them.
-            Logger.warn(`Failed to read wake notes at ${wakeNotesPath}: ${asError(e).message}`);
-        }
-    }
-    if (flags.systemPromptFile) {
-        try {
-            systemPrompt = readFileSync(flags.systemPromptFile, "utf-8").trim();
-        }
-        catch (e) {
-            const ge = groError("config_error", `Failed to read system prompt file: ${asError(e).message}`, { cause: e });
-            Logger.error(ge.message, errorLogFields(ge));
-            process.exit(1);
-        }
-    }
-    if (flags.appendSystemPrompt) {
-        systemPrompt = systemPrompt ? `${systemPrompt}\n\n${flags.appendSystemPrompt}` : flags.appendSystemPrompt;
-    }
+    // --- Layered system prompt assembly ---
+    // Layer 1: Runtime boot (gro internal, always loaded)
+    const runtime = loadRuntimeBoot();
+    // Layer 2: Extensions (_base.md, SKILL.md, --append-system-prompt-file, --append-system-prompt)
+    const extensions = discoverExtensions(mcpConfigPaths);
     if (flags.appendSystemPromptFile) {
         try {
             const extra = readFileSync(flags.appendSystemPromptFile, "utf-8").trim();
-            systemPrompt = systemPrompt ? `${systemPrompt}\n\n${extra}` : extra;
+            if (extra)
+                extensions.push(extra);
         }
         catch (e) {
             const ge = groError("config_error", `Failed to read append system prompt file: ${asError(e).message}`, { cause: e });
@@ -299,18 +364,39 @@ ${systemPrompt}` : wake;
             process.exit(1);
         }
     }
-    // Default wake injection: prepend runner-global WAKE.md unless explicitly disabled.
-    // Soft dependency: if missing, warn and continue.
-    if (!disableWake && wakeFile) {
+    if (flags.appendSystemPrompt) {
+        extensions.push(flags.appendSystemPrompt);
+    }
+    // Layer 3: Role/Personality (WAKE.md, --system-prompt, --system-prompt-file)
+    const role = [];
+    // WAKE.md (runner-global) — loaded once, not twice
+    const wakeNotesPath = flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH;
+    const wakeNotesEnabled = flags.noWakeNotes !== "true";
+    if (wakeNotesEnabled && wakeNotesPath && existsSync(wakeNotesPath)) {
         try {
-            const wake = readFileSync(wakeFile, "utf-8").trim();
+            const wake = readFileSync(wakeNotesPath, "utf-8").trim();
             if (wake)
-                systemPrompt = systemPrompt ? `${wake}\n\n${systemPrompt}` : wake;
+                role.push(wake);
         }
         catch (e) {
-            Logger.warn(`Wake file not found/readable (${wakeFile}); continuing without it`);
+            Logger.warn(`Failed to read wake notes at ${wakeNotesPath}: ${asError(e).message}`);
         }
     }
+    // --system-prompt-file overrides --system-prompt (not additive)
+    if (flags.systemPromptFile) {
+        try {
+            role.push(readFileSync(flags.systemPromptFile, "utf-8").trim());
+        }
+        catch (e) {
+            const ge = groError("config_error", `Failed to read system prompt file: ${asError(e).message}`, { cause: e });
+            Logger.error(ge.message, errorLogFields(ge));
+            process.exit(1);
+        }
+    }
+    else if (flags.systemPrompt) {
+        role.push(flags.systemPrompt);
+    }
+    const systemPrompt = assembleSystemPrompt({ runtime, extensions, role });
     // Mode resolution: -p forces non-interactive, -i forces interactive
     // Default: interactive if TTY and no prompt given
     const printMode = flags.print === "true";
@@ -332,8 +418,9 @@ ${systemPrompt}` : wake;
         maxToolRounds: parseInt(flags.maxToolRounds || "10"),
         persistent: flags.persistent === "true",
         maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
+        persistentPolicy: flags.persistentPolicy || "work-first",
         bash: flags.bash === "true",
-        summarizerModel: flags.summarizerModel || null,
+        summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
         outputFormat: flags.outputFormat || "text",
         continueSession: flags.continue === "true",
         resumeSession: flags.resume || null,
@@ -346,16 +433,24 @@ ${systemPrompt}` : wake;
 }
 function inferProvider(explicit, model) {
     if (explicit) {
-        if (explicit === "openai" || explicit === "anthropic" || explicit === "local")
+        const known = ["openai", "anthropic", "groq", "google", "xai", "local"];
+        if (known.includes(explicit))
             return explicit;
         Logger.warn(`Unknown provider "${explicit}", defaulting to anthropic`);
         return "anthropic";
     }
     if (model) {
-        if (/^(gpt-|o1-|o3-|o4-|chatgpt-)/.test(model))
+        if (/^(gpt-|o1-|o3|o4-|chatgpt-)/.test(model))
             return "openai";
         if (/^(claude-|sonnet|haiku|opus)/.test(model))
             return "anthropic";
+        if (/^gemini-/.test(model))
+            return "google";
+        if (/^grok-/.test(model))
+            return "xai";
+        // Groq-hosted models
+        if (/^(llama-3|gemma2-|gemma-|mixtral-|whisper-)/.test(model))
+            return "groq";
         if (/^(gemma|llama|mistral|phi|qwen|deepseek)/.test(model))
             return "local";
     }
@@ -363,25 +458,27 @@ function inferProvider(explicit, model) {
 }
 function defaultModel(provider) {
     switch (provider) {
-        case "openai": return "gpt-4o";
-        case "anthropic": return "claude-sonnet-4-20250514";
+        case "openai": return "gpt-5.2-codex";
+        case "anthropic": return "claude-sonnet-4-5";
+        case "groq": return "llama-3.3-70b-versatile";
+        case "google": return "gemini-2.5-flash";
+        case "xai": return "grok-4.1-fast";
         case "local": return "llama3";
-        default: return "claude-sonnet-4-20250514";
+        default: return "claude-sonnet-4-5";
     }
 }
 function defaultBaseUrl(provider) {
     switch (provider) {
         case "openai": return process.env.OPENAI_BASE_URL || "https://api.openai.com";
+        case "groq": return process.env.GROQ_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.groq.com/openai";
+        case "google": return process.env.GOOGLE_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai";
+        case "xai": return process.env.XAI_BASE_URL || "https://api.x.ai/v1";
         case "local": return "http://127.0.0.1:11434";
         default: return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
     }
 }
 function resolveApiKey(provider) {
-    switch (provider) {
-        case "openai": return process.env.OPENAI_API_KEY || "";
-        case "anthropic": return process.env.ANTHROPIC_API_KEY || "";
-        default: return "";
-    }
+    return resolveKey(provider);
 }
 function usage() {
     console.log(`gro ${VERSION} — provider-agnostic LLM runtime
@@ -392,7 +489,8 @@ usage:
   gro -i                        # interactive mode
 
 options:
-  -P, --provider         openai | anthropic | local (default: anthropic)
+  --set-key <provider>   store API key in macOS Keychain (anthropic | openai | groq | google | xai)
+  -P, --provider         openai | anthropic | groq | google | xai | local (default: anthropic)
   -m, --model            model name (auto-infers provider)
   --base-url             API base URL
   --system-prompt        system prompt text
@@ -407,7 +505,10 @@ options:
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
+  --persistent-policy    work-first | listen-only (default: work-first)
   --max-idle-nudges      max consecutive nudges before giving up (default: 10)
+  --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
+  --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string
@@ -424,22 +525,106 @@ options:
 session state is stored in .gro/context/<session-id>/`);
 }
 // ---------------------------------------------------------------------------
+// Key management
+// ---------------------------------------------------------------------------
+async function runSetKey(provider) {
+    const known = ["anthropic", "openai", "groq", "google", "xai"];
+    if (!known.includes(provider)) {
+        throw new Error(`Unknown provider "${provider}". Valid: ${known.join(", ")}`);
+    }
+    const current = getKey(provider);
+    if (current) {
+        process.stdout.write(`Keychain already has a key for ${provider} (${current.slice(0, 8)}…). Overwrite? [y/N] `);
+        const answer = await readLine();
+        if (!answer.toLowerCase().startsWith("y")) {
+            console.log("Aborted.");
+            return;
+        }
+    }
+    process.stdout.write(`Enter API key for ${provider}: `);
+    const key = await readLineHidden();
+    process.stdout.write("\n");
+    if (!key.trim()) {
+        throw new Error("No key entered — aborted.");
+    }
+    setKey(provider, key.trim());
+    console.log(`✓ Key stored in Keychain for provider "${provider}"`);
+}
+function readLine() {
+    return new Promise(resolve => {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        rl.once("line", line => { rl.close(); resolve(line); });
+    });
+}
+function readLineHidden() {
+    return new Promise(resolve => {
+        // Disable echo by switching stdin to raw mode
+        if (process.stdin.isTTY)
+            process.stdin.setRawMode(true);
+        process.stdin.resume();
+        let buf = "";
+        const onData = (chunk) => {
+            const s = chunk.toString("utf8");
+            for (const ch of s) {
+                if (ch === "\r" || ch === "\n") {
+                    process.stdin.removeListener("data", onData);
+                    if (process.stdin.isTTY)
+                        process.stdin.setRawMode(false);
+                    process.stdin.pause();
+                    resolve(buf);
+                    return;
+                }
+                if (ch === "\x03") {
+                    process.exit(1);
+                } // Ctrl-C
+                if (ch === "\x7f" || ch === "\b") {
+                    buf = buf.slice(0, -1);
+                } // backspace
+                else {
+                    buf += ch;
+                }
+            }
+        };
+        process.stdin.on("data", onData);
+    });
+}
+// ---------------------------------------------------------------------------
 // Driver factory
 // ---------------------------------------------------------------------------
 function createDriverForModel(provider, model, apiKey, baseUrl, maxTokens) {
     switch (provider) {
         case "anthropic":
             if (!apiKey && baseUrl === "https://api.anthropic.com") {
-                Logger.error("gro: ANTHROPIC_API_KEY not set (set ANTHROPIC_BASE_URL for proxy mode)");
+                Logger.error(`gro: no API key for anthropic — run: gro --set-key anthropic`);
                 process.exit(1);
             }
             return makeAnthropicDriver({ apiKey: apiKey || "proxy-managed", model, baseUrl, maxTokens });
         case "openai":
             if (!apiKey && baseUrl === "https://api.openai.com") {
-                Logger.error("gro: OPENAI_API_KEY not set (set OPENAI_BASE_URL for proxy mode)");
+                Logger.error(`gro: no API key for openai — run: gro --set-key openai`);
                 process.exit(1);
             }
             return makeStreamingOpenAiDriver({ baseUrl, model, apiKey: apiKey || undefined });
+        case "groq":
+            if (!apiKey) {
+                Logger.error(`gro: no API key for groq — run: gro --set-key groq`);
+                process.exit(1);
+            }
+            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
+        case "google":
+            // Google Gemini via OpenAI-compatible endpoint
+            if (!apiKey) {
+                Logger.error(`gro: no API key for google — set GOOGLE_API_KEY or run: gro --set-key google`);
+                process.exit(1);
+            }
+            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
+        case "xai":
+            // xAI Grok via OpenAI-compatible endpoint
+            if (!apiKey) {
+                Logger.error(`gro: no API key for xai — set XAI_API_KEY or run: gro --set-key xai`);
+                process.exit(1);
+            }
+            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
         case "local":
             return makeStreamingOpenAiDriver({ baseUrl, model });
         default:
@@ -454,28 +639,64 @@ function createDriver(cfg) {
 // ---------------------------------------------------------------------------
 // Memory factory
 // ---------------------------------------------------------------------------
-function createMemory(cfg, driver) {
+async function createMemory(cfg, driver, requestedMode) {
+    const memoryMode = requestedMode ?? process.env.GRO_MEMORY ?? "virtual";
     // Opt-out: SimpleMemory only if explicitly requested
-    if (process.env.GRO_MEMORY === "simple") {
-        Logger.info("MemoryMode=Simple (GRO_MEMORY=simple)");
+    if (memoryMode === "simple") {
+        Logger.info(`${C.cyan("MemoryMode=Simple")} ${C.gray("(GRO_MEMORY=simple)")}`);
         const mem = new SimpleMemory(cfg.systemPrompt || undefined);
         mem.setMeta(cfg.provider, cfg.model);
         return mem;
     }
     // Default: VirtualMemory (safe, cost-controlled)
+    // Default summarizer: Groq llama-3.3-70b-versatile (free tier).
+    // Falls back to main driver if no Groq key is available.
+    const DEFAULT_SUMMARIZER_MODEL = "llama-3.3-70b-versatile";
+    const summarizerModel = cfg.summarizerModel ?? DEFAULT_SUMMARIZER_MODEL;
+    const summarizerProvider = inferProvider(undefined, summarizerModel);
+    const summarizerApiKey = resolveApiKey(summarizerProvider);
     let summarizerDriver;
-    let summarizerModel;
-    if (cfg.summarizerModel) {
-        summarizerModel = cfg.summarizerModel;
-        const summarizerProvider = inferProvider(undefined, summarizerModel);
-        summarizerDriver = createDriverForModel(summarizerProvider, summarizerModel, resolveApiKey(summarizerProvider), defaultBaseUrl(summarizerProvider));
+    let effectiveSummarizerModel = summarizerModel;
+    if (summarizerApiKey) {
+        summarizerDriver = createDriverForModel(summarizerProvider, summarizerModel, summarizerApiKey, defaultBaseUrl(summarizerProvider));
         Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
     }
-    Logger.info("MemoryMode=Virtual (default)");
+    else {
+        // No key for the desired summarizer provider — fall back to main driver.
+        // Use the main model name so the driver doesn't reject an incompatible model name.
+        effectiveSummarizerModel = cfg.model;
+        Logger.info(`Summarizer: no ${summarizerProvider} key — using main driver (${cfg.provider}/${cfg.model})`);
+    }
+    // Fragmentation memory (stochastic sampling)
+    if (memoryMode === "fragmentation") {
+        Logger.info(`${C.cyan("MemoryMode=Fragmentation")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens`)}`);
+        const { FragmentationMemory } = await import("./memory/fragmentation-memory.js");
+        const fm = new FragmentationMemory({
+            systemPrompt: cfg.systemPrompt || undefined,
+            workingMemoryTokens: cfg.contextTokens,
+        });
+        fm.setModel(cfg.model);
+        return fm;
+    }
+    // HNSW memory (semantic similarity retrieval)
+    if (memoryMode === "hnsw") {
+        Logger.info(`${C.cyan("MemoryMode=HNSW")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, semantic retrieval`)}`);
+        const { HNSWMemory } = await import("./memory/hnsw-memory.js");
+        const hm = new HNSWMemory({
+            driver: summarizerDriver ?? driver,
+            summarizerModel: effectiveSummarizerModel,
+            systemPrompt: cfg.systemPrompt || undefined,
+            workingMemoryTokens: cfg.contextTokens,
+        });
+        hm.setModel(cfg.model);
+        return hm;
+    }
+    Logger.info(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
     const vm = new VirtualMemory({
         driver: summarizerDriver ?? driver,
-        summarizerModel: summarizerModel ?? cfg.model,
+        summarizerModel: effectiveSummarizerModel,
         systemPrompt: cfg.systemPrompt || undefined,
+        workingMemoryTokens: cfg.contextTokens,
     });
     vm.setModel(cfg.model);
     return vm;
@@ -505,43 +726,143 @@ function formatOutput(text, format) {
  * the model needing to know the full versioned name.
  */
 const MODEL_ALIASES = {
+    // Anthropic
     "haiku": "claude-haiku-4-5",
     "sonnet": "claude-sonnet-4-5",
     "opus": "claude-opus-4-6",
-    "gpt4": "gpt-4o",
+    // OpenAI — GPT-5 family
+    "gpt5-nano": "gpt-5-nano",
+    "gpt5-mini": "gpt-5-mini",
+    "gpt5": "gpt-5",
+    "gpt5.2": "gpt-5.2",
+    "gpt5.2-codex": "gpt-5.2-codex",
+    "gpt5.2-pro": "gpt-5.2-pro",
+    // OpenAI — GPT-4.1 family
+    "gpt4.1-nano": "gpt-4.1-nano",
+    "gpt4.1-mini": "gpt-4.1-mini",
+    "gpt4.1": "gpt-4.1",
+    // OpenAI — reasoning
+    "o3": "o3",
+    "o4-mini": "o4-mini",
+    // OpenAI — legacy
     "gpt4o": "gpt-4o",
     "gpt4o-mini": "gpt-4o-mini",
-    "o3": "o3",
+    "gpt4": "gpt-4o",
+    // Google
+    "flash-lite": "gemini-2.5-flash-lite",
+    "flash": "gemini-2.5-flash",
+    "gemini-pro": "gemini-2.5-pro",
+    "gemini3-flash": "gemini-3-flash",
+    "gemini3-pro": "gemini-3-pro",
+    // xAI
+    "grok-fast": "grok-4.1-fast",
+    "grok": "grok-4",
+    // Local
+    "llama3": "llama3",
+    "qwen": "qwen",
+    "deepseek": "deepseek",
 };
 function resolveModelAlias(alias) {
     const lower = alias.trim().toLowerCase();
     return MODEL_ALIASES[lower] ?? alias;
 }
+/** Emotion dimensions routed to visage as state-vector events via @@dim(value)@@ markers. */
+const EMOTION_DIMENSIONS = new Set([
+    "joy", "sadness", "anger", "fear", "surprise", "disgust",
+    "confidence", "uncertainty", "excitement", "calm", "urgency", "reverence",
+]);
+/** Emit a state-vector event for visage/dashboard consumption. */
+function emitStateVector(state, outputFormat) {
+    if (outputFormat === "stream-json") {
+        process.stdout.write(JSON.stringify({ type: "state-vector", state }) + "\n");
+    }
+    else {
+        process.stderr.write(`STATE_VECTOR: ${JSON.stringify(state)}\n`);
+    }
+}
 /**
  * Execute a single turn: call the model, handle tool calls, repeat until
  * the model produces a final text response or we hit maxRounds.
  */
-async function executeTurn(driver, memory, mcp, cfg, sessionId) {
+async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, sameToolLoop) {
     const tools = mcp.getToolDefinitions();
     tools.push(agentpatchToolDefinition());
     if (cfg.bash)
         tools.push(bashToolDefinition());
     tools.push(groVersionToolDefinition());
+    if (cfg.persistent)
+        tools.push(yieldToolDefinition);
     tools.push(memoryStatusToolDefinition());
+    tools.push(compactContextToolDefinition());
+    tools.push(readToolDefinition());
+    tools.push(writeToolDefinition());
+    tools.push(globToolDefinition());
+    tools.push(grepToolDefinition());
     let finalText = "";
     let turnTokensIn = 0;
     let turnTokensOut = 0;
     const rawOnToken = cfg.outputFormat === "stream-json"
         ? (t) => process.stdout.write(JSON.stringify({ type: "token", token: t }) + "\n")
         : (t) => process.stdout.write(t);
+    const THINKING_MEAN = 0.5; // cruising altitude — mid-tier, not idle
+    const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle round
     // Mutable model reference — stream markers can switch this mid-turn
     let activeModel = cfg.model;
+    // Thinking level: 0.0 = idle (haiku), 1.0 = full (opus + max budget).
+    // Decays toward THINKING_MEAN each round without @@thinking()@@ — agents coast at mid-tier.
+    // Emit @@thinking(0.8)@@ to go into the phone booth; let it decay to come back out.
+    let activeThinkingBudget = 0.5;
+    let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
+    /** Select model tier based on thinking budget and provider.
+     * Loads tier ladders from providers/*.json config files.
+     */
+    function thinkingTierModel(budget) {
+        const provider = inferProvider(cfg.provider, cfg.model);
+        return selectTierModel(budget, provider, cfg.model, MODEL_ALIASES);
+    }
     let brokeCleanly = false;
     let idleNudges = 0;
     let consecutiveFailedRounds = 0;
+    let pendingNarration = ""; // Buffer for plain text emitted between tool calls
     for (let round = 0; round < cfg.maxToolRounds; round++) {
         let roundHadFailure = false;
         let roundImportance = undefined;
+        let thinkingSeenThisTurn = false;
+        // Memory hot-swap handler
+        const swapMemory = async (targetType) => {
+            const validTypes = ["simple", "advanced", "virtual", "fragmentation", "hnsw"];
+            if (!validTypes.includes(targetType)) {
+                Logger.error(`Stream marker: memory('${targetType}') REJECTED — valid types: ${validTypes.join(", ")}`);
+                return;
+            }
+            Logger.info(`Stream marker: memory('${targetType}') — swapping memory implementation`);
+            // Extract current messages to transfer to new memory
+            const currentMessages = memory.messages();
+            // Create new memory instance based on type
+            let newMemory;
+            if (targetType === "simple") {
+                newMemory = new SimpleMemory(cfg.systemPrompt || undefined);
+                newMemory.setMeta(cfg.provider, cfg.model);
+            }
+            else if (targetType === "advanced") {
+                newMemory = new AdvancedMemory({ driver, model: activeModel, systemPrompt: cfg.systemPrompt || undefined });
+            }
+            else if (targetType === "fragmentation") {
+                newMemory = new FragmentationMemory({ systemPrompt: cfg.systemPrompt || undefined });
+            }
+            else if (targetType === "hnsw") {
+                const { HNSWMemory } = await import("./memory/hnsw-memory.js");
+                newMemory = new HNSWMemory({ systemPrompt: cfg.systemPrompt || undefined });
+            }
+            else {
+                newMemory = await createMemory(cfg, driver); // VirtualMemory
+            }
+            // Transfer messages to new memory
+            for (const msg of currentMessages) {
+                newMemory.add(msg);
+            }
+            memory = newMemory;
+        };
         // Shared marker handler — used by both streaming parser and tool-arg scanner
         const handleMarker = (marker) => {
             if (marker.name === "model-change") {
@@ -555,6 +876,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
                     activeModel = newModel;
                     cfg.model = newModel; // persist across turns
                     memory.setModel(newModel); // persist in session metadata on save
+                    modelExplicitlySet = true; // suppress thinking-tier auto-select
                 }
             }
             else if (marker.name === "ref" && marker.arg) {
@@ -582,10 +904,59 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
                     Logger.warn(`Stream marker: importance('${marker.arg}') — invalid value, must be 0.0–1.0`);
                 }
             }
-            else {
-                Logger.debug(`Stream marker: ${marker.name}('${marker.arg}')`);
+            else if (marker.name === "thinking") {
+                // Master lever: controls model tier, extended thinking budget, and summarizer.
+                // 0.0–0.24 → haiku, 0.25–0.64 → sonnet, 0.65–1.0 → opus.
+                // Decays toward THINKING_MEAN each idle round — emit each round to maintain level.
+                const level = parseFloat(marker.arg !== "" ? marker.arg : "0.5");
+                if (!isNaN(level) && level >= 0 && level <= 1) {
+                    activeThinkingBudget = level;
+                    thinkingSeenThisTurn = true;
+                    Logger.info(`Stream marker: thinking(${level}) → budget=${level}`);
+                    emitStateVector({ thinking: level }, cfg.outputFormat);
+                }
+                else {
+                    Logger.warn(`Stream marker: thinking('${marker.arg}') — invalid value, must be 0.0–1.0`);
+                }
+            }
+            else if (marker.name === "think") {
+                // Shorthand: bump thinking intensity by 0.3, capped at 1.0
+                activeThinkingBudget = Math.min(1.0, activeThinkingBudget + 0.3);
+                thinkingSeenThisTurn = true;
+                Logger.info(`Stream marker: think → budget=${activeThinkingBudget.toFixed(2)}`);
+                emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
+            }
+            else if (marker.name === "relax") {
+                // Shorthand: reduce thinking intensity by 0.3, floored at 0.0
+                activeThinkingBudget = Math.max(0.0, activeThinkingBudget - 0.3);
+                thinkingSeenThisTurn = true;
+                Logger.info(`Stream marker: relax → budget=${activeThinkingBudget.toFixed(2)}`);
+                emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
+            }
+            else if (EMOTION_DIMENSIONS.has(marker.name)) {
+                // Function-form emotion marker @@joy(0.6)@@ — route to visage as state vector.
+                const val = marker.arg !== "" ? parseFloat(marker.arg) : 0.5;
+                if (!isNaN(val) && val >= 0 && val <= 1) {
+                    emitStateVector({ [marker.name]: val }, cfg.outputFormat);
+                    Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
+                }
+            }
+            else if (marker.name === "memory" && marker.arg) {
+                // Memory hot-swap
+                void swapMemory(marker.arg);
+                Logger.info(`Stream marker: ${marker.name}('${marker.arg}')`);
             }
         };
+        // Select model tier based on current thinking budget (unless agent pinned a model explicitly)
+        if (!modelExplicitlySet) {
+            const tierModel = thinkingTierModel(activeThinkingBudget);
+            if (tierModel !== activeModel) {
+                Logger.info(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierModel}`);
+                activeModel = tierModel;
+            }
+        }
+        // Sync thinking budget to memory — scales compaction aggressiveness
+        memory.setThinkingBudget(activeThinkingBudget);
         // Create a fresh marker parser per round so partial state doesn't leak
         const markerParser = createMarkerParser({
             onToken: rawOnToken,
@@ -595,15 +966,27 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
             model: activeModel,
             tools: tools.length > 0 ? tools : undefined,
             onToken: markerParser.onToken,
+            thinkingBudget: activeThinkingBudget,
         });
         // Flush any remaining buffered tokens from the marker parser
         markerParser.flush();
-        // Track token usage for niki budget enforcement
+        // Decay thinking level toward THINKING_MEAN if not refreshed this round.
+        // Agents coast at mid-tier when idle — emit @@thinking(X)@@ each round to maintain level.
+        if (!thinkingSeenThisTurn) {
+            // Regress toward mean — agents coast at cruising altitude, not idle.
+            // From opus (0.8) → settles at ~0.5 (mid-tier) in ~4 rounds.
+            // From haiku (0.1) → pulls UP to ~0.5 (mid-tier) in ~3 rounds.
+            activeThinkingBudget += (THINKING_MEAN - activeThinkingBudget) * THINKING_REGRESSION_RATE;
+        }
+        // Track token usage for niki budget enforcement and spend meter
         if (output.usage) {
             turnTokensIn += output.usage.inputTokens;
             turnTokensOut += output.usage.outputTokens;
             // Log cumulative usage to stderr — niki parses these patterns for budget enforcement
             process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
+            spendMeter.setModel(activeModel);
+            spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
+            Logger.info(spendMeter.format());
         }
         // Accumulate clean text (markers stripped) for the return value
         const cleanText = markerParser.getCleanText();
@@ -623,23 +1006,85 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
                 brokeCleanly = true;
                 break;
             }
-            // Persistent mode: nudge the model to resume tool use
+            const narration = (cleanText || "").trim();
+            // Empty response in persistent mode = agent has nothing to say and is waiting.
+            // Skip the nudge round trip and directly execute agentchat_listen on its behalf.
+            // Reuse the channels from the most recent agentchat_listen call in memory so
+            // we don't have to guess — fall back to #general if none found.
+            const hasListenTool = tools.some(t => t.function?.name === "agentchat_listen");
+            if (!narration && hasListenTool) {
+                Logger.debug("Empty response in persistent mode — auto-calling agentchat_listen");
+                idleNudges = 0; // not really idle, just waiting
+                let listenChannels = [];
+                const recentMsgs = memory.messages();
+                for (let mi = recentMsgs.length - 1; mi >= 0; mi--) {
+                    const tc = recentMsgs[mi].tool_calls;
+                    if (Array.isArray(tc)) {
+                        for (const c of tc) {
+                            if (c.function?.name === "agentchat_listen") {
+                                try {
+                                    listenChannels = JSON.parse(c.function.arguments).channels ?? [];
+                                }
+                                catch { /* ignore */ }
+                                break;
+                            }
+                        }
+                    }
+                    if (listenChannels.length > 0)
+                        break;
+                }
+                if (listenChannels.length === 0)
+                    listenChannels = ["#general"];
+                const listenResult = await mcp.callTool("agentchat_listen", { channels: listenChannels }).catch(e => `Error: ${asError(e).message}`);
+                await memory.add({
+                    role: "tool",
+                    from: "agentchat_listen",
+                    content: listenResult,
+                    tool_call_id: `auto_listen_${round}`,
+                    name: "agentchat_listen",
+                });
+                continue;
+            }
+            // Persistent mode: buffer plain text narration instead of hard violation.
+            // The narration will be prepended to the next agentchat_send so nothing
+            // is lost, but we avoid expensive violation + nudge cycles.
+            if (narration) {
+                pendingNarration += (pendingNarration ? "\n" : "") + narration;
+                Logger.debug(`Buffered narration (${narration.length} chars), will attach to next send`);
+            }
+            // Still count for budgeting — but softer than a full violation.
+            // Only fire a real violation after 3+ consecutive narration-only rounds.
             idleNudges++;
+            if (idleNudges >= 3 && violations) {
+                await violations.inject(memory, "plain_text");
+            }
             if (idleNudges > cfg.maxIdleNudges) {
                 Logger.debug(`Persistent mode: ${idleNudges} consecutive idle responses — giving up`);
                 brokeCleanly = true;
                 break;
             }
-            Logger.debug(`Persistent mode: model stopped calling tools (nudge ${idleNudges}/${cfg.maxIdleNudges})`);
+            // Nudge based on policy
+            const nudgeContent = cfg.persistentPolicy === "work-first"
+                ? `[SYSTEM] Persistent mode: you must keep making forward progress.
+Loop:
+1) Check messages quickly (agentchat_listen with short timeout)
+2) Do one work slice (bash/file tools/git)
+3) Repeat.
+Do not get stuck calling listen repeatedly.`
+                : "[SYSTEM] Call agentchat_listen.";
             await memory.add({
                 role: "user",
                 from: "System",
-                content: "[SYSTEM] You stopped calling tools. You are a persistent agent — you MUST continue your tool loop. Call agentchat_listen now to resume listening for messages. Do not respond with text only.",
+                content: nudgeContent,
             });
-            continue;
         }
-        // Model used tools — reset idle nudge counter
+        // Model used tools — reset idle nudge counter and clear narration buffer
         idleNudges = 0;
+        if (pendingNarration) {
+            // Tool calls happened but no agentchat_send to flush into — discard silently
+            Logger.debug(`Discarding ${pendingNarration.length} chars of orphaned narration (no agentchat_send this round)`);
+            pendingNarration = "";
+        }
         // Process tool calls
         for (const tc of output.toolCalls) {
             const fnName = tc.function.name;
@@ -659,9 +1104,24 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
                     fnArgs[key] = extractMarkers(fnArgs[key], handleMarker);
                 }
             }
+            // Flush buffered narration into agentchat_send messages.
+            // This captures plain text the model emitted between tool calls
+            // and surfaces it in chat instead of losing it to violations.
+            if (fnName === "agentchat_send" && pendingNarration && typeof fnArgs.message === "string") {
+                const msg = fnArgs.message.trim();
+                // Prepend narration only if the send has actual content (skip empty sends)
+                if (msg) {
+                    fnArgs.message = `[narration] ${pendingNarration}\n\n${msg}`;
+                }
+                else {
+                    fnArgs.message = pendingNarration;
+                }
+                Logger.debug(`Flushed ${pendingNarration.length} chars of buffered narration into agentchat_send`);
+                pendingNarration = "";
+            }
             // Format tool call for readability
             let toolCallDisplay;
-            if (fnName === "bash" && fnArgs.command) {
+            if (fnName === "shell" && fnArgs.command) {
                 toolCallDisplay = `${fnName}(${fnArgs.command})`;
             }
             else {
@@ -675,20 +1135,39 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
                     .join(", ");
                 toolCallDisplay = argPairs ? `${fnName}(${argPairs})` : `${fnName}()`;
             }
-            Logger.info(`[Tool call] ${toolCallDisplay}`);
+            Logger.info(`${C.magenta("[Tool call]")} ${C.bold(fnName)}${toolCallDisplay.slice(fnName.length)}`);
             let result;
             try {
                 if (fnName === "apply_patch") {
                     result = executeAgentpatch(fnArgs);
                 }
-                else if (fnName === "bash" && cfg.bash) {
+                else if (fnName === "shell" && cfg.bash) {
                     result = executeBash(fnArgs);
                 }
+                else if (fnName === "yield" && cfg.persistent) {
+                    result = await executeYield(fnArgs);
+                }
                 else if (fnName === "gro_version") {
-                    result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent });
+                    const memoryMode = process.env.GRO_MEMORY === "simple" ? "simple" : "virtual";
+                    result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode, thinkingBudget: activeThinkingBudget, activeModel });
                 }
                 else if (fnName === "memory_status") {
                     result = executeMemoryStatus(fnArgs, memory);
+                }
+                else if (fnName === "compact_context") {
+                    result = await executeCompactContext(fnArgs, memory);
+                }
+                else if (fnName === "Read") {
+                    result = executeRead(fnArgs);
+                }
+                else if (fnName === "Write") {
+                    result = executeWrite(fnArgs);
+                }
+                else if (fnName === "Glob") {
+                    result = executeGlob(fnArgs);
+                }
+                else if (fnName === "Grep") {
+                    result = executeGrep(fnArgs);
                 }
                 else {
                     result = await mcp.callTool(fnName, fnArgs);
@@ -714,6 +1193,24 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
                 tool_call_id: tc.id,
                 name: fnName,
             });
+        }
+        // Check for idle violation (consecutive listen-only rounds)
+        if (violations) {
+            const toolNames = output.toolCalls.map(tc => tc.function.name);
+            if (violations.checkIdleRound(toolNames)) {
+                await violations.inject(memory, "idle");
+            }
+        }
+        // Check for same-tool loop (consecutive identical tool calls)
+        if (sameToolLoop) {
+            const toolNames = output.toolCalls.map(tc => tc.function.name);
+            if (sameToolLoop.check(toolNames)) {
+                await memory.add({
+                    role: "user",
+                    from: "System",
+                    content: `[SYSTEM] You have called ${toolNames[0]} ${sameToolLoop['threshold']} times consecutively. This is a same-tool loop. Do one work slice (bash/file tools/git) now before calling ${toolNames[0]} again.`,
+                });
+            }
         }
         // Auto-save periodically in persistent mode to survive SIGTERM/crashes
         if (cfg.persistent && cfg.sessionPersistence && sessionId && round > 0 && round % AUTO_SAVE_INTERVAL === 0) {
@@ -748,16 +1245,28 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId) {
             turnTokensIn += finalOutput.usage.inputTokens;
             turnTokensOut += finalOutput.usage.outputTokens;
             process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
+            spendMeter.setModel(activeModel);
+            spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
+            Logger.info(spendMeter.format());
         }
         if (finalOutput.text)
             finalText += finalOutput.text;
         await memory.add({ role: "assistant", from: "Assistant", content: finalOutput.text || "" });
     }
-    return finalText;
+    return { text: finalText, memory };
 }
 // ---------------------------------------------------------------------------
 // Main modes
 // ---------------------------------------------------------------------------
+/** Check if --model was explicitly passed on the CLI. */
+function wasModelExplicitlyPassed() {
+    for (let i = 0; i < process.argv.length; i++) {
+        if ((process.argv[i] === "-m" || process.argv[i] === "--model") && i + 1 < process.argv.length) {
+            return true;
+        }
+    }
+    return false;
+}
 async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     let prompt = (positionalArgs || []).join(" ").trim();
     if (!prompt && !process.stdin.isTTY) {
@@ -772,20 +1281,36 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
         usage();
         process.exit(1);
     }
-    const memory = createMemory(cfg, driver);
+    let memory = await createMemory(cfg, driver);
     // Register for graceful shutdown
     _shutdownMemory = memory;
     _shutdownSessionId = sessionId;
     _shutdownSessionPersistence = cfg.sessionPersistence;
     // Resume existing session if requested
     if (cfg.continueSession || cfg.resumeSession) {
+        const sess = loadSession(sessionId);
         await memory.load(sessionId);
+        // Restore the model from the previous session if no model was explicitly passed.
+        // This ensures that @@model-change@@ applied in a previous turn persists
+        // across session resume, since the model is stored in session metadata.
+        if (sess && sess.meta.provider === cfg.provider && sess.meta.model) {
+            if (!wasModelExplicitlyPassed()) {
+                cfg.model = sess.meta.model;
+                Logger.info(`Restored model from session: ${cfg.model}`);
+            }
+        }
     }
     await memory.add({ role: "user", from: "User", content: prompt });
+    // Violation tracker for persistent mode
+    const tracker = cfg.persistent ? new ViolationTracker() : undefined;
+    const sameToolLoop = cfg.persistent ? new SameToolLoopTracker() : undefined;
     let text;
     let fatalError = false;
     try {
-        text = await executeTurn(driver, memory, mcp, cfg, sessionId);
+        const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, sameToolLoop);
+        text = result.text;
+        memory = result.memory; // pick up any hot-swapped memory
+        _shutdownMemory = memory;
     }
     catch (e) {
         const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
@@ -816,8 +1341,11 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     }
 }
 async function interactive(cfg, driver, mcp, sessionId) {
-    const memory = createMemory(cfg, driver);
+    let memory = await createMemory(cfg, driver);
     const readline = await import("readline");
+    // Violation tracker for persistent mode
+    const sameToolLoop = cfg.persistent ? new SameToolLoopTracker() : undefined;
+    const tracker = cfg.persistent ? new ViolationTracker() : undefined;
     // Register for graceful shutdown
     _shutdownMemory = memory;
     _shutdownSessionId = sessionId;
@@ -833,6 +1361,11 @@ async function interactive(cfg, driver, mcp, sessionId) {
         else {
             await memory.load(sessionId);
             if (sess) {
+                // Restore the model from the previous session if no model was explicitly passed.
+                if (!wasModelExplicitlyPassed() && sess.meta.model) {
+                    cfg.model = sess.meta.model;
+                    Logger.info(`Restored model from session: ${cfg.model}`);
+                }
                 const msgCount = sess.messages.filter((m) => m.role !== "system").length;
                 Logger.info(C.gray(`Resumed session ${sessionId} (${msgCount} messages)`));
             }
@@ -863,7 +1396,9 @@ async function interactive(cfg, driver, mcp, sessionId) {
         }
         try {
             await memory.add({ role: "user", from: "User", content: input });
-            await executeTurn(driver, memory, mcp, cfg, sessionId);
+            const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, sameToolLoop);
+            memory = result.memory; // pick up any hot-swapped memory
+            _shutdownMemory = memory;
         }
         catch (e) {
             const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
@@ -902,12 +1437,20 @@ async function interactive(cfg, driver, mcp, sessionId) {
 // Entry point
 // ---------------------------------------------------------------------------
 async function main() {
+    // Handle --set-key before loadConfig so we never construct a partial config
+    const setKeyIdx = process.argv.indexOf("--set-key");
+    if (setKeyIdx !== -1) {
+        const provider = process.argv[setKeyIdx + 1];
+        await runSetKey(provider);
+        process.exit(0);
+    }
     const cfg = loadConfig();
     if (cfg.verbose) {
         process.env.GRO_LOG_LEVEL = "debug";
     }
     // Set Logger verbose mode
     Logger.setVerbose(cfg.verbose);
+    Logger.info(`Runtime: ${C.cyan("gro")} ${C.gray(VERSION)}  Model: ${C.gray(cfg.model)} ${C.gray(`(${cfg.provider})`)}`);
     // Resolve session ID
     let sessionId;
     if (cfg.continueSession) {
@@ -949,6 +1492,8 @@ async function main() {
         "--max-thinking-tokens", "--max-budget-usd",
         "--summarizer-model", "--output-format", "--mcp-config",
         "--resume", "-r",
+        "--max-retries", "--retry-base-ms",
+        "--max-idle-nudges", "--wake-notes", "--name", "--set-key",
     ];
     for (let i = 0; i < args.length; i++) {
         if (args[i].startsWith("-")) {

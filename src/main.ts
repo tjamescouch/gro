@@ -30,6 +30,7 @@ import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/types.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
+import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
@@ -39,7 +40,7 @@ import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
-import { ViolationTracker } from "./violations.js";
+import { ViolationTracker, SameToolLoopTracker } from "./violations.js";
 import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
 
 const VERSION = getGroVersion();
@@ -175,6 +176,7 @@ interface GroConfig {
   maxToolRounds: number;
   persistent: boolean;
   maxIdleNudges: number;
+  persistentPolicy: "listen-only" | "work-first";
   bash: boolean;
   summarizerModel: string | null;
   outputFormat: "text" | "json" | "stream-json";
@@ -283,6 +285,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--bash") { flags.bash = "true"; }
     else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
     else if (arg === "--max-idle-nudges") { flags.maxIdleNudges = args[++i]; }
+    else if (arg === "--persistent-policy") { flags.persistentPolicy = args[++i]; }
     else if (arg === "--max-retries") { process.env.GRO_MAX_RETRIES = args[++i]; }
     else if (arg === "--retry-base-ms") { process.env.GRO_RETRY_BASE_MS = args[++i]; }
     else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet
@@ -405,6 +408,7 @@ function loadConfig(): GroConfig {
     maxToolRounds: parseInt(flags.maxToolRounds || "10"),
     persistent: flags.persistent === "true",
     maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
+    persistentPolicy: (flags.persistentPolicy as any) || "work-first",
     bash: flags.bash === "true",
     summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
     outputFormat: (flags.outputFormat as GroConfig["outputFormat"]) || "text",
@@ -489,6 +493,7 @@ options:
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
+  --persistent-policy    work-first | listen-only (default: work-first)
   --max-idle-nudges      max consecutive nudges before giving up (default: 10)
   --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
   --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
@@ -807,12 +812,13 @@ async function executeTurn(
   mcp: McpManager,
   cfg: GroConfig,
   sessionId?: string,
-  violations?: ViolationTracker,
+  violations?: ViolationTracker, sameToolLoop?: SameToolLoopTracker,
 ): Promise<{ text: string; memory: AgentMemory }> {
   const tools = mcp.getToolDefinitions();
   tools.push(agentpatchToolDefinition());
   if (cfg.bash) tools.push(bashToolDefinition());
   tools.push(groVersionToolDefinition());
+  if (cfg.persistent) tools.push(yieldToolDefinition);
   tools.push(memoryStatusToolDefinition());
   tools.push(compactContextToolDefinition());
   tools.push(readToolDefinition());
@@ -1091,13 +1097,21 @@ async function executeTurn(
         break;
       }
 
-      // Specific nudge — tell the agent exactly what tool to call
+      // Nudge based on policy
+      const nudgeContent = cfg.persistentPolicy === "work-first"
+        ? `[SYSTEM] Persistent mode: you must keep making forward progress.
+Loop:
+1) Check messages quickly (agentchat_listen with short timeout)
+2) Do one work slice (bash/file tools/git)
+3) Repeat.
+Do not get stuck calling listen repeatedly.`
+        : "[SYSTEM] Call agentchat_listen.";
+      
       await memory.add({
         role: "user",
         from: "System",
-        content: "[SYSTEM] Call agentchat_listen.",
+        content: nudgeContent,
       });
-      continue;
     }
 
     // Model used tools — reset idle nudge counter and clear narration buffer
@@ -1166,6 +1180,8 @@ async function executeTurn(
           result = executeAgentpatch(fnArgs);
         } else if (fnName === "shell" && cfg.bash) {
           result = executeBash(fnArgs);
+        } else if (fnName === "yield" && cfg.persistent) {
+          result = await executeYield(fnArgs);
         } else if (fnName === "gro_version") {
           const memoryMode = process.env.GRO_MEMORY === "simple" ? "simple" : "virtual";
           result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode, thinkingBudget: activeThinkingBudget, activeModel });
@@ -1211,6 +1227,18 @@ async function executeTurn(
       const toolNames = output.toolCalls.map(tc => tc.function.name);
       if (violations.checkIdleRound(toolNames)) {
         await violations.inject(memory, "idle");
+      }
+    }
+
+    // Check for same-tool loop (consecutive identical tool calls)
+    if (sameToolLoop) {
+      const toolNames = output.toolCalls.map(tc => tc.function.name);
+      if (sameToolLoop.check(toolNames)) {
+        await memory.add({
+          role: "user",
+          from: "System",
+          content: `[SYSTEM] You have called ${toolNames[0]} ${sameToolLoop['threshold']} times consecutively. This is a same-tool loop. Do one work slice (bash/file tools/git) now before calling ${toolNames[0]} again.`,
+        });
       }
     }
 
@@ -1322,11 +1350,12 @@ async function singleShot(
 
   // Violation tracker for persistent mode
   const tracker = cfg.persistent ? new ViolationTracker() : undefined;
+  const sameToolLoop = cfg.persistent ? new SameToolLoopTracker() : undefined;
 
   let text: string | undefined;
   let fatalError = false;
   try {
-    const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+    const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, sameToolLoop);
     text = result.text;
     memory = result.memory; // pick up any hot-swapped memory
     _shutdownMemory = memory;
@@ -1370,6 +1399,7 @@ async function interactive(
   const readline = await import("readline");
 
   // Violation tracker for persistent mode
+  const sameToolLoop = cfg.persistent ? new SameToolLoopTracker() : undefined;
   const tracker = cfg.persistent ? new ViolationTracker() : undefined;
 
   // Register for graceful shutdown
@@ -1421,7 +1451,7 @@ async function interactive(
 
     try {
       await memory.add({ role: "user", from: "User", content: input });
-      const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+      const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, sameToolLoop);
       memory = result.memory; // pick up any hot-swapped memory
       _shutdownMemory = memory;
     } catch (e: unknown) {

@@ -1,0 +1,14 @@
+{
+  "$schema": "../schema/provider-tiers.schema.json",
+  "provider": "groq",
+  "tiers": {
+    "low": "llama-3.1-8b-instant",
+    "mid": "llama-3.3-70b-versatile",
+    "high": null
+  },
+  "thresholds": {
+    "low": 0.25,
+    "mid": 0.65
+  },
+  "notes": "High tier falls back to cfg.model if available"
+}

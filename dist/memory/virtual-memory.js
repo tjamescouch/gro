@@ -61,6 +61,18 @@ export class VirtualMemory extends AgentMemory {
         this.summaryQueue = null;
         /** Batch worker manager (spawns background worker if batch mode enabled) */
         this.batchWorkerManager = null;
+        /**
+         * Adjust compaction aggressiveness based on the current thinking budget.
+         *
+         * Low budget (cheap model, small context) → compact aggressively, keep less.
+         * High budget (expensive model, big context) → keep more history for richer reasoning.
+         *
+         * Scales workingMemoryTokens, highRatio, and minRecentPerLane around their
+         * configured baselines. Called each round from the execution loop.
+         */
+        this.baseWorkingMemoryTokens = null;
+        this.baseHighRatio = null;
+        this.baseMinRecentPerLane = null;
         this.forceCompactPending = false;
         this.cfg = {
             pagesDir: config.pagesDir ?? DEFAULTS.pagesDir,
@@ -89,6 +101,24 @@ export class VirtualMemory extends AgentMemory {
     }
     setModel(model) {
         this.model = model;
+    }
+    setThinkingBudget(budget) {
+        // Capture baselines on first call
+        if (this.baseWorkingMemoryTokens === null) {
+            this.baseWorkingMemoryTokens = this.cfg.workingMemoryTokens;
+            this.baseHighRatio = this.cfg.highRatio;
+            this.baseMinRecentPerLane = this.cfg.minRecentPerLane;
+        }
+        // Scale factor: 0.6x at budget=0, 1.0x at budget=0.5, 1.6x at budget=1.0
+        const scale = 0.6 + budget * 1.0;
+        // Working memory: scale token budget (cheap models get less context)
+        this.cfg.workingMemoryTokens = Math.round(this.baseWorkingMemoryTokens * scale);
+        // High watermark: lower = more aggressive compaction
+        // At budget=0: 0.55 (compact early). At budget=1: 0.90 (keep more before compacting)
+        this.cfg.highRatio = Math.min(0.95, this.baseHighRatio * (0.75 + budget * 0.5));
+        // Min recent per lane: keep fewer messages on cheap models
+        // At budget=0: 2. At budget=0.5: 4 (default). At budget=1: 6.
+        this.cfg.minRecentPerLane = Math.max(2, Math.round(this.baseMinRecentPerLane * scale));
     }
     // --- Persistence ---
     async load(id) {

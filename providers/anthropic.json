@@ -1,0 +1,13 @@
+{
+  "$schema": "../schema/provider-tiers.schema.json",
+  "provider": "anthropic",
+  "tiers": {
+    "low": "claude-haiku-4-5",
+    "mid": "claude-sonnet-4-5",
+    "high": "claude-opus-4-6"
+  },
+  "thresholds": {
+    "low": 0.25,
+    "mid": 0.65
+  }
+}

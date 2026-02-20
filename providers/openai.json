@@ -1,0 +1,13 @@
+{
+  "$schema": "../schema/provider-tiers.schema.json",
+  "provider": "openai",
+  "tiers": {
+    "low": "gpt-4.1-mini",
+    "mid": "gpt-5-mini",
+    "high": "gpt-5.2"
+  },
+  "thresholds": {
+    "low": 0.25,
+    "mid": 0.65
+  }
+}

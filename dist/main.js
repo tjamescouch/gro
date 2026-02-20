@@ -35,6 +35,7 @@ import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { ViolationTracker } from "./violations.js";
+import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
 const VERSION = getGroVersion();
 // ---------------------------------------------------------------------------
 // Graceful shutdown state — module-level so signal handlers can save sessions.
@@ -804,44 +805,12 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     // Emit @@thinking(0.8)@@ to go into the phone booth; let it decay to come back out.
     let activeThinkingBudget = 0.5;
     let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
-    // TODO: move tier ladders to a config file so operators can customize per-provider
     /** Select model tier based on thinking budget and provider.
-     * Each provider has an if-ladder: low → mid → high (cfg.model).
+     * Loads tier ladders from providers/*.json config files.
      */
     function thinkingTierModel(budget) {
         const provider = inferProvider(cfg.provider, cfg.model);
-        switch (provider) {
-            case "openai":
-                if (budget < 0.25)
-                    return "gpt-4.1-mini";
-                if (budget < 0.65)
-                    return "gpt-5-mini";
-                return "gpt-5.2";
-            case "groq":
-                if (budget < 0.25)
-                    return "llama-3.1-8b-instant";
-                if (budget < 0.65)
-                    return "llama-3.3-70b-versatile";
-                return cfg.model;
-            case "google":
-                if (budget < 0.25)
-                    return "gemini-2.5-flash-lite";
-                if (budget < 0.65)
-                    return "gemini-2.5-flash";
-                return "gemini-2.5-pro";
-            case "xai":
-                if (budget < 0.25)
-                    return "grok-4.1-fast";
-                if (budget < 0.65)
-                    return "grok-4.1-fast";
-                return "grok-4";
-            default: // anthropic + local
-                if (budget < 0.25)
-                    return MODEL_ALIASES["haiku"] ?? cfg.model;
-                if (budget < 0.65)
-                    return MODEL_ALIASES["sonnet"] ?? cfg.model;
-                return MODEL_ALIASES["opus"] ?? cfg.model;
-        }
+        return selectTierModel(budget, provider, cfg.model, MODEL_ALIASES);
     }
     let brokeCleanly = false;
     let idleNudges = 0;

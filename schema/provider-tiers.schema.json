@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Provider Tier Configuration",
+  "description": "Defines model tier ladders for automatic escalation based on thinking budget (0.0-1.0)",
+  "type": "object",
+  "required": ["provider", "tiers", "thresholds"],
+  "properties": {
+    "provider": {
+      "type": "string",
+      "description": "Provider identifier (anthropic, openai, google, xai, groq, etc.)"
+    },
+    "tiers": {
+      "type": "object",
+      "required": ["low", "mid", "high"],
+      "properties": {
+        "low": {
+          "type": ["string", "null"],
+          "description": "Model for thinking budget 0.0-0.24"
+        },
+        "mid": {
+          "type": ["string", "null"],
+          "description": "Model for thinking budget 0.25-0.64"
+        },
+        "high": {
+          "type": ["string", "null"],
+          "description": "Model for thinking budget 0.65-1.0. Null falls back to cfg.model."
+        }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "required": ["low", "mid"],
+      "properties": {
+        "low": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Budget threshold below which low tier is used (default: 0.25)"
+        },
+        "mid": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Budget threshold below which mid tier is used (default: 0.65)"
+        }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Optional usage notes or special behavior"
+    }
+  }
+}

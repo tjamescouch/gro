@@ -45,7 +45,7 @@ import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
-import { ViolationTracker, SameToolLoopTracker } from "./violations.js";
+import { ViolationTracker } from "./violations.js";
 import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
 import { parseDirectives, executeDirectives } from "./runtime/index.js";
 import { runtimeConfig } from "./runtime/index.js";
@@ -853,7 +853,7 @@ async function executeTurn(
   mcp: McpManager,
   cfg: GroConfig,
   sessionId?: string,
-  violations?: ViolationTracker, sameToolLoop?: SameToolLoopTracker,
+  violations?: ViolationTracker,
 ): Promise<{ text: string; memory: AgentMemory }> {
   const tools = mcp.getToolDefinitions();
   tools.push(agentpatchToolDefinition());
@@ -1467,18 +1467,6 @@ Do not get stuck calling listen repeatedly.`
       }
     }
 
-    // Check for same-tool loop (consecutive identical tool calls)
-    if (sameToolLoop) {
-      const toolNames = output.toolCalls.map(tc => tc.function.name);
-      if (sameToolLoop.check(toolNames)) {
-        await memory.add({
-          role: "user",
-          from: "System",
-          content: `[SYSTEM] You have called ${toolNames[0]} ${sameToolLoop['threshold']} times consecutively. This is a same-tool loop. Do one work slice (bash/file tools/git) now before calling ${toolNames[0]} again.`,
-        });
-      }
-    }
-
     // Auto-save periodically in persistent mode to survive SIGTERM/crashes
     if (cfg.persistent && cfg.sessionPersistence && sessionId && round > 0 && round % AUTO_SAVE_INTERVAL === 0) {
       try {
@@ -1603,12 +1591,11 @@ async function singleShot(
 
   // Violation tracker for persistent mode
   const tracker = cfg.persistent ? new ViolationTracker() : undefined;
-  const sameToolLoop = cfg.persistent ? new SameToolLoopTracker() : undefined;
 
   let text: string | undefined;
   let fatalError = false;
   try {
-    const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, sameToolLoop);
+    const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
     text = result.text;
     memory = result.memory; // pick up any hot-swapped memory
     _shutdownMemory = memory;
@@ -1652,7 +1639,6 @@ async function interactive(
   const readline = await import("readline");
 
   // Violation tracker for persistent mode
-  const sameToolLoop = cfg.persistent ? new SameToolLoopTracker() : undefined;
   const tracker = cfg.persistent ? new ViolationTracker() : undefined;
 
   // Register for graceful shutdown
@@ -1704,7 +1690,7 @@ async function interactive(
 
     try {
       await memory.add({ role: "user", from: "User", content: input });
-      const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, sameToolLoop);
+      const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
       memory = result.memory; // pick up any hot-swapped memory
       _shutdownMemory = memory;
     } catch (e: unknown) {

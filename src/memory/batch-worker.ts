@@ -146,30 +146,36 @@ export class BatchWorker {
     // Build batch requests
     const requests = items.map((item) => {
       const pagePath = join(this.cfg.pagesDir, `${item.pageId}.json`);
-      if (!existsSync(pagePath)) {
-        Logger.warn(`[BatchWorker] Page not found: ${item.pageId}`);
+      
+      try {
+        if (!existsSync(pagePath)) {
+          Logger.warn(`[BatchWorker] Page not found: ${item.pageId}`);
+          return null;
+        }
+
+        const pageData = JSON.parse(readFileSync(pagePath, "utf-8"));
+        const messages = pageData.messages || [];
+
+        // Construct summarization prompt
+        const prompt = this.buildSummarizationPrompt(messages, item.pageId, item.label, item.lane);
+
+        return {
+          custom_id: item.pageId,
+          params: {
+            model: this.cfg.model,
+            max_tokens: 1000,
+            messages: [
+              {
+                role: "user" as const,
+                content: prompt,
+              },
+            ],
+          },
+        };
+      } catch (err) {
+        Logger.error(`[BatchWorker] Failed to read page ${item.pageId}: ${err}`);
         return null;
       }
-
-      const pageData = JSON.parse(readFileSync(pagePath, "utf-8"));
-      const messages = pageData.messages || [];
-
-      // Construct summarization prompt
-      const prompt = this.buildSummarizationPrompt(messages, item.pageId, item.label, item.lane);
-
-      return {
-        custom_id: item.pageId,
-        params: {
-          model: this.cfg.model,
-          max_tokens: 1000,
-          messages: [
-            {
-              role: "user" as const,
-              content: prompt,
-            },
-          ],
-        },
-      };
     }).filter((r): r is NonNullable<typeof r> => r !== null);
 
     if (requests.length === 0) {
@@ -241,22 +247,26 @@ export class BatchWorker {
         const pageId = result.custom_id;
         const pagePath = join(this.cfg.pagesDir, `${pageId}.json`);
 
-        if (!existsSync(pagePath)) {
-          Logger.warn(`[BatchWorker] Page not found for result: ${pageId}`);
-          continue;
-        }
+        try {
+          if (!existsSync(pagePath)) {
+            Logger.warn(`[BatchWorker] Page not found for result: ${pageId}`);
+            continue;
+          }
 
-        if (result.result.type === "succeeded") {
-          const summary = result.result.message?.content?.[0]?.text || "";
+          if (result.result.type === "succeeded") {
+            const summary = result.result.message?.content?.[0]?.text || "";
 
-          // Update page summary
-          const pageData = JSON.parse(readFileSync(pagePath, "utf-8"));
-          pageData.summary = summary;
-          writeFileSync(pagePath, JSON.stringify(pageData, null, 2));
+            // Update page summary
+            const pageData = JSON.parse(readFileSync(pagePath, "utf-8"));
+            pageData.summary = summary;
+            writeFileSync(pagePath, JSON.stringify(pageData, null, 2));
 
-          Logger.info(`[BatchWorker] Updated page ${pageId} with batch summary`);
-        } else {
-          Logger.error(`[BatchWorker] Batch result failed for ${pageId}: ${JSON.stringify(result.result.error)}`);
+            Logger.info(`[BatchWorker] Updated page ${pageId} with batch summary`);
+          } else {
+            Logger.error(`[BatchWorker] Batch result failed for ${pageId}: ${JSON.stringify(result.result.error)}`);
+          }
+        } catch (err) {
+          Logger.error(`[BatchWorker] Failed to process result for page ${pageId}: ${err}`);
         }
       }
     } catch (err) {
@@ -299,7 +309,7 @@ Messages: ${msgCount}
 Transcript:
 ${transcript}
 
-Summary (2-3 sentences, include  marker at the end):`;
+Summary (2-3 sentences, include 🧠 marker at the end):`;
   }
 
   /**

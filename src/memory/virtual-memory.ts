@@ -297,14 +297,19 @@ export class VirtualMemory extends AgentMemory {
     }
   }
 
+
   private savePageIndex(): void {
-    mkdirSync(this.cfg.pagesDir, { recursive: true });
-    writeFileSync(this.indexPath(), JSON.stringify({
-      pages: Array.from(this.pages.values()),
-      activePageIds: Array.from(this.activePageIds),
-      loadOrder: this.loadOrder,
-      savedAt: new Date().toISOString(),
-    }, null, 2) + "\n");
+    try {
+      mkdirSync(this.cfg.pagesDir, { recursive: true });
+      writeFileSync(this.indexPath(), JSON.stringify({
+        pages: Array.from(this.pages.values()),
+        activePageIds: Array.from(this.activePageIds),
+        loadOrder: this.loadOrder,
+        savedAt: new Date().toISOString(),
+      }, null, 2) + "\n");
+    } catch (err) {
+      Logger.error(`[VirtualMemory] Failed to save page index to ${this.indexPath()}: ${err}`);
+    }
   }
 
   // --- Page Storage ---
@@ -314,9 +319,13 @@ export class VirtualMemory extends AgentMemory {
   }
 
   private savePage(page: ContextPage): void {
-    mkdirSync(this.cfg.pagesDir, { recursive: true });
-    writeFileSync(this.pagePath(page.id), JSON.stringify(page, null, 2) + "\n");
-    this.pages.set(page.id, page);
+    try {
+      mkdirSync(this.cfg.pagesDir, { recursive: true });
+      writeFileSync(this.pagePath(page.id), JSON.stringify(page, null, 2) + "\n");
+      this.pages.set(page.id, page);
+    } catch (err) {
+      Logger.error(`[VirtualMemory] Failed to save page ${page.id} to ${this.pagePath(page.id)}: ${err}`);
+    }
   }
 
   private loadPageContent(id: string): string | null {
@@ -328,21 +337,12 @@ export class VirtualMemory extends AgentMemory {
       const page: ContextPage = JSON.parse(readFileSync(p, "utf8"));
       this.pages.set(id, page);
       return page.content;
-    } catch {
+    } catch (err) {
+      Logger.error(`[VirtualMemory] Failed to load page ${id} from ${p}: ${err}`);
       return null;
     }
   }
 
-  // --- Ref/Unref (called by marker handler) ---
-
-  ref(pageId: string): void {
-    this.pendingRefs.add(pageId);
-    this.pendingUnrefs.delete(pageId);
-  }
-
-  unref(pageId: string): void {
-    this.pendingUnrefs.add(pageId);
-    this.pendingRefs.delete(pageId);
   }
 
   // --- Token Math ---

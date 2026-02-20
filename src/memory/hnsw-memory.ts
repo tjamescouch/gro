@@ -2,8 +2,9 @@ import type { ChatDriver, ChatMessage } from "../drivers/types.js";
 import { VirtualMemory, type VirtualMemoryConfig } from "./virtual-memory.js";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { Logger } from "../logger.js";
 
 /**
  * HNSWMemory — semantic similarity-based memory (flat index fallback).
@@ -177,8 +178,13 @@ export class HNSWMemory extends VirtualMemory {
       timestamp: new Date().toISOString(),
     };
     
-    writeFileSync(indexFile, JSON.stringify(indexData, null, 2));
-    console.log(`[HNSWMemory] Index saved to ${indexFile} (${this.index.length} entries)`);
+    try {
+      mkdirSync(dirname(indexFile), { recursive: true });
+      writeFileSync(indexFile, JSON.stringify(indexData, null, 2));
+      Logger.info(`[HNSWMemory] Index saved to ${indexFile} (${this.index.length} entries)`);
+    } catch (err) {
+      Logger.error(`[HNSWMemory] Failed to save index to ${indexFile}: ${err}`);
+    }
   }
 
   async load(id: string): Promise<void> {
@@ -189,36 +195,41 @@ export class HNSWMemory extends VirtualMemory {
     const indexFile = join(this.hnswIndexPath, `${id}.hnsw.json`);
     
     if (existsSync(indexFile)) {
-      const indexData = JSON.parse(readFileSync(indexFile, "utf-8"));
-      
-      if (indexData.version !== 1) {
-        console.warn(`[HNSWMemory] Unknown index version ${indexData.version}, rebuilding...`);
+      try {
+        const indexData = JSON.parse(readFileSync(indexFile, "utf-8"));
+        
+        if (indexData.version !== 1) {
+          Logger.warn(`[HNSWMemory] Unknown index version ${indexData.version}, rebuilding...`);
+          await this.rebuildIndex();
+          return;
+        }
+        
+        if (indexData.dimension !== this.dimension) {
+          Logger.warn(`[HNSWMemory] Index dimension mismatch (${indexData.dimension} vs ${this.dimension}), rebuilding...`);
+          await this.rebuildIndex();
+          return;
+        }
+        
+        this.index = indexData.entries;
+        Logger.info(`[HNSWMemory] Index loaded from ${indexFile} (${this.index.length} entries)`);
+      } catch (err) {
+        Logger.error(`[HNSWMemory] Failed to load index from ${indexFile}: ${err}`);
         await this.rebuildIndex();
-        return;
       }
-      
-      if (indexData.dimension !== this.dimension) {
-        console.warn(`[HNSWMemory] Index dimension mismatch (${indexData.dimension} vs ${this.dimension}), rebuilding...`);
-        await this.rebuildIndex();
-        return;
-      }
-      
-      this.index = indexData.entries;
-      console.log(`[HNSWMemory] Index loaded from ${indexFile} (${this.index.length} entries)`);
     } else {
-      console.log(`[HNSWMemory] No index found at ${indexFile}, rebuilding...`);
+      Logger.info(`[HNSWMemory] No index found at ${indexFile}, rebuilding...`);
       await this.rebuildIndex();
     }
   }
 
   private async rebuildIndex(): Promise<void> {
-    console.log(`[HNSWMemory] Rebuilding index from ${this.messages().length} messages...`);
+    Logger.info(`[HNSWMemory] Rebuilding index from ${this.messages().length} messages...`);
     
     this.index = [];
     for (const msg of this.messages()) {
       await this.indexMessage(msg);
     }
     
-    console.log(`[HNSWMemory] Index rebuilt with ${this.index.length} messages`);
+    Logger.info(`[HNSWMemory] Index rebuilt with ${this.index.length} messages`);
   }
 }

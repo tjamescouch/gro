@@ -980,11 +980,11 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 brokeCleanly = true;
                 break;
             }
-            // Light nudge — much shorter than before to save tokens
+            // Specific nudge — tell the agent exactly what tool to call
             await memory.add({
                 role: "user",
                 from: "System",
-                content: "[SYSTEM] Continue tool loop.",
+                content: "[SYSTEM] Call agentchat_listen.",
             });
             continue;
         }

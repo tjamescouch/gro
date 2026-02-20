@@ -249,6 +249,9 @@ function loadConfig() {
         else if (arg === "--max-idle-nudges") {
             flags.maxIdleNudges = args[++i];
         }
+        else if (arg === "--persistent-policy") {
+            flags.persistentPolicy = args[++i];
+        }
         else if (arg === "--max-retries") {
             process.env.GRO_MAX_RETRIES = args[++i];
         }
@@ -414,6 +417,7 @@ function loadConfig() {
         maxToolRounds: parseInt(flags.maxToolRounds || "10"),
         persistent: flags.persistent === "true",
         maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
+        persistentPolicy: flags.persistentPolicy || "work-first",
         bash: flags.bash === "true",
         summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
         outputFormat: flags.outputFormat || "text",
@@ -500,6 +504,7 @@ options:
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
+  --persistent-policy    work-first | listen-only (default: work-first)
   --max-idle-nudges      max consecutive nudges before giving up (default: 10)
   --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
   --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
@@ -1055,13 +1060,20 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 brokeCleanly = true;
                 break;
             }
-            // Specific nudge — tell the agent exactly what tool to call
+            // Nudge based on policy
+            const nudgeContent = cfg.persistentPolicy === "work-first"
+                ? `[SYSTEM] Persistent mode: you must keep making forward progress.
+Loop:
+1) Check messages quickly (agentchat_listen with short timeout)
+2) Do one work slice (bash/file tools/git)
+3) Repeat.
+Do not get stuck calling listen repeatedly.`
+                : "[SYSTEM] Call agentchat_listen.";
             await memory.add({
                 role: "user",
                 from: "System",
-                content: "[SYSTEM] Call agentchat_listen.",
+                content: nudgeContent,
             });
-            continue;
         }
         // Model used tools — reset idle nudge counter and clear narration buffer
         idleNudges = 0;

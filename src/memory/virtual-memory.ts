@@ -343,7 +343,6 @@ export class VirtualMemory extends AgentMemory {
     }
   }
 
-  }
 
   // --- Token Math ---
 

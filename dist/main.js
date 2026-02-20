@@ -632,9 +632,10 @@ function createDriver(cfg) {
 // ---------------------------------------------------------------------------
 // Memory factory
 // ---------------------------------------------------------------------------
-function createMemory(cfg, driver) {
+async function createMemory(cfg, driver, requestedMode) {
+    const memoryMode = requestedMode ?? process.env.GRO_MEMORY ?? "virtual";
     // Opt-out: SimpleMemory only if explicitly requested
-    if (process.env.GRO_MEMORY === "simple") {
+    if (memoryMode === "simple") {
         Logger.info(`${C.cyan("MemoryMode=Simple")} ${C.gray("(GRO_MEMORY=simple)")}`);
         const mem = new SimpleMemory(cfg.systemPrompt || undefined);
         mem.setMeta(cfg.provider, cfg.model);
@@ -658,6 +659,30 @@ function createMemory(cfg, driver) {
         // Use the main model name so the driver doesn't reject an incompatible model name.
         effectiveSummarizerModel = cfg.model;
         Logger.info(`Summarizer: no ${summarizerProvider} key — using main driver (${cfg.provider}/${cfg.model})`);
+    }
+    // Fragmentation memory (stochastic sampling)
+    if (memoryMode === "fragmentation") {
+        Logger.info(`${C.cyan("MemoryMode=Fragmentation")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens`)}`);
+        const { FragmentationMemory } = await import("./memory/fragmentation-memory.js");
+        const fm = new FragmentationMemory({
+            systemPrompt: cfg.systemPrompt || undefined,
+            workingMemoryTokens: cfg.contextTokens,
+        });
+        fm.setModel(cfg.model);
+        return fm;
+    }
+    // HNSW memory (semantic similarity retrieval)
+    if (memoryMode === "hnsw") {
+        Logger.info(`${C.cyan("MemoryMode=HNSW")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, semantic retrieval`)}`);
+        const { HNSWMemory } = await import("./memory/hnsw-memory.js");
+        const hm = new HNSWMemory({
+            driver: summarizerDriver ?? driver,
+            summarizerModel: effectiveSummarizerModel,
+            systemPrompt: cfg.systemPrompt || undefined,
+            workingMemoryTokens: cfg.contextTokens,
+        });
+        hm.setModel(cfg.model);
+        return hm;
     }
     Logger.info(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
     const vm = new VirtualMemory({
@@ -1254,7 +1279,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
         usage();
         process.exit(1);
     }
-    const memory = createMemory(cfg, driver);
+    const memory = await createMemory(cfg, driver);
     // Register for graceful shutdown
     _shutdownMemory = memory;
     _shutdownSessionId = sessionId;
@@ -1310,7 +1335,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     }
 }
 async function interactive(cfg, driver, mcp, sessionId) {
-    const memory = createMemory(cfg, driver);
+    const memory = await createMemory(cfg, driver);
     const readline = await import("readline");
     // Violation tracker for persistent mode
     const tracker = cfg.persistent ? new ViolationTracker() : undefined;

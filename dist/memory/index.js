@@ -5,3 +5,5 @@ export { AdvancedMemory } from "./advanced-memory.js";
 export { SimpleMemory } from "./simple-memory.js";
 export { VirtualMemory } from "./virtual-memory.js";
 export { HNSWMemory } from "./hnsw-memory.js";
+export { FragmentationMemory } from "./fragmentation-memory.js";
+export { RandomSamplingFragmenter } from "./random-sampling-fragmenter.js";

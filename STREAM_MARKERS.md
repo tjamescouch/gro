@@ -85,7 +85,47 @@ That worked, we're done.  Moving on to the next task.
 
 ---
 
-### 2. Memory & Context Management
+
+### 2. Memory Mode Selection
+
+#### `🧠`
+
+Switch memory implementation mid-conversation. All messages transfer to new memory system.
+
+**Modes:**
+- `simple` — Unbounded buffer, no paging (fast, grows without limit)
+- `virtual` — Swim-lane summarization with LLM compaction (default, context-efficient)
+- `fragmentation` — Stochastic sampling, zero LLM cost (fast, lossy)
+- `hnsw` — Semantic similarity retrieval (recalls relevant past context)
+
+**When to use:**
+- Switch to `fragmentation` for zero-cost paging during long batch operations
+- Switch to `hnsw` when you need to recall semantically similar past conversations
+- Switch to `simple` for debugging or short sessions
+- Switch to `virtual` for balanced cost/quality (default)
+
+Example:
+```
+🧠 This will be a long task with lots of iteration.
+```
+
+**Startup configuration (env var):**
+```bash
+GRO_MEMORY=virtual gro -i        # default
+GRO_MEMORY=fragmentation gro -i  # zero-cost paging
+GRO_MEMORY=hnsw gro -i           # semantic retrieval
+GRO_MEMORY=simple gro -i         # unbounded buffer
+```
+
+**Memory mode details:**
+- **simple**: No summarization, all messages in buffer. Fast but unbounded.
+- **virtual**: Pages old messages to disk when working memory exceeds budget. Summarizes via LLM.
+- **fragmentation**: Pages via age-biased random sampling. No LLM calls, instant compaction.
+- **hnsw**: Extends virtual memory with semantic similarity index. Auto-retrieves relevant context.
+
+All modes support session persistence (`--session`, `--resume`).
+---
+
 
 #### ``
 

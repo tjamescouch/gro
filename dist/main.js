@@ -874,7 +874,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 newMemory = new FragmentationMemory({ systemPrompt: cfg.systemPrompt || undefined });
             }
             else {
-                newMemory = createMemory(cfg, driver); // VirtualMemory
+                newMemory = await createMemory(cfg, driver); // VirtualMemory
             }
             // Transfer messages to new memory
             for (const msg of currentMessages) {

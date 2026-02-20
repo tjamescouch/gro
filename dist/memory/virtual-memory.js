@@ -1,32 +1,13 @@
 import { AgentMemory } from "./agent-memory.js";
 import { saveSession, loadSession, ensureGroDir } from "../session.js";
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { SummarizationQueue } from "./summarization-queue.js";
-import { BatchWorkerManager } from "./batch-worker-manager.js";
 import { Logger } from "../logger.js";
-// Load summarizer system prompt from markdown file (next to this module)
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SUMMARIZER_PROMPT_PATH = join(__dirname, "summarizer-prompt.md");
-let _summarizerPromptBase = null;
-function getSummarizerPromptBase() {
-    if (_summarizerPromptBase === null) {
-        try {
-            _summarizerPromptBase = readFileSync(SUMMARIZER_PROMPT_PATH, "utf-8").trim();
-        }
-        catch {
-            // Fallback if file is missing
-            _summarizerPromptBase = "You are a precise summarizer. Output concise bullet points preserving facts, tasks, file paths, commands, and decisions. Messages marked @@important@@ MUST be reproduced verbatim. Messages marked @@ephemeral@@ can be omitted entirely.";
-        }
-    }
-    return _summarizerPromptBase;
-}
 const DEFAULTS = {
     pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
-    pageSlotTokens: 30_000,
-    workingMemoryTokens: 30_000,
+    pageSlotTokens: 40_000,
+    workingMemoryTokens: 80_000,
     assistantWeight: 8,
     userWeight: 4,
     systemWeight: 3,
@@ -37,8 +18,6 @@ const DEFAULTS = {
     lowRatio: 0.50,
     systemPrompt: "",
     summarizerModel: "claude-haiku-4-5",
-    enableBatchSummarization: false,
-    queuePath: join(process.env.HOME ?? "/tmp", ".gro", "summarization-queue.jsonl"),
 };
 // --- VirtualMemory ---
 /** Messages with importance >= this threshold are promoted to the keep set during paging */
@@ -57,23 +36,6 @@ export class VirtualMemory extends AgentMemory {
         /** Load order for eviction (oldest first) */
         this.loadOrder = [];
         this.model = "unknown";
-        /** Summarization queue (if batch mode enabled) */
-        this.summaryQueue = null;
-        /** Batch worker manager (spawns background worker if batch mode enabled) */
-        this.batchWorkerManager = null;
-        /**
-         * Adjust compaction aggressiveness based on the current thinking budget.
-         *
-         * Low budget (cheap model, small context) → compact aggressively, keep less.
-         * High budget (expensive model, big context) → keep more history for richer reasoning.
-         *
-         * Scales workingMemoryTokens, highRatio, and minRecentPerLane around their
-         * configured baselines. Called each round from the execution loop.
-         */
-        this.baseWorkingMemoryTokens = null;
-        this.baseHighRatio = null;
-        this.baseMinRecentPerLane = null;
-        this.forceCompactPending = false;
         this.cfg = {
             pagesDir: config.pagesDir ?? DEFAULTS.pagesDir,
             pageSlotTokens: config.pageSlotTokens ?? DEFAULTS.pageSlotTokens,
@@ -89,36 +51,11 @@ export class VirtualMemory extends AgentMemory {
             systemPrompt: config.systemPrompt ?? DEFAULTS.systemPrompt,
             driver: config.driver ?? null,
             summarizerModel: config.summarizerModel ?? DEFAULTS.summarizerModel,
-            enableBatchSummarization: config.enableBatchSummarization ?? DEFAULTS.enableBatchSummarization,
-            queuePath: config.queuePath ?? DEFAULTS.queuePath,
         };
         mkdirSync(this.cfg.pagesDir, { recursive: true });
-        // Initialize summarization queue if batch mode enabled
-        if (this.cfg.enableBatchSummarization) {
-            this.summaryQueue = new SummarizationQueue(this.cfg.queuePath);
-            this.startBatchWorker();
-        }
     }
     setModel(model) {
         this.model = model;
-    }
-    setThinkingBudget(budget) {
-        // Capture baselines on first call
-        if (this.baseWorkingMemoryTokens === null) {
-            this.baseWorkingMemoryTokens = this.cfg.workingMemoryTokens;
-            this.baseHighRatio = this.cfg.highRatio;
-            this.baseMinRecentPerLane = this.cfg.minRecentPerLane;
-        }
-        // Scale factor: 0.6x at budget=0, 1.0x at budget=0.5, 1.6x at budget=1.0
-        const scale = 0.6 + budget * 1.0;
-        // Working memory: scale token budget (cheap models get less context)
-        this.cfg.workingMemoryTokens = Math.round(this.baseWorkingMemoryTokens * scale);
-        // High watermark: lower = more aggressive compaction
-        // At budget=0: 0.55 (compact early). At budget=1: 0.90 (keep more before compacting)
-        this.cfg.highRatio = Math.min(0.95, this.baseHighRatio * (0.75 + budget * 0.5));
-        // Min recent per lane: keep fewer messages on cheap models
-        // At budget=0: 2. At budget=0.5: 4 (default). At budget=1: 6.
-        this.cfg.minRecentPerLane = Math.max(2, Math.round(this.baseMinRecentPerLane * scale));
     }
     // --- Persistence ---
     async load(id) {
@@ -137,42 +74,6 @@ export class VirtualMemory extends AgentMemory {
             createdAt: new Date().toISOString(),
         });
         this.savePageIndex();
-    }
-    /**
-     * Force immediate context compaction regardless of watermark level.
-     * Use before starting a large task when you want to free up working memory.
-     * Returns a summary of what was compacted.
-     */
-    async forceCompact() {
-        if (!this.cfg.driver) {
-            return "Error: no driver configured, cannot compact";
-        }
-        const before = this.messagesBuffer.filter(m => m.role !== "system");
-        const beforeTokens = this.msgTokens(before);
-        const beforeCount = before.length;
-        if (beforeCount === 0) {
-            return "Nothing to compact — context is empty.";
-        }
-        // Set flag so onAfterAdd bypasses watermark check this one time.
-        this.forceCompactPending = true;
-        // Trigger via add of a no-op system note (drives onAfterAdd).
-        // We'll remove it immediately after compaction.
-        const noop = {
-            role: "system",
-            content: "<!-- compact -->",
-            from: "System",
-        };
-        this.messagesBuffer.push(noop);
-        await this.onAfterAdd();
-        // Remove the noop message
-        const idx = this.messagesBuffer.indexOf(noop);
-        if (idx !== -1)
-            this.messagesBuffer.splice(idx, 1);
-        const after = this.messagesBuffer.filter(m => m.role !== "system");
-        const afterTokens = this.msgTokens(after);
-        const afterCount = after.length;
-        const pageCount = this.getPageCount();
-        return `Compacted: ${beforeCount} → ${afterCount} messages, ${beforeTokens} → ${afterTokens} tokens. Total pages: ${pageCount}.`;
     }
     // --- Page Index (persisted metadata) ---
     indexPath() {
@@ -195,32 +96,22 @@ export class VirtualMemory extends AgentMemory {
         }
     }
     savePageIndex() {
-        try {
-            mkdirSync(this.cfg.pagesDir, { recursive: true });
-            writeFileSync(this.indexPath(), JSON.stringify({
-                pages: Array.from(this.pages.values()),
-                activePageIds: Array.from(this.activePageIds),
-                loadOrder: this.loadOrder,
-                savedAt: new Date().toISOString(),
-            }, null, 2) + "\n");
-        }
-        catch (err) {
-            Logger.error(`[VirtualMemory] Failed to save page index to ${this.indexPath()}: ${err}`);
-        }
+        mkdirSync(this.cfg.pagesDir, { recursive: true });
+        writeFileSync(this.indexPath(), JSON.stringify({
+            pages: Array.from(this.pages.values()),
+            activePageIds: Array.from(this.activePageIds),
+            loadOrder: this.loadOrder,
+            savedAt: new Date().toISOString(),
+        }, null, 2) + "\n");
     }
     // --- Page Storage ---
     pagePath(id) {
         return join(this.cfg.pagesDir, `${id}.json`);
     }
     savePage(page) {
-        try {
-            mkdirSync(this.cfg.pagesDir, { recursive: true });
-            writeFileSync(this.pagePath(page.id), JSON.stringify(page, null, 2) + "\n");
-            this.pages.set(page.id, page);
-        }
-        catch (err) {
-            Logger.error(`[VirtualMemory] Failed to save page ${page.id} to ${this.pagePath(page.id)}: ${err}`);
-        }
+        mkdirSync(this.cfg.pagesDir, { recursive: true });
+        writeFileSync(this.pagePath(page.id), JSON.stringify(page, null, 2) + "\n");
+        this.pages.set(page.id, page);
     }
     loadPageContent(id) {
         const cached = this.pages.get(id);
@@ -234,10 +125,18 @@ export class VirtualMemory extends AgentMemory {
             this.pages.set(id, page);
             return page.content;
         }
-        catch (err) {
-            Logger.error(`[VirtualMemory] Failed to load page ${id} from ${p}: ${err}`);
+        catch {
             return null;
         }
+    }
+    // --- Ref/Unref (called by marker handler) ---
+    ref(pageId) {
+        this.pendingRefs.add(pageId);
+        this.pendingUnrefs.delete(pageId);
+    }
+    unref(pageId) {
+        this.pendingUnrefs.add(pageId);
+        this.pendingRefs.delete(pageId);
     }
     // --- Token Math ---
     tokensFor(text) {
@@ -258,25 +157,7 @@ export class VirtualMemory extends AgentMemory {
         let chars = 0;
         for (const m of msgs) {
             const s = String(m.content ?? "");
-            // No per-message cap — use full length for accurate estimation.
-            // A cap here caused severe under-counting: a 300K-char tool output was
-            // estimated as ~8K tokens but sent ~107K actual tokens, allowing 7+ such
-            // messages through the wmBudget * 2 window guard → context_length_exceeded.
-            chars += s.length + 32;
-            // Include tool_calls arguments in token estimation.
-            // Assistant messages with tool_calls often have empty content but large
-            // function arguments (e.g. agentchat_send messages, file writes, patches).
-            // Without counting these, the windowing loop and compaction triggers
-            // massively underestimate assistant message sizes → context_length_exceeded.
-            const tc = m.tool_calls;
-            if (Array.isArray(tc)) {
-                for (const call of tc) {
-                    const fn = call?.function;
-                    if (fn) {
-                        chars += (fn.name?.length ?? 0) + (fn.arguments?.length ?? 0) + 32;
-                    }
-                }
-            }
+            chars += (s.length > 24_000 ? 24_000 : s.length) + 32;
         }
         return Math.ceil(chars / this.cfg.avgCharsPerToken);
     }
@@ -305,18 +186,7 @@ export class VirtualMemory extends AgentMemory {
         this.savePage(page);
         // Generate summary with embedded ref
         let summary;
-        if (this.cfg.enableBatchSummarization && this.summaryQueue) {
-            // Queue page for async batch summarization
-            this.summaryQueue.enqueue({
-                pageId: page.id,
-                label,
-                lane,
-                queuedAt: Date.now(),
-            });
-            // Return placeholder summary immediately (non-blocking)
-            summary = `[Pending summary: ${messages.length} messages, ${label}] `;
-        }
-        else if (this.cfg.driver) {
+        if (this.cfg.driver) {
             summary = await this.summarizeWithRef(messages, page.id, label, lane);
         }
         else {
@@ -326,41 +196,39 @@ export class VirtualMemory extends AgentMemory {
         return { page, summary };
     }
     async summarizeWithRef(messages, pageId, label, lane) {
-        // Extract importance-tagged content for special handling
-        const importantLines = [];
         const transcript = messages.map(m => {
-            const raw = String(m.content ?? "");
-            // Hard-strip @@ephemeral@@ lines before summarization
-            const stripped = raw.split("\n")
-                .filter(line => !/@@ephemeral@@/i.test(line))
-                .join("\n");
-            const c = stripped.slice(0, 4000);
-            // Collect @@important@@ lines verbatim for the summarizer header
-            for (const line of raw.split("\n")) {
-                if (/@@important@@/i.test(line)) {
-                    importantLines.push(line.replace(/@@important@@/gi, "").trim());
-                }
-            }
-            // Tag messages with importance field for the summarizer
+            const c = String(m.content ?? "").slice(0, 4000);
             const imp = (m.importance ?? 0) >= IMPORTANCE_KEEP_THRESHOLD
                 ? ` [IMPORTANT=${m.importance}]` : "";
             return `${m.role.toUpperCase()}${imp}: ${c}`;
         }).join("\n");
-        const importantNote = importantLines.length > 0
-            ? `\n\nIMPORTANT — preserve these verbatim in the summary:\n${importantLines.map(l => `  • ${l}`).join("\n")}`
-            : "";
-        const laneNote = lane
-            ? `\n\n## Active Lane: ${lane}\nApply the lane-specific focus rules for the "${lane}" lane from the rules above.`
-            : "";
+        // Lane-specific summarization instructions (inspired by AdvancedMemory)
+        const laneInstructions = lane ? (() => {
+            switch (lane) {
+                case "assistant":
+                    return "Focus on assistant decisions, plans, code edits, shell commands, and outcomes.";
+                case "system":
+                    return "Summarize system instructions, rules, goals, and constraints without changing their intent.";
+                case "user":
+                    return "Summarize user requests, feedback, constraints, and acceptance criteria.";
+            }
+        })() : "Summarize this conversation segment preserving key context.";
         const sys = {
             role: "system",
             from: "System",
-            content: getSummarizerPromptBase() + laneNote,
+            content: [
+                "You are a precise summarizer. Output concise bullet points preserving facts, tasks, file paths, commands, and decisions.",
+                "Messages tagged [IMPORTANT=N] carry high significance — preserve their content with extra detail in the summary.",
+                laneInstructions,
+                `End the summary with: `,
+                "This ref is a hyperlink to the full conversation. Always include it.",
+                "Hard limit: ~500 characters.",
+            ].join(" "),
         };
         const usr = {
             role: "user",
             from: "User",
-            content: `Summarize this conversation segment (${label}):${importantNote}\n\n${transcript.slice(0, 12000)}`,
+            content: `Summarize this conversation segment (${label}):\n\n${transcript.slice(0, 12000)}`,
         };
         try {
             const out = await this.cfg.driver.chat([sys, usr], { model: this.cfg.summarizerModel });
@@ -423,22 +291,6 @@ export class VirtualMemory extends AgentMemory {
                 break;
         }
         result.push(...window);
-        // Safety cap: verify total context size doesn't exceed a hard limit.
-        // Even with accurate token estimation, defend against edge cases where
-        // system prompt + pages + working memory combine to exceed provider limits.
-        const totalTokens = usedTokens + wmTokens;
-        const hardCap = wmBudget * 4; // absolute ceiling
-        if (totalTokens > hardCap) {
-            Logger.warn(`[VM] Total context ${totalTokens} tokens exceeds hard cap ${hardCap} — trimming working memory`);
-            const excess = totalTokens - wmBudget * 2; // trim back to 2x budget for safety
-            let trimmed = 0;
-            // Remove oldest working memory messages (from front of window, after system+pages)
-            const wmStart = result.length - window.length;
-            while (trimmed < excess && result.length > wmStart + this.cfg.minRecentPerLane * 4) {
-                const removed = result.splice(wmStart, 1);
-                trimmed += this.msgTokens(removed);
-            }
-        }
         return result;
     }
     buildPageSlot() {
@@ -587,10 +439,8 @@ export class VirtualMemory extends AgentMemory {
         if (process.env.GRO_VM_DEBUG === "true") {
             Logger.info(`[VM] A:${assistantTokens}/${budgets.assistant} U:${userTokens}/${budgets.user} S:${systemTokens}/${budgets.system} T:${toolTokens}/${budgets.tool} paging=[A:${assistantOverBudget} U:${userOverBudget} S:${systemOverBudget} T:${toolOverBudget}]`);
         }
-        // If no lane is over budget, nothing to do (unless forced)
-        const forced = this.forceCompactPending;
-        this.forceCompactPending = false;
-        if (!forced && !assistantOverBudget && !userOverBudget && !systemOverBudget)
+        // If no lane is over budget, nothing to do
+        if (!assistantOverBudget && !userOverBudget && !systemOverBudget)
             return;
         await this.runOnce(async () => {
             // Compute normalized budgets
@@ -603,21 +453,18 @@ export class VirtualMemory extends AgentMemory {
             const beforeTokens = this.msgTokens(nonSys);
             const beforeMB = (beforeTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
             const beforeMsgCount = nonSys.length;
-            // Protect the original system prompt (set by constructor, identified by from === "System").
-            // Cannot rely on firstSystemIndex === 0 because after compaction, summaries are prepended
-            // and the system prompt may no longer be at index 0.
-            const originalSysPrompt = this.messagesBuffer.find(m => m.role === "system" && m.from === "System");
-            const sysHead = originalSysPrompt ? [originalSysPrompt] : [];
-            const remainingSystem = system.filter(m => m !== originalSysPrompt);
+            // Separate system prompt from other system messages
+            const sysHead = firstSystemIndex === 0 ? [this.messagesBuffer[0]] : [];
+            const remainingSystem = firstSystemIndex === 0 ? system.slice(1) : system.slice(0);
             // Recalculate per-lane token usage
             const assistantTok = this.msgTokens(assistant);
             const userTok = this.msgTokens(user);
             const systemTok = this.msgTokens(remainingSystem);
             const toolTok = this.msgTokens(tool);
-            // Determine which lanes to page based on normalized budget (forced = page all non-empty lanes)
-            const shouldPageAssistant = forced ? assistant.length > tailN : assistantTok > budgets.assistant * this.cfg.highRatio;
-            const shouldPageUser = forced ? user.length > tailN : userTok > budgets.user * this.cfg.highRatio;
-            const shouldPageSystem = forced ? remainingSystem.length > 0 : systemTok > budgets.system * this.cfg.highRatio;
+            // Determine which lanes to page based on normalized budget
+            const shouldPageAssistant = assistantTok > budgets.assistant * this.cfg.highRatio;
+            const shouldPageUser = userTok > budgets.user * this.cfg.highRatio;
+            const shouldPageSystem = systemTok > budgets.system * this.cfg.highRatio;
             // CRITICAL: Tool lane MUST page with assistant lane to avoid orphaning tool calls/results
             // Tool results (tool lane) must stay paired with their tool calls (assistant lane)
             const shouldPageTool = shouldPageAssistant;
@@ -699,40 +546,4 @@ export class VirtualMemory extends AgentMemory {
     getActivePageIds() { return Array.from(this.activePageIds); }
     getPageCount() { return this.pages.size; }
     hasPage(id) { return this.pages.has(id); }
-    /**
-     * Start the batch worker subprocess.
-     */
-    startBatchWorker() {
-        // Only start if driver is available (we need API key)
-        if (!this.cfg.driver) {
-            Logger.warn("[VirtualMemory] Cannot start batch worker: driver not configured");
-            return;
-        }
-        // Extract API key from driver (assumes AnthropicDriver)
-        const apiKey = this.cfg.driver.apiKey;
-        if (!apiKey) {
-            Logger.warn("[VirtualMemory] Cannot start batch worker: API key not found in driver");
-            return;
-        }
-        this.batchWorkerManager = new BatchWorkerManager({
-            queuePath: this.cfg.queuePath,
-            pagesDir: this.cfg.pagesDir,
-            apiKey,
-            pollInterval: 60000,
-            batchPollInterval: 300000,
-            batchSize: 10000,
-            model: this.cfg.summarizerModel,
-        });
-        this.batchWorkerManager.start();
-        Logger.info("[VirtualMemory] Batch worker started");
-    }
-    /**
-     * Stop the batch worker subprocess (if running).
-     */
-    stopBatchWorker() {
-        if (this.batchWorkerManager) {
-            this.batchWorkerManager.stop();
-            this.batchWorkerManager = null;
-        }
-    }
 }

@@ -18,7 +18,9 @@ import { spendMeter } from "./spend-meter.js";
 import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
 import { makeAnthropicDriver } from "./drivers/anthropic.js";
 import { SimpleMemory } from "./memory/simple-memory.js";
+import { AdvancedMemory } from "./memory/advanced-memory.js";
 import { VirtualMemory } from "./memory/virtual-memory.js";
+import { FragmentationMemory } from "./memory/fragmentation-memory.js";
 import { McpManager } from "./mcp/index.js";
 import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
@@ -824,6 +826,37 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         let roundHadFailure = false;
         let roundImportance = undefined;
         let thinkingSeenThisTurn = false;
+        // Memory hot-swap handler
+        const swapMemory = async (targetType) => {
+            const validTypes = ["simple", "advanced", "virtual", "fragmentation"];
+            if (!validTypes.includes(targetType)) {
+                Logger.error(`Stream marker: memory('${targetType}') REJECTED — valid types: ${validTypes.join(", ")}`);
+                return;
+            }
+            Logger.info(`Stream marker: memory('${targetType}') — swapping memory implementation`);
+            // Extract current messages to transfer to new memory
+            const currentMessages = memory.messages();
+            // Create new memory instance based on type
+            let newMemory;
+            if (targetType === "simple") {
+                newMemory = new SimpleMemory(cfg.systemPrompt || undefined);
+                newMemory.setMeta(cfg.provider, cfg.model);
+            }
+            else if (targetType === "advanced") {
+                newMemory = new AdvancedMemory({ driver, model: activeModel, systemPrompt: cfg.systemPrompt || undefined });
+            }
+            else if (targetType === "fragmentation") {
+                newMemory = new FragmentationMemory({ systemPrompt: cfg.systemPrompt || undefined });
+            }
+            else {
+                newMemory = createMemory(cfg, driver); // VirtualMemory
+            }
+            // Transfer messages to new memory
+            for (const msg of currentMessages) {
+                newMemory.add(msg);
+            }
+            memory = newMemory;
+        };
         // Shared marker handler — used by both streaming parser and tool-arg scanner
         const handleMarker = (marker) => {
             if (marker.name === "model-change") {
@@ -902,7 +935,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
                 }
             }
-            else {
+            else if (marker.name === "memory" && marker.arg) {
+                // Memory hot-swap
+                void swapMemory(marker.arg);
                 Logger.info(`Stream marker: ${marker.name}('${marker.arg}')`);
             }
         };

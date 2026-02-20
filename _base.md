@@ -1,6 +1,6 @@
 # Extension
 
-On wake: read `~/.claude/WAKE.md`. You are one of many agents. Coordinate via AgentChat.
+On wake: read `~/.claude/WAKE.md`. You are one of many agents. Coordinate via AgentChat using task→claim→check→work protocol.
 
 ## You
 

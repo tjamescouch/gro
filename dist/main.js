@@ -646,17 +646,21 @@ function createMemory(cfg, driver) {
     const summarizerProvider = inferProvider(undefined, summarizerModel);
     const summarizerApiKey = resolveApiKey(summarizerProvider);
     let summarizerDriver;
+    let effectiveSummarizerModel = summarizerModel;
     if (summarizerApiKey) {
         summarizerDriver = createDriverForModel(summarizerProvider, summarizerModel, summarizerApiKey, defaultBaseUrl(summarizerProvider));
         Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
     }
     else {
-        Logger.info(`Summarizer: no ${summarizerProvider} key — using main driver`);
+        // No key for the desired summarizer provider — fall back to main driver.
+        // Use the main model name so the driver doesn't reject an incompatible model name.
+        effectiveSummarizerModel = cfg.model;
+        Logger.info(`Summarizer: no ${summarizerProvider} key — using main driver (${cfg.provider}/${cfg.model})`);
     }
     Logger.info(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
     const vm = new VirtualMemory({
         driver: summarizerDriver ?? driver,
-        summarizerModel,
+        summarizerModel: effectiveSummarizerModel,
         systemPrompt: cfg.systemPrompt || undefined,
         workingMemoryTokens: cfg.contextTokens,
     });
@@ -961,10 +965,48 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 brokeCleanly = true;
                 break;
             }
+            const narration = (cleanText || "").trim();
+            // Empty response in persistent mode = agent has nothing to say and is waiting.
+            // Skip the nudge round trip and directly execute agentchat_listen on its behalf.
+            // Reuse the channels from the most recent agentchat_listen call in memory so
+            // we don't have to guess — fall back to #general if none found.
+            const hasListenTool = tools.some(t => t.function?.name === "agentchat_listen");
+            if (!narration && hasListenTool) {
+                Logger.debug("Empty response in persistent mode — auto-calling agentchat_listen");
+                idleNudges = 0; // not really idle, just waiting
+                let listenChannels = [];
+                const recentMsgs = memory.messages();
+                for (let mi = recentMsgs.length - 1; mi >= 0; mi--) {
+                    const tc = recentMsgs[mi].tool_calls;
+                    if (Array.isArray(tc)) {
+                        for (const c of tc) {
+                            if (c.function?.name === "agentchat_listen") {
+                                try {
+                                    listenChannels = JSON.parse(c.function.arguments).channels ?? [];
+                                }
+                                catch { /* ignore */ }
+                                break;
+                            }
+                        }
+                    }
+                    if (listenChannels.length > 0)
+                        break;
+                }
+                if (listenChannels.length === 0)
+                    listenChannels = ["#general"];
+                const listenResult = await mcp.callTool("agentchat_listen", { channels: listenChannels }).catch(e => `Error: ${asError(e).message}`);
+                await memory.add({
+                    role: "tool",
+                    from: "agentchat_listen",
+                    content: listenResult,
+                    tool_call_id: `auto_listen_${round}`,
+                    name: "agentchat_listen",
+                });
+                continue;
+            }
             // Persistent mode: buffer plain text narration instead of hard violation.
             // The narration will be prepended to the next agentchat_send so nothing
             // is lost, but we avoid expensive violation + nudge cycles.
-            const narration = (cleanText || "").trim();
             if (narration) {
                 pendingNarration += (pendingNarration ? "\n" : "") + narration;
                 Logger.debug(`Buffered narration (${narration.length} chars), will attach to next send`);

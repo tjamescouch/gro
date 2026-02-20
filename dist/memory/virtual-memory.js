@@ -256,7 +256,25 @@ export class VirtualMemory extends AgentMemory {
         let chars = 0;
         for (const m of msgs) {
             const s = String(m.content ?? "");
-            chars += (s.length > 24_000 ? 24_000 : s.length) + 32;
+            // No per-message cap — use full length for accurate estimation.
+            // A cap here caused severe under-counting: a 300K-char tool output was
+            // estimated as ~8K tokens but sent ~107K actual tokens, allowing 7+ such
+            // messages through the wmBudget * 2 window guard → context_length_exceeded.
+            chars += s.length + 32;
+            // Include tool_calls arguments in token estimation.
+            // Assistant messages with tool_calls often have empty content but large
+            // function arguments (e.g. agentchat_send messages, file writes, patches).
+            // Without counting these, the windowing loop and compaction triggers
+            // massively underestimate assistant message sizes → context_length_exceeded.
+            const tc = m.tool_calls;
+            if (Array.isArray(tc)) {
+                for (const call of tc) {
+                    const fn = call?.function;
+                    if (fn) {
+                        chars += (fn.name?.length ?? 0) + (fn.arguments?.length ?? 0) + 32;
+                    }
+                }
+            }
         }
         return Math.ceil(chars / this.cfg.avgCharsPerToken);
     }
@@ -403,6 +421,22 @@ export class VirtualMemory extends AgentMemory {
                 break;
         }
         result.push(...window);
+        // Safety cap: verify total context size doesn't exceed a hard limit.
+        // Even with accurate token estimation, defend against edge cases where
+        // system prompt + pages + working memory combine to exceed provider limits.
+        const totalTokens = usedTokens + wmTokens;
+        const hardCap = wmBudget * 4; // absolute ceiling
+        if (totalTokens > hardCap) {
+            Logger.warn(`[VM] Total context ${totalTokens} tokens exceeds hard cap ${hardCap} — trimming working memory`);
+            const excess = totalTokens - wmBudget * 2; // trim back to 2x budget for safety
+            let trimmed = 0;
+            // Remove oldest working memory messages (from front of window, after system+pages)
+            const wmStart = result.length - window.length;
+            while (trimmed < excess && result.length > wmStart + this.cfg.minRecentPerLane * 4) {
+                const removed = result.splice(wmStart, 1);
+                trimmed += this.msgTokens(removed);
+            }
+        }
         return result;
     }
     buildPageSlot() {

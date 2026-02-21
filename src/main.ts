@@ -186,6 +186,7 @@ interface GroConfig {
   verbose: boolean;
   name: string | null;
   showDiffs: boolean;
+  batchSummarization: boolean;
   mcpServers: Record<string, McpServerConfig>;
 }
 
@@ -292,6 +293,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--max-budget-usd") { flags.maxBudgetUsd = args[++i]; } // accepted, not used yet
     else if (arg === "--summarizer-model") { flags.summarizerModel = args[++i]; }
     else if (arg === "--output-format") { flags.outputFormat = args[++i]; }
+    else if (arg === "--batch-summarization") { flags.batchSummarization = "true"; }
     else if (arg === "--mcp-config") { mcpConfigPaths.push(args[++i]); }
     else if (arg === "-i" || arg === "--interactive") { flags.interactive = "true"; }
     else if (arg === "-p" || arg === "--print") { flags.print = "true"; }
@@ -417,6 +419,7 @@ function loadConfig(): GroConfig {
     sessionPersistence: flags.noSessionPersistence !== "true",
     verbose: flags.verbose === "true",
     name: flags.name || null,
+    batchSummarization: flags.batchSummarization === "true",
     showDiffs: flags.showDiffs === "true",
     mcpServers,
   };
@@ -712,6 +715,7 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
     summarizerModel: effectiveSummarizerModel,
     systemPrompt: cfg.systemPrompt || undefined,
     workingMemoryTokens: cfg.contextTokens,
+    enableBatchSummarization: cfg.batchSummarization,
   });
   vm.setModel(cfg.model);
   return vm;

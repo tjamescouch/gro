@@ -271,6 +271,9 @@ function loadConfig() {
         else if (arg === "--output-format") {
             flags.outputFormat = args[++i];
         }
+        else if (arg === "--batch-summarization") {
+            flags.batchSummarization = "true";
+        }
         else if (arg === "--mcp-config") {
             mcpConfigPaths.push(args[++i]);
         }
@@ -427,6 +430,7 @@ function loadConfig() {
         sessionPersistence: flags.noSessionPersistence !== "true",
         verbose: flags.verbose === "true",
         name: flags.name || null,
+        batchSummarization: flags.batchSummarization === "true",
         showDiffs: flags.showDiffs === "true",
         mcpServers,
     };
@@ -697,6 +701,7 @@ async function createMemory(cfg, driver, requestedMode) {
         summarizerModel: effectiveSummarizerModel,
         systemPrompt: cfg.systemPrompt || undefined,
         workingMemoryTokens: cfg.contextTokens,
+        enableBatchSummarization: cfg.batchSummarization,
     });
     vm.setModel(cfg.model);
     return vm;

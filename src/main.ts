@@ -37,7 +37,7 @@ import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
 import { memoryReportToolDefinition, executeMemoryReport } from "./tools/memory-report.js";
-import { memory_tune } from "./tools/memory-tune.js";
+import { memoryTuneToolDefinition, executeMemoryTune } from "./tools/memory-tune.js";
 import { compactContextToolDefinition, executeCompactContext } from "./tools/compact-context.js";
 import { cleanupSessionsToolDefinition, executeCleanupSessions } from "./tools/cleanup-sessions.js";
 import { createMarkerParser, extractMarkers } from "./stream-markers.js";
@@ -866,11 +866,7 @@ async function executeTurn(
   if (cfg.persistent) tools.push(yieldToolDefinition);
   tools.push(memoryStatusToolDefinition());
   tools.push(memoryReportToolDefinition());
-  tools.push({
-    name: memory_tune.name,
-    description: memory_tune.description,
-    input_schema: memory_tune.inputSchema,
-  });
+  tools.push(memoryTuneToolDefinition());
   tools.push(compactContextToolDefinition());
   tools.push(cleanupSessionsToolDefinition);
   tools.push(readToolDefinition());
@@ -1417,7 +1413,7 @@ Do not get stuck calling listen repeatedly.`
         } else if (fnName === "memory_report") {
           result = executeMemoryReport(fnArgs, memory);
         } else if (fnName === "memory_tune") {
-          result = await memory_tune.execute(fnArgs, { memoryConfig: memory });
+          result = await executeMemoryTune(fnArgs, { memoryConfig: memory });
         } else if (fnName === "compact_context") {
           result = await executeCompactContext(fnArgs, memory);
         } else if (fnName === "cleanup_sessions") {

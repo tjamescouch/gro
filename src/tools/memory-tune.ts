@@ -1,19 +1,28 @@
-import { z } from "zod";
 import { MemoryMetricsCollector } from "../memory/memory-metrics.js";
 import { MemoryTuner } from "../memory/memory-tuner.js";
 
-export const memory_tune = {
-  name: "memory_tune",
-  description:
-    "Analyze VirtualMemory performance metrics and generate tuning recommendations. Can auto-apply high/medium priority changes.",
-  inputSchema: z.object({
-    auto_apply: z
-      .boolean()
-      .optional()
-      .describe("If true, automatically apply high/medium priority recommendations to runtime config"),
-  }),
+export function memoryTuneToolDefinition(): any {
+  return {
+    type: "function",
+    function: {
+      name: "memory_tune",
+      description:
+        "Analyze VirtualMemory performance metrics and generate tuning recommendations. Can auto-apply high/medium priority changes.",
+      parameters: {
+        type: "object",
+        properties: {
+          auto_apply: {
+            type: "boolean",
+            description: "If true, automatically apply high/medium priority recommendations to runtime config",
+          },
+        },
+        required: [],
+      },
+    },
+  };
+}
 
-  async execute({ auto_apply }: { auto_apply?: boolean }, runtimeConfig?: any) {
+export async function executeMemoryTune({ auto_apply }: { auto_apply?: boolean }, runtimeConfig?: any): Promise<string> {
     const sessionId = "current";
     const metricsPath = `${process.env.HOME}/.gro/pages/memory-metrics.json`;
     const collector = new MemoryMetricsCollector(sessionId, metricsPath);
@@ -36,5 +45,4 @@ export const memory_tune = {
     }
 
     return output;
-  },
-};
+}

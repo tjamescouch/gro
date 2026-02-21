@@ -27,30 +27,37 @@ describe("loadTierConfigs", () => {
 });
 
 describe("thinkingTierModel", () => {
+  // Read actual model names from the anthropic config
+  const configs = loadTierConfigs();
+  const anthropicCfg = configs.get("anthropic")!;
+  const anthropicLow = anthropicCfg.tiers.low!;
+  const anthropicMid = anthropicCfg.tiers.mid!;
+  const anthropicHigh = anthropicCfg.tiers.high!;
+
   const modelAliases = {
-    "haiku": "claude-haiku-4-5",
-    "sonnet": "claude-sonnet-4-5",
-    "opus": "claude-opus-4-6",
+    "haiku": anthropicLow,
+    "sonnet": anthropicMid,
+    "opus": anthropicHigh,
   };
 
   it("selects low tier for budget < 0.25", () => {
     const model = thinkingTierModel(0.1, "anthropic", "fallback", modelAliases);
-    assert.strictEqual(model, "claude-haiku-4-5");
+    assert.strictEqual(model, anthropicLow);
   });
 
   it("selects mid tier for budget 0.25-0.64", () => {
     const model = thinkingTierModel(0.5, "anthropic", "fallback", modelAliases);
-    assert.strictEqual(model, "claude-sonnet-4-5");
+    assert.strictEqual(model, anthropicMid);
   });
 
   it("selects high tier for budget >= 0.65", () => {
     const model = thinkingTierModel(0.8, "anthropic", "fallback", modelAliases);
-    assert.strictEqual(model, "claude-opus-4-6");
+    assert.strictEqual(model, anthropicHigh);
   });
 
   it("falls back to anthropic defaults for unknown provider", () => {
     const model = thinkingTierModel(0.1, "unknown-provider", "fallback", modelAliases);
-    assert.strictEqual(model, "claude-haiku-4-5");
+    assert.strictEqual(model, anthropicLow);
   });
 
   it("uses fallback model when high tier is null", () => {
@@ -72,5 +79,25 @@ describe("thinkingTierModel", () => {
   it("selects correct groq mid tier", () => {
     const model = thinkingTierModel(0.5, "groq", "fallback", {});
     assert.strictEqual(model, "llama-3.3-70b-versatile");
+  });
+
+  it("maxTier=low caps budget 0.5 to low tier", () => {
+    const model = thinkingTierModel(0.5, "anthropic", "fallback", modelAliases, "low");
+    assert.strictEqual(model, anthropicLow);
+  });
+
+  it("maxTier=mid caps budget 0.8 to mid tier", () => {
+    const model = thinkingTierModel(0.8, "anthropic", "fallback", modelAliases, "mid");
+    assert.strictEqual(model, anthropicMid);
+  });
+
+  it("maxTier=high does not restrict selection", () => {
+    const model = thinkingTierModel(0.8, "anthropic", "fallback", modelAliases, "high");
+    assert.strictEqual(model, anthropicHigh);
+  });
+
+  it("maxTier=low with unknown provider uses alias fallback", () => {
+    const model = thinkingTierModel(0.8, "unknown", "fallback", modelAliases, "low");
+    assert.strictEqual(model, anthropicLow);
   });
 });

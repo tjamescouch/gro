@@ -188,7 +188,6 @@ export class VirtualMemory extends AgentMemory {
     if (this.cfg.enablePhantomCompaction) {
       this.phantomBuffer = new PhantomBuffer({ avgCharsPerToken: this.cfg.avgCharsPerToken });
     }
-    }
   }
 
   override setModel(model: string): void {

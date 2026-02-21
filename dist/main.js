@@ -129,7 +129,6 @@ function discoverExtensions(mcpConfigPaths) {
     return extensions;
 }
 function loadMcpServers(mcpConfigPaths) {
-    // If explicit --mcp-config paths given, use those
     if (mcpConfigPaths.length > 0) {
         const merged = {};
         for (const p of mcpConfigPaths) {
@@ -434,6 +433,7 @@ function loadConfig() {
         batchSummarization: flags.batchSummarization === "true",
         showDiffs: flags.showDiffs === "true",
         mcpServers,
+        maxBudgetUsd: flags.maxBudgetUsd ? parseFloat(flags.maxBudgetUsd) : null,
     };
 }
 function inferProvider(explicit, model) {
@@ -948,6 +948,47 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                     Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
                 }
             }
+            else if (marker.name === "working" || marker.name === "memory-hotreload") {
+                // Hot-reload marker: @@working:8k,page:12k@@ or @@memory-hotreload:working=8k,page=12k@@
+                // Parse "working" param from arg (format: "8k,page:12k" or "8k,page=12k")
+                const config = {};
+                // Format 1: @@working:8k,page:12k@@ → marker.name="working", marker.arg="8k,page:12k"
+                if (marker.name === "working") {
+                    // Parse working=8k, page=12k
+                    const parts = marker.arg.split(/[,:]/);
+                    let workingVal;
+                    let pageVal;
+                    // parts[0] is the working value, look for page after comma/colon
+                    workingVal = parts[0]?.trim();
+                    for (let i = 1; i < parts.length; i++) {
+                        const p = parts[i].trim();
+                        if (p.startsWith("page")) {
+                            pageVal = parts[i + 1]?.trim();
+                            break;
+                        }
+                        else if (!p.match(/^\d+/)) {
+                            // Non-numeric, might be the page value
+                            if (i === 1)
+                                pageVal = p;
+                        }
+                    }
+                    if (workingVal) {
+                        const wnum = parseFloat(workingVal) * 1000;
+                        if (!isNaN(wnum))
+                            config.workingMemoryTokens = Math.round(wnum);
+                    }
+                    if (pageVal) {
+                        const pnum = parseFloat(pageVal) * 1000;
+                        if (!isNaN(pnum))
+                            config.pageSlotTokens = Math.round(pnum);
+                    }
+                }
+                // Apply to memory if VirtualMemory
+                if ("hotReloadConfig" in memory && typeof memory.hotReloadConfig === "function") {
+                    const result = memory.hotReloadConfig(config);
+                    Logger.info(`Stream marker: memory hotreload — ${result}`);
+                }
+            }
             else if (marker.name === "memory" && marker.arg) {
             }
             else if (marker.name === "memory-tune" && marker.arg) {
@@ -1019,6 +1060,12 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
             spendMeter.setModel(activeModel);
             spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
             Logger.info(spendMeter.format());
+            // Check if budget exceeded
+            const budgetErr = spendMeter.checkBudget(cfg.maxBudgetUsd);
+            if (budgetErr) {
+                Logger.error(`💰 ${budgetErr}`);
+                throw new Error(`Budget limit exceeded: ${budgetErr}`);
+            }
         }
         // Accumulate clean text (markers stripped) for the return value
         const cleanText = markerParser.getCleanText();
@@ -1278,6 +1325,12 @@ Do not get stuck calling listen repeatedly.`
             spendMeter.setModel(activeModel);
             spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
             Logger.info(spendMeter.format());
+            // Check if budget exceeded
+            const budgetErr2 = spendMeter.checkBudget(cfg.maxBudgetUsd);
+            if (budgetErr2) {
+                Logger.error(`💰 ${budgetErr2}`);
+                throw new Error(`Budget limit exceeded: ${budgetErr2}`);
+            }
         }
         if (finalOutput.text)
             finalText += finalOutput.text;

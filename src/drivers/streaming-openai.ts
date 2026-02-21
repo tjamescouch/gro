@@ -187,6 +187,11 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
       payload.tool_choice = "auto";
     }
 
+    // Sampling parameters (optional runtime overrides)
+    if (opts?.temperature !== undefined) payload.temperature = opts.temperature;
+    if (opts?.top_p !== undefined) payload.top_p = opts.top_p;
+    // Note: OpenAI doesn't support top_k directly (Anthropic extension)
+
     try {
       let res!: Response;
       for (let attempt = 0; ; attempt++) {

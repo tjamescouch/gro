@@ -197,19 +197,19 @@ export class HNSWMemory extends VirtualMemory {
     if (existsSync(indexFile)) {
       try {
         const indexData = JSON.parse(readFileSync(indexFile, "utf-8"));
-        
+
         if (indexData.version !== 1) {
           Logger.warn(`[HNSWMemory] Unknown index version ${indexData.version}, rebuilding...`);
           await this.rebuildIndex();
           return;
         }
-        
+
         if (indexData.dimension !== this.dimension) {
           Logger.warn(`[HNSWMemory] Index dimension mismatch (${indexData.dimension} vs ${this.dimension}), rebuilding...`);
           await this.rebuildIndex();
           return;
         }
-        
+
         this.index = indexData.entries;
         Logger.info(`[HNSWMemory] Index loaded from ${indexFile} (${this.index.length} entries)`);
       } catch (err) {

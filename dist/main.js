@@ -30,6 +30,7 @@ import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
 import { compactContextToolDefinition, executeCompactContext } from "./tools/compact-context.js";
+import { cleanupSessionsToolDefinition, executeCleanupSessions } from "./tools/cleanup-sessions.js";
 import { createMarkerParser, extractMarkers } from "./stream-markers.js";
 import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
@@ -799,6 +800,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
         tools.push(yieldToolDefinition);
     tools.push(memoryStatusToolDefinition());
     tools.push(compactContextToolDefinition());
+    tools.push(cleanupSessionsToolDefinition);
     tools.push(readToolDefinition());
     tools.push(writeToolDefinition());
     tools.push(globToolDefinition());
@@ -1186,6 +1188,9 @@ Do not get stuck calling listen repeatedly.`
                 }
                 else if (fnName === "compact_context") {
                     result = await executeCompactContext(fnArgs, memory);
+                }
+                else if (fnName === "cleanup_sessions") {
+                    result = await executeCleanupSessions(fnArgs);
                 }
                 else if (fnName === "Read") {
                     result = executeRead(fnArgs);

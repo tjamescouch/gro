@@ -826,7 +826,6 @@ async function executeTurn(
   if (cfg.persistent) tools.push(yieldToolDefinition);
   tools.push(memoryStatusToolDefinition());
   tools.push(compactContextToolDefinition());
-  tools.push(cleanupSessionsToolDefinition);
   tools.push(readToolDefinition());
   tools.push(writeToolDefinition());
   tools.push(globToolDefinition());
@@ -1217,8 +1216,6 @@ Do not get stuck calling listen repeatedly.`
           result = executeMemoryStatus(fnArgs, memory);
         } else if (fnName === "compact_context") {
           result = await executeCompactContext(fnArgs, memory);
-        } else if (fnName === "cleanup_sessions") {
-          result = await executeCleanupSessions(fnArgs);
         } else if (fnName === "Read") {
           result = executeRead(fnArgs);
         } else if (fnName === "Write") {

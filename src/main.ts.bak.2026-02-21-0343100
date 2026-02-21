@@ -1217,8 +1217,6 @@ Do not get stuck calling listen repeatedly.`
           result = executeMemoryStatus(fnArgs, memory);
         } else if (fnName === "compact_context") {
           result = await executeCompactContext(fnArgs, memory);
-        } else if (fnName === "cleanup_sessions") {
-          result = await executeCleanupSessions(fnArgs);
         } else if (fnName === "Read") {
           result = executeRead(fnArgs);
         } else if (fnName === "Write") {

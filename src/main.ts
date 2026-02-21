@@ -189,11 +189,10 @@ interface GroConfig {
   showDiffs: boolean;
   batchSummarization: boolean;
   mcpServers: Record<string, McpServerConfig>;
-}
   maxBudgetUsd: number | null;
+}
 
 function loadMcpServers(mcpConfigPaths: string[]): Record<string, McpServerConfig> {
-  // If explicit --mcp-config paths given, use those
   if (mcpConfigPaths.length > 0) {
     const merged: Record<string, McpServerConfig> = {};
     for (const p of mcpConfigPaths) {

@@ -12,3 +12,6 @@ export type { FragmentationMemoryConfig } from "./fragmentation-memory.js";
 export { RandomSamplingFragmenter } from "./random-sampling-fragmenter.js";
 export type { Fragmenter, FragmenterConfig, Fragment } from "./random-sampling-fragmenter.js";
 export type { HNSWMemoryConfig } from "./hnsw-memory.js";
+
+// Memory registry
+export { memoryRegistry, type MemoryFactory, type MemoryFactoryConfig, type MemoryTypeDescriptor, type MemoryParameter } from "./memory-registry.js";

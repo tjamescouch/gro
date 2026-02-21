@@ -25,6 +25,8 @@ import { VirtualMemory } from "./memory/virtual-memory.js";
 import { FragmentationMemory } from "./memory/fragmentation-memory.js";
 import { McpManager } from "./mcp/index.js";
 import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
+// Register all memory types in the registry (side-effect import)
+import "./memory/register-memory-types.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
 import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/types.js";
@@ -43,6 +45,8 @@ import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { ViolationTracker, SameToolLoopTracker } from "./violations.js";
 import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
+import { parseDirectives, executeDirectives } from "./runtime/index.js";
+import { runtimeConfig } from "./runtime/index.js";
 
 const VERSION = getGroVersion();
 
@@ -1165,7 +1169,14 @@ async function executeTurn(
     const cleanText = markerParser.getCleanText();
     if (cleanText) finalText += cleanText;
 
-    const assistantMsg: ChatMessage = { role: "assistant", from: "Assistant", content: cleanText || "" };
+    // Parse and execute runtime directives (@@learn, @@ctrl:memory=X, @@thinking, etc.)
+    const directives = parseDirectives(cleanText || "");
+
+    const assistantMsg: ChatMessage = {
+      role: "assistant",
+      from: "Assistant",
+      content: directives.cleanedMessage
+    };
     if (roundImportance !== undefined) {
       assistantMsg.importance = roundImportance;
     }
@@ -1173,6 +1184,14 @@ async function executeTurn(
       (assistantMsg as any).tool_calls = output.toolCalls;
     }
     await memory.add(assistantMsg);
+
+    // Execute directives after message is persisted
+    await executeDirectives(directives);
+
+    // If memory was swapped, update local reference
+    if (directives.memorySwap) {
+      memory = runtimeConfig.getCurrentMemory() || memory;
+    }
 
     // No tool calls — either we're done, or we need to nudge the model
     if (output.toolCalls.length === 0) {
@@ -1490,6 +1509,12 @@ async function singleShot(
   }
 
   let memory = await createMemory(cfg, driver);
+
+  // Initialize runtime control system
+  runtimeConfig.setDriver(driver);
+  runtimeConfig.setMemory(memory);
+  runtimeConfig.setBaseSystemPrompt(cfg.systemPrompt || "");
+  await runtimeConfig.loadLearnedFacts();
 
   // Register for graceful shutdown
   _shutdownMemory = memory;

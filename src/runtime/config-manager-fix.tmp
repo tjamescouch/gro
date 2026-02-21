@@ -1,0 +1,9 @@
+}
+
+  /** Get current memory instance */
+  getCurrentMemory(): AgentMemory | null {
+    return this.currentMemory;
+  }
+}
+
+export const runtimeConfig = new RuntimeConfigurationManager();

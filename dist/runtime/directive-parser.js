@@ -55,15 +55,15 @@ function stripMarkersOutsideCode(content) {
             return seg.text;
         let t = seg.text;
         // Named markers with arguments
-        t = t.replace(new RegExp(`${OPEN}importance\\(['"][\\d.]+['"]\\)${CLOSE}`, "g"), "🧠");
-        t = t.replace(new RegExp(`${OPEN}ref\\(['"][\\w-]+['"]\\)${CLOSE}`, "g"), "🧠");
-        t = t.replace(new RegExp(`${OPEN}unref\\(['"][\\w-]+['"]\\)${CLOSE}`, "g"), "🧠");
-        t = t.replace(new RegExp(`${OPEN}mem:[\\w-]+${CLOSE}`, "g"), "🧠");
+        t = t.replace(new RegExp(`${OPEN}importance\\(['"][\\d.]+['"]\\)${CLOSE}`, "g"), "\u{2696}\u{FE0F}");
+        t = t.replace(new RegExp(`${OPEN}ref\\(['"][\\w-]+['"]\\)${CLOSE}`, "g"), "\u{1F4CE}");
+        t = t.replace(new RegExp(`${OPEN}unref\\(['"][\\w-]+['"]\\)${CLOSE}`, "g"), "\u{1F4CE}");
+        t = t.replace(new RegExp(`${OPEN}mem:[\\w-]+${CLOSE}`, "g"), "\u{1F4BE}");
         // Emotion markers: @@joy:0.5@@ @@sadness:0.2,urgency:0.8@@ etc.
         const emotions = "joy|sadness|anger|fear|surprise|confidence|uncertainty|excitement|calm|urgency|reverence";
-        t = t.replace(new RegExp(`${OPEN}(?:${emotions}):[0-9.]+(?:,(?:${emotions}):[0-9.]+)*${CLOSE}`, "g"), "🧠");
-        // Generic fallback — any remaining 🧠 or 🧠
-        t = t.replace(new RegExp(`${OPEN}[a-zA-Z][a-zA-Z0-9_-]*(?:\\([^)]*\\))?${CLOSE}`, "g"), "🧠");
+        t = t.replace(new RegExp(`${OPEN}(?:${emotions}):[0-9.]+(?:,(?:${emotions}):[0-9.]+)*${CLOSE}`, "g"), "\u{1F60A}");
+        // Generic fallback — any remaining markers
+        t = t.replace(new RegExp(`${OPEN}[a-zA-Z][a-zA-Z0-9_-]*(?:\\([^)]*\\))?${CLOSE}`, "g"), "\u{1F9E0}");
         return t;
     })
         .join("");

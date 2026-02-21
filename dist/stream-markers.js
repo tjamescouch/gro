@@ -59,8 +59,29 @@ const EMOTION_DIMS = new Set([
     "joy", "sadness", "anger", "fear", "surprise", "confidence", "uncertainty",
     "excitement", "calm", "urgency", "reverence"
 ]);
+const MARKER_EMOJI = {
+    "thinking": "\u{1F989}", // 🦉
+    "think": "\u{1F989}", // 🦉
+    "relax": "\u{1F989}", // 🦉
+    "zzz": "\u{1F989}", // 🦉
+    "model-change": "\u{1F500}", // 🔀
+    "learn": "\u{1F4DA}", // 📚
+    "ctrl": "\u{2699}\u{FE0F}", // ⚙️
+    "importance": "\u{2696}\u{FE0F}", // ⚖️
+    "ref": "\u{1F4CE}", // 📎
+    "unref": "\u{1F4CE}", // 📎
+    "memory": "\u{1F4BE}", // 💾
+    "temp": "\u{1F321}\u{FE0F}", // 🌡️
+    "temperature": "\u{1F321}\u{FE0F}", // 🌡️
+    "top_k": "\u{2699}\u{FE0F}", // ⚙️
+    "top_p": "\u{2699}\u{FE0F}", // ⚙️
+};
 function markerEmoji(name) {
-    return THINKING_MARKERS.has(name) ? "\u{1F4A1}" : "\u{1F9E0}"; // 💡 or 🧠
+    if (MARKER_EMOJI[name])
+        return MARKER_EMOJI[name];
+    if (EMOTION_DIMS.has(name))
+        return "\u{1F60A}"; // 😊
+    return "\u{1F9E0}"; // 🧠 fallback
 }
 /**
  * Scan a string for markers, fire the handler for each, and return cleaned text.

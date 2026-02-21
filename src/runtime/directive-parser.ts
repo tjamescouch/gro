@@ -88,6 +88,26 @@ export function parseDirectives(content: string): ParsedDirectives {
     cleaned = cleaned.replace(/💡/g, "");
   }
 
+  // Strip display-only markers that don't have side effects
+  // These are handled by stream-markers.ts during streaming, but need cleanup here too
+  cleaned = cleaned.replace(/@@importance\(['"][\d.]+['"]\)@@/g, "🧠");
+  cleaned = cleaned.replace(/🧠/g, "🧠");
+  cleaned = cleaned.replace(/🧠/g, "🧠");
+  cleaned = cleaned.replace(/@@ref\(['"][\w-]+['"]\)@@/g, "🧠");
+  cleaned = cleaned.replace(/@@unref\(['"][\w-]+['"]\)@@/g, "🧠");
+  cleaned = cleaned.replace(/@@mem:[\w-]+@@/g, "🧠");
+  
+  // Emotion markers: @@joy:0.5@@ @@sadness:0.2@@ etc
+  cleaned = cleaned.replace(/@@(?:joy|sadness|anger|fear|surprise|confidence|uncertainty|excitement|calm|urgency|reverence):[0-9.]+(?:,(?:joy|sadness|anger|fear|surprise|confidence|uncertainty|excitement|calm|urgency|reverence):[0-9.]+)*@@/g, "🧠");
+  
+  // Generic fallback: any remaining @@...@@ pattern → 🧠
+  // This catches unknown/future markers without breaking display
+  cleaned = cleaned.replace(/@@[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*\))?@@/g, "🧠");
+  
+  // Clean up duplicate emoji to prevent visual spam
+  cleaned = cleaned.replace(/🧠+/g, "🧠");
+  cleaned = cleaned.replace(/💡+/g, "💡");
+
   result.cleanedMessage = cleaned.trim();
   return result;
 }

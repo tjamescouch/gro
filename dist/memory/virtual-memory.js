@@ -56,6 +56,10 @@ export class VirtualMemory extends AgentMemory {
         this.pendingUnrefs = new Set();
         /** Load order for eviction (oldest first) */
         this.loadOrder = [];
+        /** Frequency counter — tracks how many times each page is referenced */
+        this.pageRefCount = new Map();
+        /** Pinned pages — never evicted */
+        this.pinnedPageIds = new Set();
         this.model = "unknown";
         /** Summarization queue (if batch mode enabled) */
         this.summaryQueue = null;
@@ -259,6 +263,8 @@ export class VirtualMemory extends AgentMemory {
                 this.pages.set(page.id, page);
             this.activePageIds = new Set(data.activePageIds ?? []);
             this.loadOrder = data.loadOrder ?? [];
+            this.pageRefCount = new Map(data.pageRefCount ?? []);
+            this.pinnedPageIds = new Set(data.pinnedPageIds ?? []);
         }
         catch {
             this.pages.clear();
@@ -271,6 +277,8 @@ export class VirtualMemory extends AgentMemory {
                 pages: Array.from(this.pages.values()),
                 activePageIds: Array.from(this.activePageIds),
                 loadOrder: this.loadOrder,
+                pageRefCount: Array.from(this.pageRefCount.entries()),
+                pinnedPageIds: Array.from(this.pinnedPageIds),
                 savedAt: new Date().toISOString(),
             }, null, 2) + "\n");
         }
@@ -541,11 +549,45 @@ export class VirtualMemory extends AgentMemory {
                 slotTokens += page.tokens;
         }
         while (slotTokens > this.cfg.pageSlotTokens && this.loadOrder.length > 0) {
-            const evictId = this.loadOrder.shift();
+            // Find next candidate for eviction: skip pinned, prefer low-frequency, fall back to LRU
+            let evictIdx = -1;
+            const FREQUENCY_THRESHOLD = 3; // Pages with >= N refs use frequency eviction
+            // Pass 1: Find unpinned page with lowest frequency (if any have been ref'd)
+            let lowestFreq = Infinity;
+            for (let i = 0; i < this.loadOrder.length; i++) {
+                const id = this.loadOrder[i];
+                if (this.pinnedPageIds.has(id))
+                    continue; // Skip pinned
+                const freq = this.pageRefCount.get(id) ?? 0;
+                // Only consider frequency eviction if page has >= FREQUENCY_THRESHOLD refs
+                if (freq >= FREQUENCY_THRESHOLD && freq < lowestFreq) {
+                    lowestFreq = freq;
+                    evictIdx = i;
+                }
+            }
+            // Pass 2: If no frequency candidate, fall back to LRU (oldest unpinned)
+            if (evictIdx === -1) {
+                for (let i = 0; i < this.loadOrder.length; i++) {
+                    const id = this.loadOrder[i];
+                    if (!this.pinnedPageIds.has(id)) {
+                        evictIdx = i;
+                        break;
+                    }
+                }
+            }
+            // No evictable pages found (all pinned?) — bail to prevent infinite loop
+            if (evictIdx === -1) {
+                Logger.warn(`[VM evict] All loaded pages are pinned; cannot free space`);
+                break;
+            }
+            const evictId = this.loadOrder[evictIdx];
+            this.loadOrder.splice(evictIdx, 1);
             this.activePageIds.delete(evictId);
             const page = this.pages.get(evictId);
-            if (page)
+            if (page) {
                 slotTokens -= page.tokens;
+                Logger.debug(`[VM evict] Evicted '${evictId}' (freq=${this.pageRefCount.get(evictId) ?? 0}; freed ${page.tokens} tokens)`);
+            }
         }
     }
     // --- Importance-Aware Partitioning ---
@@ -763,6 +805,59 @@ export class VirtualMemory extends AgentMemory {
             // Log cleanup event with per-lane paging info
             Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} paged=[A:${olderAssistant.length} U:${olderUser.length} S:${olderSystem.length} T:${olderTool.length}]`);
         });
+    }
+    /**
+     * Request a page to be loaded into the page slot.
+     * Can be called by stream marker handler or explicitly.
+     */
+    ref(id) {
+        if (this.pendingRefs.has(id))
+            return; // Already pending
+        this.pendingRefs.add(id);
+        // Track reference frequency for smarter eviction
+        const count = (this.pageRefCount.get(id) ?? 0) + 1;
+        this.pageRefCount.set(id, count);
+        Logger.debug(`[VM] ref('${id}'): frequency now ${count}`);
+    }
+    /**
+     * Request a page to be unloaded from the page slot.
+     */
+    unref(id) {
+        if (this.pinnedPageIds.has(id)) {
+            Logger.warn(`[VM] unref('${id}'): page is pinned, ignoring`);
+            return;
+        }
+        this.pendingUnrefs.add(id);
+        Logger.debug(`[VM] unref('${id}'): marked for eviction`);
+    }
+    /**
+     * Pin a page to prevent eviction, even if slot is full.
+     * Useful for high-value reference materials.
+     */
+    pinPage(id) {
+        if (!this.pages.has(id) && !existsSync(this.pagePath(id))) {
+            Logger.warn(`[VM] pinPage('${id}'): page not found`);
+            return;
+        }
+        this.pinnedPageIds.add(id);
+        // Ensure it's loaded
+        if (!this.activePageIds.has(id)) {
+            this.pendingRefs.add(id);
+        }
+        Logger.info(`[VM] pinPage('${id}'): pinned`);
+    }
+    /**
+     * Unpin a page, making it eligible for LRU/frequency eviction again.
+     */
+    unpinPage(id) {
+        this.pinnedPageIds.delete(id);
+        Logger.info(`[VM] unpinPage('${id}'): unpinned`);
+    }
+    /**
+     * Get list of pinned page IDs.
+     */
+    getPinnedPageIds() {
+        return Array.from(this.pinnedPageIds);
     }
     // --- Accessors ---
     getPages() { return Array.from(this.pages.values()); }

@@ -368,8 +368,6 @@ export class VirtualMemory extends AgentMemory {
       for (const page of data.pages ?? []) this.pages.set(page.id, page);
       this.activePageIds = new Set(data.activePageIds ?? []);
       this.loadOrder = data.loadOrder ?? [];
-      this.pageRefCount = new Map(data.pageRefCount ?? []);
-      this.pinnedPageIds = new Set(data.pinnedPageIds ?? []);
     } catch {
       this.pages.clear();
     }
@@ -383,8 +381,6 @@ export class VirtualMemory extends AgentMemory {
         pages: Array.from(this.pages.values()),
         activePageIds: Array.from(this.activePageIds),
         loadOrder: this.loadOrder,
-        pageRefCount: Array.from(this.pageRefCount.entries()),
-        pinnedPageIds: Array.from(this.pinnedPageIds),
         savedAt: new Date().toISOString(),
       }, null, 2) + "\n");
     } catch (err) {

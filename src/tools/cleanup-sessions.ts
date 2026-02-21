@@ -2,16 +2,19 @@ import { cleanupOldSessions } from "../session.js";
 import { Logger } from "../logger.js";
 
 export const cleanupSessionsToolDefinition = {
-  name: "cleanup_sessions",
-  description:
-    "Remove orphaned sessions older than 48 hours. Returns count of deleted sessions.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      max_age_hours: {
-        type: "number",
-        description: "Maximum age in hours (default: 48)",
-        default: 48,
+  type: "function" as const,
+  function: {
+    name: "cleanup_sessions",
+    description:
+      "Remove orphaned sessions older than 48 hours. Returns count of deleted sessions.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        max_age_hours: {
+          type: "number",
+          description: "Maximum age in hours (default: 48)",
+          default: 48,
+        },
       },
     },
   },

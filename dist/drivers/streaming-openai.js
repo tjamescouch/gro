@@ -159,18 +159,14 @@ export function makeStreamingOpenAiDriver(cfg) {
         }
         const payload = { model, messages: wireMessages, stream: true };
         if (tools) {
-            payload.tools = tools.map((t) => {
-                if (t.type === "function" && t.function)
-                    return t;
-                return {
-                    type: "function",
-                    function: {
-                        name: t.name ?? t.function?.name ?? "unknown",
-                        description: t.description ?? t.function?.description ?? "",
-                        parameters: t.inputSchema ?? t.parameters ?? t.function?.parameters ?? { type: "object", properties: {} },
-                    }
-                };
-            });
+            payload.tools = tools.map((t) => ({
+                type: "function",
+                function: {
+                    name: t.function?.name ?? t.name ?? "unknown",
+                    description: t.function?.description ?? t.description ?? "",
+                    parameters: t.function?.parameters ?? t.inputSchema ?? t.input_schema ?? t.parameters ?? { type: "object", properties: {} },
+                }
+            }));
             payload.tool_choice = "auto";
         }
         // Sampling parameters (optional runtime overrides)

@@ -184,17 +184,14 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     const payload: any = { model, messages: wireMessages, stream: true };
 
     if (tools) {
-      payload.tools = tools.map((t: { type: string; function: { name: any; description: any; parameters: any; }; name: any; description: any; inputSchema: any; parameters: any; }) => {
-          if (t.type === "function" && t.function) return t;
-          return {
-              type: "function",
-              function: {
-                  name: t.name ?? t.function?.name ?? "unknown",
-                  description: t.description ?? t.function?.description ?? "",
-                  parameters: t.inputSchema ?? t.parameters ?? t.function?.parameters ?? { type: "object", properties: {} },
-              }
-          };
-      });
+      payload.tools = tools.map((t: any) => ({
+          type: "function",
+          function: {
+              name: t.function?.name ?? t.name ?? "unknown",
+              description: t.function?.description ?? t.description ?? "",
+              parameters: t.function?.parameters ?? t.inputSchema ?? t.input_schema ?? t.parameters ?? { type: "object", properties: {} },
+          }
+      }));
       payload.tool_choice = "auto";
     }
 

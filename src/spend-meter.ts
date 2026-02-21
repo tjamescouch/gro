@@ -36,7 +36,7 @@ const DEFAULT_PRICING = { in: 3.00, out: 15.00 }; // sonnet fallback
 const POST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
 const AGENTCHAT_SERVER = process.env.AGENTCHAT_SERVER ?? "ws://localhost:6667";
-const AGENTCHAT_CHANNEL = process.env.AGENTCHAT_SPEND_CHANNEL ?? "#general";
+const AGENTCHAT_CHANNEL = process.env.AGENTCHAT_SPEND_CHANNEL ?? "#spend";
 
 function findIdentity(): string | null {
   const candidates = [
@@ -71,6 +71,7 @@ export class SpendMeter {
   private totalOut = 0;
   private model    = "";
   private lastPostMs: number | null = null;
+  private lastCumulativeCost = 0;
 
   setModel(model: string) { this.model = model; }
 
@@ -90,17 +91,21 @@ export class SpendMeter {
     const identity = findIdentity();
     if (!identity) return;
 
-    const cost    = this.cost();
+    const cumulativeCost = this.cost();
+    const turnCost       = cumulativeCost - this.lastCumulativeCost;
+    this.lastCumulativeCost = cumulativeCost;
+
     const hrs     = this.elapsedHours();
-    const perHour = hrs > 0 ? cost / hrs : 0;
+    const perHour = hrs > 0 ? cumulativeCost / hrs : 0;
     const tokTotal = this.totalIn + this.totalOut;
     const tokPerHr = hrs > 0 ? tokTotal / hrs : 0;
 
     const msg = [
-      `💸 spend update [${this.model || "unknown"}]`,
-      `  cost:    $${cost.toFixed(4)}`,
-      `  rate:    $${perHour.toFixed(2)}/hr`,
-      `  tokens:  ${fmtK(tokTotal)} total  ${fmtK(tokPerHr)}/hr`,
+      `💸 [${this.model || "unknown"}]`,
+      `  turn:       $${turnCost.toFixed(4)}`,
+      `  cumulative: $${cumulativeCost.toFixed(4)}`,
+      `  rate:       $${perHour.toFixed(2)}/hr`,
+      `  tokens:     ${fmtK(tokTotal)} total  ${fmtK(tokPerHr)}/hr`,
     ].join("\n");
 
     spawn("agentchat", [

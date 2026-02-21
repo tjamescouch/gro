@@ -97,8 +97,8 @@ export interface VirtualMemoryConfig {
 
 const DEFAULTS = {
   pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
-  pageSlotTokens: 30_000,
-  workingMemoryTokens: 30_000,
+  pageSlotTokens: 6_000,
+  workingMemoryTokens: 6_000,
   assistantWeight: 8,
   userWeight: 4,
   systemWeight: 3,

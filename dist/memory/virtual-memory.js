@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import { SummarizationQueue } from "./summarization-queue.js";
 import { BatchWorkerManager } from "./batch-worker-manager.js";
 import { Logger } from "../logger.js";
+import { PhantomBuffer } from "./phantom-buffer.js";
+import { MemoryMetricsCollector } from "./memory-metrics.js";
 // Load summarizer system prompt from markdown file (next to this module)
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SUMMARIZER_PROMPT_PATH = join(__dirname, "summarizer-prompt.md");
@@ -25,19 +27,20 @@ function getSummarizerPromptBase() {
 }
 const DEFAULTS = {
     pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
-    pageSlotTokens: 30_000,
-    workingMemoryTokens: 30_000,
-    assistantWeight: 8,
-    userWeight: 4,
-    systemWeight: 3,
-    toolWeight: 1,
-    avgCharsPerToken: 2.8,
-    minRecentPerLane: 4,
-    highRatio: 0.75,
-    lowRatio: 0.50,
+    pageSlotTokens: parseInt(process.env.GRO_PAGE_SLOT_TOKENS ?? "6000"),
+    workingMemoryTokens: parseInt(process.env.GRO_WORKING_MEMORY_TOKENS ?? "6000"),
+    assistantWeight: parseInt(process.env.GRO_ASSISTANT_WEIGHT ?? "8"),
+    userWeight: parseInt(process.env.GRO_USER_WEIGHT ?? "4"),
+    systemWeight: parseInt(process.env.GRO_SYSTEM_WEIGHT ?? "3"),
+    toolWeight: parseInt(process.env.GRO_TOOL_WEIGHT ?? "1"),
+    avgCharsPerToken: parseFloat(process.env.GRO_AVG_CHARS_PER_TOKEN ?? "2.8"),
+    minRecentPerLane: parseInt(process.env.GRO_MIN_RECENT_PER_LANE ?? "4"),
+    highRatio: parseFloat(process.env.GRO_HIGH_RATIO ?? "0.75"),
+    lowRatio: parseFloat(process.env.GRO_LOW_RATIO ?? "0.50"),
     systemPrompt: "",
     summarizerModel: "claude-haiku-4-5",
     enableBatchSummarization: false,
+    enablePhantomCompaction: process.env.GRO_PHANTOM_COMPACTION === "true",
     queuePath: join(process.env.HOME ?? "/tmp", ".gro", "summarization-queue.jsonl"),
 };
 // --- VirtualMemory ---
@@ -56,11 +59,19 @@ export class VirtualMemory extends AgentMemory {
         this.pendingUnrefs = new Set();
         /** Load order for eviction (oldest first) */
         this.loadOrder = [];
+        /** Frequency counter — tracks how many times each page is referenced */
+        this.pageRefCount = new Map();
+        /** Pinned pages — never evicted */
+        this.pinnedPageIds = new Set();
         this.model = "unknown";
         /** Summarization queue (if batch mode enabled) */
         this.summaryQueue = null;
         /** Batch worker manager (spawns background worker if batch mode enabled) */
         this.batchWorkerManager = null;
+        // Phantom compaction state
+        this.phantomBuffer = null;
+        // Memory performance instrumentation
+        this.metricsCollector = null;
         /**
          * Adjust compaction aggressiveness based on the current thinking budget.
          *
@@ -90,6 +101,7 @@ export class VirtualMemory extends AgentMemory {
             driver: config.driver ?? null,
             summarizerModel: config.summarizerModel ?? DEFAULTS.summarizerModel,
             enableBatchSummarization: config.enableBatchSummarization ?? DEFAULTS.enableBatchSummarization,
+            enablePhantomCompaction: config.enablePhantomCompaction ?? DEFAULTS.enablePhantomCompaction,
             queuePath: config.queuePath ?? DEFAULTS.queuePath,
         };
         mkdirSync(this.cfg.pagesDir, { recursive: true });
@@ -97,6 +109,14 @@ export class VirtualMemory extends AgentMemory {
         if (this.cfg.enableBatchSummarization) {
             this.summaryQueue = new SummarizationQueue(this.cfg.queuePath);
             this.startBatchWorker();
+        }
+        // Initialize phantom buffer if enabled
+        if (this.cfg.enablePhantomCompaction) {
+            this.phantomBuffer = new PhantomBuffer({ avgCharsPerToken: this.cfg.avgCharsPerToken });
+            // Initialize metrics collector
+            const sessionId = process.env.GRO_SESSION_ID || `session-${Date.now()}`;
+            const metricsPath = join(this.cfg.pagesDir, "memory-metrics.json");
+            this.metricsCollector = new MemoryMetricsCollector(sessionId, metricsPath);
         }
     }
     setModel(model) {
@@ -117,8 +137,98 @@ export class VirtualMemory extends AgentMemory {
         // At budget=0: 0.55 (compact early). At budget=1: 0.90 (keep more before compacting)
         this.cfg.highRatio = Math.min(0.95, this.baseHighRatio * (0.75 + budget * 0.5));
         // Min recent per lane: keep fewer messages on cheap models
-        // At budget=0: 2. At budget=0.5: 4 (default). At budget=1: 6.
         this.cfg.minRecentPerLane = Math.max(2, Math.round(this.baseMinRecentPerLane * scale));
+    }
+    /**
+     * Hot-tune VirtualMemory parameters at runtime.
+     * Supports: working, page, high, low, min_recent, assistant_weight, etc.
+     * Example: tune({ working: 8000, page: 6000 })
+     */
+    tune(params) {
+        const keys = Object.keys(params);
+        for (const key of keys) {
+            const val = params[key];
+            if (val <= 0)
+                continue; // Ignore non-positive values
+            switch (key.toLowerCase()) {
+                case "working":
+                case "working_memory":
+                case "workingmemory":
+                    this.cfg.workingMemoryTokens = val;
+                    this.baseWorkingMemoryTokens = val;
+                    Logger.info(`VirtualMemory: workingMemoryTokens → ${val}`);
+                    break;
+                case "page":
+                case "page_slot":
+                case "pageslot":
+                    this.cfg.pageSlotTokens = val;
+                    Logger.info(`VirtualMemory: pageSlotTokens → ${val}`);
+                    break;
+                case "high":
+                case "high_ratio":
+                    if (val >= 0 && val <= 1) {
+                        this.cfg.highRatio = val;
+                        Logger.info(`VirtualMemory: highRatio → ${val}`);
+                    }
+                    break;
+                case "low":
+                case "low_ratio":
+                    if (val >= 0 && val <= 1) {
+                        this.cfg.lowRatio = val;
+                        Logger.info(`VirtualMemory: lowRatio → ${val}`);
+                    }
+                    break;
+                case "min_recent":
+                case "minrecent":
+                    if (val >= 1) {
+                        this.cfg.minRecentPerLane = Math.round(val);
+                        Logger.info(`VirtualMemory: minRecentPerLane → ${Math.round(val)}`);
+                    }
+                    break;
+                case "assistant_weight":
+                case "assistantweight":
+                    this.cfg.assistantWeight = val;
+                    Logger.info(`VirtualMemory: assistantWeight → ${val}`);
+                    break;
+                case "user_weight":
+                case "userweight":
+                    this.cfg.userWeight = val;
+                    Logger.info(`VirtualMemory: userWeight → ${val}`);
+                    break;
+                case "system_weight":
+                case "systemweight":
+                    this.cfg.systemWeight = val;
+                    Logger.info(`VirtualMemory: systemWeight → ${val}`);
+                    break;
+                case "tool_weight":
+                case "toolweight":
+                    this.cfg.toolWeight = val;
+                    Logger.info(`VirtualMemory: toolWeight → ${val}`);
+                    break;
+                default:
+                    Logger.warn(`VirtualMemory.tune: unknown parameter '${key}'`);
+            }
+        }
+    }
+    /**
+     * Hot-reload memory configuration from marker (e.g. @@working:8k,page:8k@@).
+     * Parses numeric k-suffix (e.g. "8k" → 8000) and applies to working/page token budgets.
+     * Does NOT trigger compaction — preserves all loaded pages.
+     */
+    hotReloadConfig(config) {
+        const changes = [];
+        if (config.workingMemoryTokens !== undefined) {
+            const old = this.cfg.workingMemoryTokens;
+            this.cfg.workingMemoryTokens = config.workingMemoryTokens;
+            this.baseWorkingMemoryTokens = config.workingMemoryTokens; // Reset baseline
+            changes.push(`workingMemoryTokens: ${old} → ${config.workingMemoryTokens}`);
+        }
+        if (config.pageSlotTokens !== undefined) {
+            const old = this.cfg.pageSlotTokens;
+            this.cfg.pageSlotTokens = config.pageSlotTokens;
+            changes.push(`pageSlotTokens: ${old} → ${config.pageSlotTokens}`);
+        }
+        return changes.length > 0 ? changes.join("; ") : "No config changes";
     }
     // --- Persistence ---
     async load(id) {
@@ -174,6 +284,31 @@ export class VirtualMemory extends AgentMemory {
         const pageCount = this.getPageCount();
         return `Compacted: ${beforeCount} → ${afterCount} messages, ${beforeTokens} → ${afterTokens} tokens. Total pages: ${pageCount}.`;
     }
+    // --- Phantom Compaction API ---
+    /**
+     * Get phantom buffer status (memory usage, snapshots).
+     */
+    getPhantomStatus() {
+        return this.phantomBuffer?.getMemoryUsage() ?? null;
+    }
+    /**
+     * List available phantom snapshots.
+     */
+    listPhantomSnapshots() {
+        return this.phantomBuffer?.listSnapshots() ?? [];
+    }
+    /**
+     * Recall (inject) a phantom snapshot into working memory.
+     * Returns the snapshot messages or null if not found/disabled.
+     */
+    recallPhantom(snapshotId) {
+        if (!this.phantomBuffer)
+            return null;
+        const snap = snapshotId
+            ? this.phantomBuffer.getSnapshot(snapshotId)
+            : this.phantomBuffer.getLatest();
+        return snap?.messages ?? null;
+    }
     // --- Page Index (persisted metadata) ---
     indexPath() {
         return join(this.cfg.pagesDir, "index.json");
@@ -189,6 +324,8 @@ export class VirtualMemory extends AgentMemory {
                 this.pages.set(page.id, page);
             this.activePageIds = new Set(data.activePageIds ?? []);
             this.loadOrder = data.loadOrder ?? [];
+            this.pageRefCount = new Map(data.pageRefCount ?? []);
+            this.pinnedPageIds = new Set(data.pinnedPageIds ?? []);
         }
         catch {
             this.pages.clear();
@@ -201,6 +338,8 @@ export class VirtualMemory extends AgentMemory {
                 pages: Array.from(this.pages.values()),
                 activePageIds: Array.from(this.activePageIds),
                 loadOrder: this.loadOrder,
+                pageRefCount: Array.from(this.pageRefCount.entries()),
+                pinnedPageIds: Array.from(this.pinnedPageIds),
                 savedAt: new Date().toISOString(),
             }, null, 2) + "\n");
         }
@@ -303,6 +442,10 @@ export class VirtualMemory extends AgentMemory {
             ...(maxImportance > 0 ? { maxImportance } : {}),
         };
         this.savePage(page);
+        // Track page creation
+        if (this.metricsCollector) {
+            this.metricsCollector.onPageCreated(page.id, lane ?? 'mixed', page.tokens);
+        }
         // Generate summary with embedded ref
         let summary;
         if (this.cfg.enableBatchSummarization && this.summaryQueue) {
@@ -383,10 +526,15 @@ export class VirtualMemory extends AgentMemory {
             this.loadOrder = this.loadOrder.filter(x => x !== id);
         }
         for (const id of this.pendingRefs) {
-            if (this.pages.has(id) || existsSync(this.pagePath(id))) {
+            const exists = this.pages.has(id) || existsSync(this.pagePath(id));
+            if (exists) {
                 this.activePageIds.add(id);
                 if (!this.loadOrder.includes(id))
                     this.loadOrder.push(id);
+            }
+            // Track reference attempt
+            if (this.metricsCollector) {
+                this.metricsCollector.onPageReferenced(id, exists);
             }
         }
         this.pendingRefs.clear();
@@ -471,11 +619,45 @@ export class VirtualMemory extends AgentMemory {
                 slotTokens += page.tokens;
         }
         while (slotTokens > this.cfg.pageSlotTokens && this.loadOrder.length > 0) {
-            const evictId = this.loadOrder.shift();
+            // Find next candidate for eviction: skip pinned, prefer low-frequency, fall back to LRU
+            let evictIdx = -1;
+            const FREQUENCY_THRESHOLD = 3; // Pages with >= N refs use frequency eviction
+            // Pass 1: Find unpinned page with lowest frequency (if any have been ref'd)
+            let lowestFreq = Infinity;
+            for (let i = 0; i < this.loadOrder.length; i++) {
+                const id = this.loadOrder[i];
+                if (this.pinnedPageIds.has(id))
+                    continue; // Skip pinned
+                const freq = this.pageRefCount.get(id) ?? 0;
+                // Only consider frequency eviction if page has >= FREQUENCY_THRESHOLD refs
+                if (freq >= FREQUENCY_THRESHOLD && freq < lowestFreq) {
+                    lowestFreq = freq;
+                    evictIdx = i;
+                }
+            }
+            // Pass 2: If no frequency candidate, fall back to LRU (oldest unpinned)
+            if (evictIdx === -1) {
+                for (let i = 0; i < this.loadOrder.length; i++) {
+                    const id = this.loadOrder[i];
+                    if (!this.pinnedPageIds.has(id)) {
+                        evictIdx = i;
+                        break;
+                    }
+                }
+            }
+            // No evictable pages found (all pinned?) — bail to prevent infinite loop
+            if (evictIdx === -1) {
+                Logger.warn(`[VM evict] All loaded pages are pinned; cannot free space`);
+                break;
+            }
+            const evictId = this.loadOrder[evictIdx];
+            this.loadOrder.splice(evictIdx, 1);
             this.activePageIds.delete(evictId);
             const page = this.pages.get(evictId);
-            if (page)
+            if (page) {
                 slotTokens -= page.tokens;
+                Logger.debug(`[VM evict] Evicted '${evictId}' (freq=${this.pageRefCount.get(evictId) ?? 0}; freed ${page.tokens} tokens)`);
+            }
         }
     }
     // --- Importance-Aware Partitioning ---
@@ -594,6 +776,11 @@ export class VirtualMemory extends AgentMemory {
             return;
         await this.runOnce(async () => {
             // Compute normalized budgets
+            // Snapshot to phantom buffer before compaction (if enabled)
+            if (this.phantomBuffer) {
+                const reason = forced ? "manual forceCompact()" : "automatic watermark trigger";
+                this.phantomBuffer.snapshot(this.messagesBuffer, reason);
+            }
             const budgets = this.computeLaneBudgets();
             // Re-partition to get fresh data
             const { firstSystemIndex, assistant, user, system, tool, other } = this.partition();
@@ -694,6 +881,59 @@ export class VirtualMemory extends AgentMemory {
             Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} paged=[A:${olderAssistant.length} U:${olderUser.length} S:${olderSystem.length} T:${olderTool.length}]`);
         });
     }
+    /**
+     * Request a page to be loaded into the page slot.
+     * Can be called by stream marker handler or explicitly.
+     */
+    ref(id) {
+        if (this.pendingRefs.has(id))
+            return; // Already pending
+        this.pendingRefs.add(id);
+        // Track reference frequency for smarter eviction
+        const count = (this.pageRefCount.get(id) ?? 0) + 1;
+        this.pageRefCount.set(id, count);
+        Logger.debug(`[VM] ref('${id}'): frequency now ${count}`);
+    }
+    /**
+     * Request a page to be unloaded from the page slot.
+     */
+    unref(id) {
+        if (this.pinnedPageIds.has(id)) {
+            Logger.warn(`[VM] unref('${id}'): page is pinned, ignoring`);
+            return;
+        }
+        this.pendingUnrefs.add(id);
+        Logger.debug(`[VM] unref('${id}'): marked for eviction`);
+    }
+    /**
+     * Pin a page to prevent eviction, even if slot is full.
+     * Useful for high-value reference materials.
+     */
+    pinPage(id) {
+        if (!this.pages.has(id) && !existsSync(this.pagePath(id))) {
+            Logger.warn(`[VM] pinPage('${id}'): page not found`);
+            return;
+        }
+        this.pinnedPageIds.add(id);
+        // Ensure it's loaded
+        if (!this.activePageIds.has(id)) {
+            this.pendingRefs.add(id);
+        }
+        Logger.info(`[VM] pinPage('${id}'): pinned`);
+    }
+    /**
+     * Unpin a page, making it eligible for LRU/frequency eviction again.
+     */
+    unpinPage(id) {
+        this.pinnedPageIds.delete(id);
+        Logger.info(`[VM] unpinPage('${id}'): unpinned`);
+    }
+    /**
+     * Get list of pinned page IDs.
+     */
+    getPinnedPageIds() {
+        return Array.from(this.pinnedPageIds);
+    }
     // --- Accessors ---
     getPages() { return Array.from(this.pages.values()); }
     getActivePageIds() { return Array.from(this.activePageIds); }
@@ -734,5 +974,16 @@ export class VirtualMemory extends AgentMemory {
             this.batchWorkerManager.stop();
             this.batchWorkerManager = null;
         }
+    }
+    /**
+     * Generate a memory performance metrics report.
+     * Returns markdown report with lane metrics, recall rates, and tuning recommendations.
+     */
+    generateMetricsReport() {
+        if (!this.metricsCollector)
+            return null;
+        // Save current state before generating report
+        this.metricsCollector.save();
+        return this.metricsCollector.generateReport();
     }
 }

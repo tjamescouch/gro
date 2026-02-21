@@ -1,46 +1,10 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, accessSync, constants, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, accessSync, constants } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "./drivers/types.js";
 import { Logger } from "./logger.js";
 import { groError, asError, errorLogFields } from "./errors.js";
-
-/**
- * Clean up orphaned sessions older than the given age in milliseconds.
- * @param maxAgeMs Milliseconds (default: 48 hours = 172,800,000 ms)
- * @returns Number of sessions deleted
- */
-export function cleanupOldSessions(maxAgeMs: number = 48 * 60 * 60 * 1000): number {
-  const dir = contextDir();
-  if (!existsSync(dir)) return 0;
-
-  const now = Date.now();
-  let deleted = 0;
-
-  for (const entry of readdirSync(dir)) {
-    const sessionPath = join(dir, entry);
-    const metaPath = join(sessionPath, "meta.json");
-    
-    if (existsSync(metaPath)) {
-      try {
-        const stat = statSync(metaPath);
-        const age = now - stat.mtimeMs;
-        
-        if (age > maxAgeMs) {
-          // Delete the entire session directory
-          rmSync(sessionPath, { recursive: true, force: true });
-          Logger.info(`Cleanup: removed orphaned session ${entry} (age: ${Math.round(age / 1000 / 60)}m)`);
-          deleted++;
-        }
-      } catch (err) {
-        Logger.warn(`Cleanup: failed to process session ${entry}: ${asError(err).message}`);
-      }
-    }
-  }
-
-  return deleted;
-}
 
 /**
  * Session persistence for gro.

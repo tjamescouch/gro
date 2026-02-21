@@ -30,6 +30,7 @@ import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
 import { compactContextToolDefinition, executeCompactContext } from "./tools/compact-context.js";
+import { cleanupSessionsToolDefinition, executeCleanupSessions } from "./tools/cleanup-sessions.js";
 import { createMarkerParser, extractMarkers } from "./stream-markers.js";
 import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
@@ -799,6 +800,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
         tools.push(yieldToolDefinition);
     tools.push(memoryStatusToolDefinition());
     tools.push(compactContextToolDefinition());
+    tools.push(cleanupSessionsToolDefinition);
     tools.push(readToolDefinition());
     tools.push(writeToolDefinition());
     tools.push(globToolDefinition());
@@ -947,9 +949,34 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                 }
             }
             else if (marker.name === "memory" && marker.arg) {
-                // Memory hot-swap
-                void swapMemory(marker.arg);
-                Logger.info(`Stream marker: ${marker.name}('${marker.arg}')`);
+            }
+            else if (marker.name === "memory-tune" && marker.arg) {
+                // Hot-tune VirtualMemory: 🧠
+                // Parse key:value pairs separated by commas
+                const tuneParams = {};
+                for (const pair of marker.arg.split(",")) {
+                    const [key, val] = pair.trim().split(":");
+                    if (key && val) {
+                        let numVal = parseInt(val);
+                        if (val.toLowerCase().endsWith("k")) {
+                            numVal = parseInt(val.slice(0, -1)) * 1000;
+                        }
+                        else if (val.toLowerCase().endsWith("m")) {
+                            numVal = parseInt(val.slice(0, -1)) * 1000 * 1000;
+                        }
+                        if (!isNaN(numVal) && numVal > 0) {
+                            tuneParams[key.toLowerCase()] = numVal;
+                        }
+                    }
+                }
+                // Apply to memory controller if it supports hot-tuning
+                if (Object.keys(tuneParams).length > 0 && "tune" in memory && typeof memory.tune === "function") {
+                    memory.tune(tuneParams);
+                    Logger.info(`Stream marker: memory-tune(${marker.arg})`);
+                }
+                else {
+                    Logger.warn(`Stream marker: memory-tune — memory controller doesn't support hot-tuning`);
+                }
             }
         };
         // Select model tier based on current thinking budget (unless agent pinned a model explicitly)
@@ -1161,6 +1188,9 @@ Do not get stuck calling listen repeatedly.`
                 }
                 else if (fnName === "compact_context") {
                     result = await executeCompactContext(fnArgs, memory);
+                }
+                else if (fnName === "cleanup_sessions") {
+                    result = await executeCleanupSessions(fnArgs);
                 }
                 else if (fnName === "Read") {
                     result = executeRead(fnArgs);

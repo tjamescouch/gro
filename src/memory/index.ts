@@ -14,3 +14,6 @@ export type { Fragmenter, FragmenterConfig, Fragment } from "./random-sampling-f
 export type { HNSWMemoryConfig } from "./hnsw-memory.js";
 export { PerfectMemory } from "./perfect-memory.js";
 export type { PerfectMemoryConfig, Fork, ForkMeta } from "./perfect-memory.js";
+
+// Memory registry
+export { memoryRegistry, type MemoryFactory, type MemoryFactoryConfig, type MemoryTypeDescriptor, type MemoryParameter } from "./memory-registry.js";

@@ -213,6 +213,29 @@ export class VirtualMemory extends AgentMemory {
     this.cfg.minRecentPerLane = Math.max(2, Math.round(this.baseMinRecentPerLane! * scale));
   }
 
+
+  /**
+   * Hot-reload memory configuration from marker (e.g. @@working:8k,page:8k@@).
+   * Parses numeric k-suffix (e.g. "8k" → 8000) and applies to working/page token budgets.
+   * Does NOT trigger compaction — preserves all loaded pages.
+   */
+  hotReloadConfig(config: { workingMemoryTokens?: number; pageSlotTokens?: number }): string {
+    const changes: string[] = [];
+
+    if (config.workingMemoryTokens !== undefined) {
+      const old = this.cfg.workingMemoryTokens;
+      this.cfg.workingMemoryTokens = config.workingMemoryTokens;
+      this.baseWorkingMemoryTokens = config.workingMemoryTokens; // Reset baseline
+      changes.push(`workingMemoryTokens: ${old} → ${config.workingMemoryTokens}`);
+    }
+    if (config.pageSlotTokens !== undefined) {
+      const old = this.cfg.pageSlotTokens;
+      this.cfg.pageSlotTokens = config.pageSlotTokens;
+      changes.push(`pageSlotTokens: ${old} → ${config.pageSlotTokens}`);
+    }
+    return changes.length > 0 ? changes.join("; ") : "No config changes";
+  }
+
   // --- Persistence ---
 
   async load(id: string): Promise<void> {

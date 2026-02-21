@@ -42,5 +42,11 @@ export interface ChatDriver {
     onToolCallDelta?: (s: ChatToolCall) => void;
     /** 0.0–1.0 fraction of maxTokens to allocate for extended thinking. 0 = disabled. */
     thinkingBudget?: number;
+    /** Sampling temperature (0.0–2.0, default varies by provider) */
+    temperature?: number;
+    /** Top-k sampling (integer, default varies by provider) */
+    top_k?: number;
+    /** Top-p (nucleus) sampling (0.0–1.0, default varies by provider) */
+    top_p?: number;
   }): Promise<ChatOutput>;
 }

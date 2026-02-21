@@ -849,6 +849,11 @@ async function executeTurn(
   // Emit @@thinking(0.8)@@ to go into the phone booth; let it decay to come back out.
   let activeThinkingBudget = 0.5;
   let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
+
+  // Sampling parameters — controlled via 🧠, 🧠, 🧠 markers
+  let activeTemperature: number | undefined = undefined;
+  let activeTopK: number | undefined = undefined;
+  let activeTopP: number | undefined = undefined;
   /** Select model tier based on thinking budget and provider.
    * Loads tier ladders from providers/*.json config files.
    */
@@ -970,6 +975,33 @@ async function executeTurn(
           emitStateVector({ [marker.name]: val }, cfg.outputFormat);
           Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
         }
+      } else if (marker.name === "temp" || marker.name === "temperature") {
+        // 🧠 or 🧠 — set sampling temperature
+        const val = parseFloat(marker.arg);
+        if (!isNaN(val) && val >= 0 && val <= 2) {
+          activeTemperature = val;
+          Logger.info(`Stream marker: temp(${val})`);
+        } else {
+          Logger.warn(`Stream marker: temp('${marker.arg}') — invalid, must be 0.0–2.0`);
+        }
+      } else if (marker.name === "top_k") {
+        // 🧠 — set top-k sampling (Anthropic/Google)
+        const val = parseInt(marker.arg, 10);
+        if (!isNaN(val) && val > 0) {
+          activeTopK = val;
+          Logger.info(`Stream marker: top_k(${val})`);
+        } else {
+          Logger.warn(`Stream marker: top_k('${marker.arg}') — invalid, must be positive integer`);
+        }
+      } else if (marker.name === "top_p") {
+        // 🧠 — set nucleus sampling
+        const val = parseFloat(marker.arg);
+        if (!isNaN(val) && val >= 0 && val <= 1) {
+          activeTopP = val;
+          Logger.info(`Stream marker: top_p(${val})`);
+        } else {
+          Logger.warn(`Stream marker: top_p('${marker.arg}') — invalid, must be 0.0–1.0`);
+        }
       } else if (marker.name === "working" || marker.name === "memory-hotreload") {
         // Hot-reload marker: @@working:8k,page:12k@@ or @@memory-hotreload:working=8k,page=12k@@
         // Parse "working" param from arg (format: "8k,page:12k" or "8k,page=12k")
@@ -1062,6 +1094,9 @@ async function executeTurn(
       tools: tools.length > 0 ? tools : undefined,
       onToken: markerParser.onToken,
       thinkingBudget: activeThinkingBudget,
+      temperature: activeTemperature,
+      top_k: activeTopK,
+      top_p: activeTopP,
     });
 
     // Flush any remaining buffered tokens from the marker parser
@@ -1343,6 +1378,9 @@ Do not get stuck calling listen repeatedly.`
     Logger.debug("Max tool rounds reached — final turn with no tools");
     const finalOutput: ChatOutput = await driver.chat(memory.messages(), {
       model: activeModel,
+      temperature: activeTemperature,
+      top_k: activeTopK,
+      top_p: activeTopP,
       onToken: rawOnToken,
     });
     if (finalOutput.usage) {

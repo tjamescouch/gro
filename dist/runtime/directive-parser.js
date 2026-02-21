@@ -100,8 +100,9 @@ export function parseDirectives(content) {
         cleaned = cleaned.replace(memoryMatch[0], "");
     }
     // 🧠
-    const modelPattern = new RegExp(`${OPEN}model-change\\(['"](.+?)['"]\\)${CLOSE}`);
-    const modelMatch = proseOnly.match(modelPattern);
+    const modelPattern = new RegExp(`${OPEN}model(?:-change)?\\(['"](.+?)['"]\\)${CLOSE}`);
+    const modelMatch = content.match(modelPattern);
+ (feat: add @@model() alias for @@model-change(), enhance thinking guidance in _base.md)
     if (modelMatch) {
         result.modelSwitch = modelMatch[1];
         cleaned = cleaned.replace(modelMatch[0], "");

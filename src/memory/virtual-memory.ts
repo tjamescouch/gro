@@ -737,11 +737,29 @@ export class VirtualMemory extends AgentMemory {
       Logger.warn(`[VM] Total context ${totalTokens} tokens exceeds hard cap ${hardCap} — trimming working memory`);
       const excess = totalTokens - wmBudget * 2; // trim back to 2x budget for safety
       let trimmed = 0;
-      // Remove oldest working memory messages (from front of window, after system+pages)
+      // Remove oldest working memory messages (from front of window, after system+pages).
+      // Use tool-pair-safe removal: never remove a tool_result without its assistant tool_use,
+      // and never remove an assistant tool_use without its subsequent tool_results.
       const wmStart = result.length - window.length;
       while (trimmed < excess && result.length > wmStart + this.cfg.minRecentPerLane * 4) {
-        const removed = result.splice(wmStart, 1);
-        trimmed += this.msgTokens(removed);
+        const msg = result[wmStart];
+        // If this is an assistant message with tool_calls, remove it AND all following tool results
+        const tc = (msg as any).tool_calls;
+        if (msg.role === "assistant" && Array.isArray(tc) && tc.length > 0) {
+          let groupSize = 1;
+          while (wmStart + groupSize < result.length && result[wmStart + groupSize].role === "tool") {
+            groupSize++;
+          }
+          const removed = result.splice(wmStart, groupSize);
+          trimmed += this.msgTokens(removed);
+        } else if (msg.role === "tool") {
+          // Orphaned tool result at start of window — safe to remove
+          const removed = result.splice(wmStart, 1);
+          trimmed += this.msgTokens(removed);
+        } else {
+          const removed = result.splice(wmStart, 1);
+          trimmed += this.msgTokens(removed);
+        }
       }
     }
 

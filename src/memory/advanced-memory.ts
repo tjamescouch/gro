@@ -103,13 +103,32 @@ export class AdvancedMemory extends AgentMemory {
       usedTok = this.estimateTokens(result);
     }
 
-    // Walk backwards from the end, adding messages until we hit budget
+    // Walk backwards from the end, adding messages until we hit budget.
+    // Tool call/result pairs must be kept together: if we include a tool_result,
+    // its preceding assistant tool_use must also be included (and vice versa).
     const toAdd: ChatMessage[] = [];
-    for (let i = all.length - 1; i >= (result.length > 0 ? 1 : 0); i--) {
-      const candidate = [all[i], ...toAdd];
+    const minIdx = result.length > 0 ? 1 : 0;
+    for (let i = all.length - 1; i >= minIdx; i--) {
+      // Collect tool pair: if this is a tool result, grab all consecutive tool results
+      // AND the preceding assistant message (which has the tool_calls)
+      let group: ChatMessage[] = [all[i]];
+      if (all[i].role === "tool") {
+        // Walk back to include all consecutive tool results and the assistant before them
+        let j = i - 1;
+        while (j >= minIdx && all[j].role === "tool") {
+          group.unshift(all[j]);
+          j--;
+        }
+        // Include the assistant message with tool_calls
+        if (j >= minIdx && all[j].role === "assistant") {
+          group.unshift(all[j]);
+        }
+        i = j + 1; // skip past the group on next iteration
+      }
+      const candidate = [...group, ...toAdd];
       const candidateTok = this.estimateTokens(candidate);
       if (usedTok + candidateTok <= budget) {
-        toAdd.unshift(all[i]);
+        toAdd.unshift(...group);
       } else {
         break;  // No more room
       }
@@ -180,15 +199,36 @@ export class AdvancedMemory extends AgentMemory {
       const rebuilt = this.ordered(summaries, sysHead, keepAssistant, keepSystem, keepUser, keepTools, other);
       this.messagesBuffer.splice(0, this.messagesBuffer.length, ...rebuilt);
 
-      // Final clamp
+      // Final clamp — preserve tool call/result pairs as atomic units
       let finalTok = this.estimateTokens(this.messagesBuffer);
       if (finalTok > lowTarget) {
         const pruned: ChatMessage[] = [];
-        for (const m of this.messagesBuffer) {
-          pruned.push(m);
-          finalTok = this.estimateTokens(pruned);
-          if (finalTok > lowTarget && m.role !== "system") {
-            pruned.pop();
+        const buf = this.messagesBuffer;
+        for (let i = 0; i < buf.length; i++) {
+          const m = buf[i];
+          // Check if this assistant message has tool_calls — if so, treat it + subsequent tool results as a group
+          const tc = (m as any).tool_calls;
+          if (m.role === "assistant" && Array.isArray(tc) && tc.length > 0) {
+            const group: ChatMessage[] = [m];
+            let j = i + 1;
+            while (j < buf.length && buf[j].role === "tool") {
+              group.push(buf[j]);
+              j++;
+            }
+            // Either include the whole group or skip it entirely
+            pruned.push(...group);
+            finalTok = this.estimateTokens(pruned);
+            if (finalTok > lowTarget) {
+              // Remove the entire group
+              pruned.splice(pruned.length - group.length, group.length);
+            }
+            i = j - 1; // skip past tool results
+          } else {
+            pruned.push(m);
+            finalTok = this.estimateTokens(pruned);
+            if (finalTok > lowTarget && m.role !== "system") {
+              pruned.pop();
+            }
           }
         }
         this.messagesBuffer.splice(0, this.messagesBuffer.length, ...pruned);

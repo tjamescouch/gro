@@ -211,6 +211,13 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
 
     const { system: systemPrompt, apiMessages } = convertMessages(messages);
 
+    // Guard: if all non-system messages were dropped (e.g. orphaned tool_results),
+    // inject a minimal user message so the API call doesn't fail with "at least one message required"
+    if (apiMessages.length === 0) {
+      Logger.warn("All messages were filtered during conversion — injecting fallback user message");
+      apiMessages.push({ role: "user", content: "(continue)" });
+    }
+
     const thinkingBudget: number = opts?.thinkingBudget ?? 0;
     // Reserve 30% of max_tokens for completion output, allocate 70% to thinking budget.
     // E.g., maxTokens=4096, thinkingBudget=0.8 → thinking gets ~2293 tokens, output ~1803

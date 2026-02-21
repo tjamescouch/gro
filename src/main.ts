@@ -36,6 +36,7 @@ import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
+import { memoryReportToolDefinition, executeMemoryReport } from "./tools/memory-report.js";
 import { compactContextToolDefinition, executeCompactContext } from "./tools/compact-context.js";
 import { cleanupSessionsToolDefinition, executeCleanupSessions } from "./tools/cleanup-sessions.js";
 import { createMarkerParser, extractMarkers } from "./stream-markers.js";
@@ -859,6 +860,7 @@ async function executeTurn(
   tools.push(groVersionToolDefinition());
   if (cfg.persistent) tools.push(yieldToolDefinition);
   tools.push(memoryStatusToolDefinition());
+  tools.push(memoryReportToolDefinition());
   tools.push(compactContextToolDefinition());
   tools.push(cleanupSessionsToolDefinition);
   tools.push(readToolDefinition());
@@ -1401,6 +1403,8 @@ Do not get stuck calling listen repeatedly.`
           result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode, thinkingBudget: activeThinkingBudget, activeModel });
         } else if (fnName === "memory_status") {
           result = executeMemoryStatus(fnArgs, memory);
+        } else if (fnName === "memory_report") {
+          result = executeMemoryReport(fnArgs, memory);
         } else if (fnName === "compact_context") {
           result = await executeCompactContext(fnArgs, memory);
         } else if (fnName === "cleanup_sessions") {

@@ -9,6 +9,7 @@ import { SummarizationQueue } from "./summarization-queue.js";
 import { BatchWorkerManager } from "./batch-worker-manager.js";
 import { Logger } from "../logger.js";
 import { PhantomBuffer, type PhantomSnapshot } from "./phantom-buffer.js";
+import { MemoryMetricsCollector } from "./memory-metrics.js";
 
 // Load summarizer system prompt from markdown file (next to this module)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -156,6 +157,9 @@ export class VirtualMemory extends AgentMemory {
   private batchWorkerManager: BatchWorkerManager | null = null;
   // Phantom compaction state
   private phantomBuffer: PhantomBuffer | null = null;
+  // Memory performance instrumentation
+  private metricsCollector: MemoryMetricsCollector | null = null;
+
 
   constructor(config: VirtualMemoryConfig = {}) {
     super(config.systemPrompt);
@@ -187,6 +191,11 @@ export class VirtualMemory extends AgentMemory {
     // Initialize phantom buffer if enabled
     if (this.cfg.enablePhantomCompaction) {
       this.phantomBuffer = new PhantomBuffer({ avgCharsPerToken: this.cfg.avgCharsPerToken });
+    
+    // Initialize metrics collector
+    const sessionId = process.env.GRO_SESSION_ID || `session-${Date.now()}`;
+    const metricsPath = join(this.cfg.pagesDir, "memory-metrics.json");
+    this.metricsCollector = new MemoryMetricsCollector(sessionId, metricsPath);
     }
   }
 
@@ -573,6 +582,10 @@ export class VirtualMemory extends AgentMemory {
       ...(maxImportance > 0 ? { maxImportance } : {}),
     };
     this.savePage(page);
+    // Track page creation
+    if (this.metricsCollector) {
+      this.metricsCollector.onPageCreated(page.id, lane ?? 'mixed', page.tokens);
+    }
 
     // Generate summary with embedded ref
     let summary: string;
@@ -665,9 +678,14 @@ export class VirtualMemory extends AgentMemory {
       this.loadOrder = this.loadOrder.filter(x => x !== id);
     }
     for (const id of this.pendingRefs) {
-      if (this.pages.has(id) || existsSync(this.pagePath(id))) {
+      const exists = this.pages.has(id) || existsSync(this.pagePath(id));
+      if (exists) {
         this.activePageIds.add(id);
         if (!this.loadOrder.includes(id)) this.loadOrder.push(id);
+      }
+      // Track reference attempt
+      if (this.metricsCollector) {
+        this.metricsCollector.onPageReferenced(id, exists);
       }
     }
     this.pendingRefs.clear();
@@ -1159,5 +1177,18 @@ export class VirtualMemory extends AgentMemory {
       this.batchWorkerManager.stop();
       this.batchWorkerManager = null;
     }
+  }
+
+  /**
+   * Generate a memory performance metrics report.
+   * Returns markdown report with lane metrics, recall rates, and tuning recommendations.
+   */
+  generateMetricsReport(): string | null {
+    if (!this.metricsCollector) return null;
+    
+    // Save current state before generating report
+    this.metricsCollector.save();
+    
+    return this.metricsCollector.generateReport();
   }
 }

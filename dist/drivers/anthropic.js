@@ -39,10 +39,11 @@ function convertToolDefs(tools) {
 function convertMessages(messages) {
     let systemPrompt;
     const apiMessages = [];
-    // Pre-scan: collect all tool_use IDs so we can drop orphaned tool_results
-    // (happens when virtual-memory truncation drops the assistant tool_use message
-    //  but keeps the tool_result that follows it — Anthropic rejects with 400)
+    // Pre-scan: collect all tool_use IDs and all tool_result IDs for cross-referencing.
+    // This lets us drop orphaned tool_results (missing tool_use) AND orphaned tool_uses
+    // (missing tool_result) — both cause Anthropic API 400 errors.
     const knownToolUseIds = new Set();
+    const knownToolResultIds = new Set();
     for (const m of messages) {
         if (m.role === "assistant") {
             const toolCalls = m.tool_calls;
@@ -52,6 +53,9 @@ function convertMessages(messages) {
                         knownToolUseIds.add(tc.id);
                 }
             }
+        }
+        if (m.role === "tool" && m.tool_call_id) {
+            knownToolResultIds.add(m.tool_call_id);
         }
     }
     for (const m of messages) {
@@ -63,10 +67,16 @@ function convertMessages(messages) {
             const content = [];
             if (m.content)
                 content.push({ type: "text", text: m.content });
-            // Convert OpenAI-style tool_calls to Anthropic tool_use blocks
+            // Convert OpenAI-style tool_calls to Anthropic tool_use blocks,
+            // but only include tool_calls that have matching tool_results
             const toolCalls = m.tool_calls;
             if (Array.isArray(toolCalls)) {
+                const orphanedIds = [];
                 for (const tc of toolCalls) {
+                    if (tc.id && !knownToolResultIds.has(tc.id)) {
+                        orphanedIds.push(tc.id);
+                        continue; // Skip this tool_use — no matching tool_result exists
+                    }
                     let input;
                     try {
                         input = JSON.parse(tc.function.arguments || "{}");
@@ -80,6 +90,9 @@ function convertMessages(messages) {
                         name: tc.function.name,
                         input,
                     });
+                }
+                if (orphanedIds.length > 0) {
+                    Logger.warn(`Dropping ${orphanedIds.length} orphaned tool_use(s) without tool_results: ${orphanedIds.join(", ")}`);
                 }
             }
             if (content.length > 0) {

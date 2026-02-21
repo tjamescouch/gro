@@ -51,10 +51,11 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
   let systemPrompt: string | undefined;
   const apiMessages: any[] = [];
 
-  // Pre-scan: collect all tool_use IDs so we can drop orphaned tool_results
-  // (happens when virtual-memory truncation drops the assistant tool_use message
-  //  but keeps the tool_result that follows it — Anthropic rejects with 400)
+  // Pre-scan: collect all tool_use IDs and all tool_result IDs for cross-referencing.
+  // This lets us drop orphaned tool_results (missing tool_use) AND orphaned tool_uses
+  // (missing tool_result) — both cause Anthropic API 400 errors.
   const knownToolUseIds = new Set<string>();
+  const knownToolResultIds = new Set<string>();
   for (const m of messages) {
     if (m.role === "assistant") {
       const toolCalls = (m as any).tool_calls;
@@ -63,6 +64,9 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
           if (tc.id) knownToolUseIds.add(tc.id);
         }
       }
+    }
+    if (m.role === "tool" && m.tool_call_id) {
+      knownToolResultIds.add(m.tool_call_id);
     }
   }
 
@@ -76,10 +80,16 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
       const content: any[] = [];
       if (m.content) content.push({ type: "text", text: m.content });
 
-      // Convert OpenAI-style tool_calls to Anthropic tool_use blocks
+      // Convert OpenAI-style tool_calls to Anthropic tool_use blocks,
+      // but only include tool_calls that have matching tool_results
       const toolCalls = (m as any).tool_calls;
       if (Array.isArray(toolCalls)) {
+        const orphanedIds: string[] = [];
         for (const tc of toolCalls) {
+          if (tc.id && !knownToolResultIds.has(tc.id)) {
+            orphanedIds.push(tc.id);
+            continue; // Skip this tool_use — no matching tool_result exists
+          }
           let input: any;
           try { input = JSON.parse(tc.function.arguments || "{}"); } catch { input = {}; }
           content.push({
@@ -88,6 +98,9 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
             name: tc.function.name,
             input,
           });
+        }
+        if (orphanedIds.length > 0) {
+          Logger.warn(`Dropping ${orphanedIds.length} orphaned tool_use(s) without tool_results: ${orphanedIds.join(", ")}`);
         }
       }
 

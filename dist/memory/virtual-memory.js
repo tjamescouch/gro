@@ -117,8 +117,78 @@ export class VirtualMemory extends AgentMemory {
         // At budget=0: 0.55 (compact early). At budget=1: 0.90 (keep more before compacting)
         this.cfg.highRatio = Math.min(0.95, this.baseHighRatio * (0.75 + budget * 0.5));
         // Min recent per lane: keep fewer messages on cheap models
-        // At budget=0: 2. At budget=0.5: 4 (default). At budget=1: 6.
         this.cfg.minRecentPerLane = Math.max(2, Math.round(this.baseMinRecentPerLane * scale));
+    }
+    /**
+     * Hot-tune VirtualMemory parameters at runtime.
+     * Supports: working, page, high, low, min_recent, assistant_weight, etc.
+     * Example: tune({ working: 8000, page: 6000 })
+     */
+    tune(params) {
+        const keys = Object.keys(params);
+        for (const key of keys) {
+            const val = params[key];
+            if (val <= 0)
+                continue; // Ignore non-positive values
+            switch (key.toLowerCase()) {
+                case "working":
+                case "working_memory":
+                case "workingmemory":
+                    this.cfg.workingMemoryTokens = val;
+                    this.baseWorkingMemoryTokens = val;
+                    Logger.info(`VirtualMemory: workingMemoryTokens → ${val}`);
+                    break;
+                case "page":
+                case "page_slot":
+                case "pageslot":
+                    this.cfg.pageSlotTokens = val;
+                    Logger.info(`VirtualMemory: pageSlotTokens → ${val}`);
+                    break;
+                case "high":
+                case "high_ratio":
+                    if (val >= 0 && val <= 1) {
+                        this.cfg.highRatio = val;
+                        Logger.info(`VirtualMemory: highRatio → ${val}`);
+                    }
+                    break;
+                case "low":
+                case "low_ratio":
+                    if (val >= 0 && val <= 1) {
+                        this.cfg.lowRatio = val;
+                        Logger.info(`VirtualMemory: lowRatio → ${val}`);
+                    }
+                    break;
+                case "min_recent":
+                case "minrecent":
+                    if (val >= 1) {
+                        this.cfg.minRecentPerLane = Math.round(val);
+                        Logger.info(`VirtualMemory: minRecentPerLane → ${Math.round(val)}`);
+                    }
+                    break;
+                case "assistant_weight":
+                case "assistantweight":
+                    this.cfg.assistantWeight = val;
+                    Logger.info(`VirtualMemory: assistantWeight → ${val}`);
+                    break;
+                case "user_weight":
+                case "userweight":
+                    this.cfg.userWeight = val;
+                    Logger.info(`VirtualMemory: userWeight → ${val}`);
+                    break;
+                case "system_weight":
+                case "systemweight":
+                    this.cfg.systemWeight = val;
+                    Logger.info(`VirtualMemory: systemWeight → ${val}`);
+                    break;
+                case "tool_weight":
+                case "toolweight":
+                    this.cfg.toolWeight = val;
+                    Logger.info(`VirtualMemory: toolWeight → ${val}`);
+                    break;
+                default:
+                    Logger.warn(`VirtualMemory.tune: unknown parameter '${key}'`);
+            }
+        }
     }
     // --- Persistence ---
     async load(id) {

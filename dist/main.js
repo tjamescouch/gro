@@ -947,9 +947,34 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                 }
             }
             else if (marker.name === "memory" && marker.arg) {
-                // Memory hot-swap
-                void swapMemory(marker.arg);
-                Logger.info(`Stream marker: ${marker.name}('${marker.arg}')`);
+            }
+            else if (marker.name === "memory-tune" && marker.arg) {
+                // Hot-tune VirtualMemory: 🧠
+                // Parse key:value pairs separated by commas
+                const tuneParams = {};
+                for (const pair of marker.arg.split(",")) {
+                    const [key, val] = pair.trim().split(":");
+                    if (key && val) {
+                        let numVal = parseInt(val);
+                        if (val.toLowerCase().endsWith("k")) {
+                            numVal = parseInt(val.slice(0, -1)) * 1000;
+                        }
+                        else if (val.toLowerCase().endsWith("m")) {
+                            numVal = parseInt(val.slice(0, -1)) * 1000 * 1000;
+                        }
+                        if (!isNaN(numVal) && numVal > 0) {
+                            tuneParams[key.toLowerCase()] = numVal;
+                        }
+                    }
+                }
+                // Apply to memory controller if it supports hot-tuning
+                if (Object.keys(tuneParams).length > 0 && "tune" in memory && typeof memory.tune === "function") {
+                    memory.tune(tuneParams);
+                    Logger.info(`Stream marker: memory-tune(${marker.arg})`);
+                }
+                else {
+                    Logger.warn(`Stream marker: memory-tune — memory controller doesn't support hot-tuning`);
+                }
             }
         };
         // Select model tier based on current thinking budget (unless agent pinned a model explicitly)

@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { SummarizationQueue } from "./summarization-queue.js";
 import { BatchWorkerManager } from "./batch-worker-manager.js";
 import { Logger } from "../logger.js";
+import { PhantomBuffer, type PhantomSnapshot } from "./phantom-buffer.js";
 
 // Load summarizer system prompt from markdown file (next to this module)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -93,6 +94,8 @@ export interface VirtualMemoryConfig {
   enableBatchSummarization?: boolean;
   /** Path to summarization queue (default: ~/.gro/summarization-queue.jsonl) */
   queuePath?: string;
+  /** Enable phantom compaction (fork-based perfect recall) */
+  enablePhantomCompaction?: boolean;
 }
 
 const DEFAULTS = {
@@ -110,6 +113,7 @@ const DEFAULTS = {
   systemPrompt: "",
   summarizerModel: "claude-haiku-4-5",
   enableBatchSummarization: false,
+  enablePhantomCompaction: process.env.GRO_PHANTOM_COMPACTION === "true",
   queuePath: join(process.env.HOME ?? "/tmp", ".gro", "summarization-queue.jsonl"),
 };
 
@@ -150,6 +154,8 @@ export class VirtualMemory extends AgentMemory {
   private summaryQueue: SummarizationQueue | null = null;
   /** Batch worker manager (spawns background worker if batch mode enabled) */
   private batchWorkerManager: BatchWorkerManager | null = null;
+  // Phantom compaction state
+  private phantomBuffer: PhantomBuffer | null = null;
 
   constructor(config: VirtualMemoryConfig = {}) {
     super(config.systemPrompt);
@@ -169,6 +175,7 @@ export class VirtualMemory extends AgentMemory {
       driver: config.driver ?? null,
       summarizerModel: config.summarizerModel ?? DEFAULTS.summarizerModel,
       enableBatchSummarization: config.enableBatchSummarization ?? DEFAULTS.enableBatchSummarization,
+      enablePhantomCompaction: config.enablePhantomCompaction ?? DEFAULTS.enablePhantomCompaction,
       queuePath: config.queuePath ?? DEFAULTS.queuePath,
     };
     mkdirSync(this.cfg.pagesDir, { recursive: true });
@@ -176,6 +183,11 @@ export class VirtualMemory extends AgentMemory {
     if (this.cfg.enableBatchSummarization) {
       this.summaryQueue = new SummarizationQueue(this.cfg.queuePath);
       this.startBatchWorker();
+    }
+    // Initialize phantom buffer if enabled
+    if (this.cfg.enablePhantomCompaction) {
+      this.phantomBuffer = new PhantomBuffer({ avgCharsPerToken: this.cfg.avgCharsPerToken });
+    }
     }
   }
 
@@ -374,6 +386,36 @@ export class VirtualMemory extends AgentMemory {
   }
 
   private forceCompactPending = false;
+
+  // --- Phantom Compaction API ---
+
+  /**
+   * Get phantom buffer status (memory usage, snapshots).
+   */
+  getPhantomStatus(): ReturnType<PhantomBuffer["getMemoryUsage"]> | null {
+    return this.phantomBuffer?.getMemoryUsage() ?? null;
+  }
+
+  /**
+   * List available phantom snapshots.
+   */
+  listPhantomSnapshots(): ReturnType<PhantomBuffer["listSnapshots"]> {
+    return this.phantomBuffer?.listSnapshots() ?? [];
+  }
+
+  /**
+   * Recall (inject) a phantom snapshot into working memory.
+   * Returns the snapshot messages or null if not found/disabled.
+   */
+  recallPhantom(snapshotId?: string): ChatMessage[] | null {
+    if (!this.phantomBuffer) return null;
+
+    const snap = snapshotId
+      ? this.phantomBuffer.getSnapshot(snapshotId)
+      : this.phantomBuffer.getLatest();
+
+    return snap?.messages ?? null;
+  }
 
   // --- Page Index (persisted metadata) ---
 
@@ -889,6 +931,12 @@ export class VirtualMemory extends AgentMemory {
 
     await this.runOnce(async () => {
       // Compute normalized budgets
+      // Snapshot to phantom buffer before compaction (if enabled)
+      if (this.phantomBuffer) {
+        const reason = forced ? "manual forceCompact()" : "automatic watermark trigger";
+        this.phantomBuffer.snapshot(this.messagesBuffer, reason);
+      }
+
       const budgets = this.computeLaneBudgets();
 
       // Re-partition to get fresh data

@@ -81,30 +81,34 @@ export function parseDirectives(content) {
         cleanedMessage: content,
         learnFacts: [],
     };
+    // Build prose-only view: code blocks blanked so markers in code don't execute
+    const proseOnly = segmentByCode(content)
+        .map((seg) => (seg.protected ? " ".repeat(seg.text.length) : seg.text))
+        .join("");
     // 🧠
     const learnPattern = new RegExp(`${OPEN}learn\\(['"](.+?)['"]\\)${CLOSE}`, "g");
     let match;
-    while ((match = learnPattern.exec(content)) !== null) {
+    while ((match = learnPattern.exec(proseOnly)) !== null) {
         result.learnFacts.push(match[1]);
         cleaned = cleaned.replace(match[0], "");
     }
     // @@ctrl:memory=type@@
     const memoryPattern = new RegExp(`${OPEN}ctrl:memory=(\\w+)${CLOSE}`);
-    const memoryMatch = content.match(memoryPattern);
+    const memoryMatch = proseOnly.match(memoryPattern);
     if (memoryMatch) {
         result.memorySwap = memoryMatch[1];
         cleaned = cleaned.replace(memoryMatch[0], "");
     }
     // 🧠
     const modelPattern = new RegExp(`${OPEN}model-change\\(['"](.+?)['"]\\)${CLOSE}`);
-    const modelMatch = content.match(modelPattern);
+    const modelMatch = proseOnly.match(modelPattern);
     if (modelMatch) {
         result.modelSwitch = modelMatch[1];
         cleaned = cleaned.replace(modelMatch[0], "");
     }
     // 💡
     const thinkingPattern = new RegExp(`${OPEN}thinking\\(([\\d.]+)\\)${CLOSE}`);
-    const thinkingMatch = content.match(thinkingPattern);
+    const thinkingMatch = proseOnly.match(thinkingPattern);
     if (thinkingMatch) {
         const level = parseFloat(thinkingMatch[1]);
         if (!isNaN(level)) {
@@ -114,14 +118,14 @@ export function parseDirectives(content) {
     }
     // 🧠 — bump +0.3
     const thinkingUp = new RegExp(`${OPEN}thinking-up${CLOSE}`, "g");
-    if (thinkingUp.test(content)) {
+    if (thinkingUp.test(proseOnly)) {
         const current = runtimeConfig.getThinkingLevel();
         result.thinkingLevel = Math.min(1.0, current + 0.3);
         cleaned = cleaned.replace(thinkingUp, "");
     }
     // 🧠 — reduce -0.3
     const thinkingDown = new RegExp(`${OPEN}thinking-down${CLOSE}`, "g");
-    if (thinkingDown.test(content)) {
+    if (thinkingDown.test(proseOnly)) {
         const current = runtimeConfig.getThinkingLevel();
         result.thinkingLevel = Math.max(0.0, current - 0.3);
         cleaned = cleaned.replace(thinkingDown, "");

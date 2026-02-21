@@ -82,6 +82,16 @@ export class SpendMeter {
     this.maybePostToChat();
   }
 
+  /** Check if cost exceeds a budget limit. Returns error message if exceeded, null if OK. */
+  checkBudget(maxUsd: number | null): string | null {
+    if (!maxUsd || maxUsd <= 0) return null;
+    const currentCost = this.cost();
+    if (currentCost > maxUsd) {
+      return `Budget exceeded: $${currentCost.toFixed(4)} > $${maxUsd.toFixed(4)}`;
+    }
+    return null;
+  }
+
   private maybePostToChat(): void {
     const now = Date.now();
     const due = this.lastPostMs === null || (now - this.lastPostMs) >= POST_INTERVAL_MS;
@@ -117,7 +127,7 @@ export class SpendMeter {
     ], { detached: true, stdio: "ignore" }).unref();
   }
 
-  private cost(): number {
+  cost(): number {
     const p = priceFor(this.model);
     return (this.totalIn * p.in + this.totalOut * p.out) / 1_000_000;
   }

@@ -1,6 +1,6 @@
 import { VirtualMemory } from "./virtual-memory.js";
 import { Logger } from "../logger.js";
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 // --- PerfectMemory ---
@@ -229,7 +229,6 @@ export class PerfectMemory extends VirtualMemory {
             const p = this.forkPath(id);
             try {
                 if (existsSync(p)) {
-                    const { unlinkSync } = require("node:fs");
                     unlinkSync(p);
                 }
             }

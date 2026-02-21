@@ -30,6 +30,7 @@ import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./
 import { groVersionToolDefinition, executeGroVersion, getGroVersion } from "./tools/version.js";
 import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-status.js";
 import { compactContextToolDefinition, executeCompactContext } from "./tools/compact-context.js";
+import { cleanupSessionsToolDefinition, executeCleanupSessions } from "./tools/cleanup-sessions.js";
 import { createMarkerParser, extractMarkers } from "./stream-markers.js";
 import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
@@ -128,7 +129,6 @@ function discoverExtensions(mcpConfigPaths) {
     return extensions;
 }
 function loadMcpServers(mcpConfigPaths) {
-    // If explicit --mcp-config paths given, use those
     if (mcpConfigPaths.length > 0) {
         const merged = {};
         for (const p of mcpConfigPaths) {
@@ -433,6 +433,7 @@ function loadConfig() {
         batchSummarization: flags.batchSummarization === "true",
         showDiffs: flags.showDiffs === "true",
         mcpServers,
+        maxBudgetUsd: flags.maxBudgetUsd ? parseFloat(flags.maxBudgetUsd) : null,
     };
 }
 function inferProvider(explicit, model) {
@@ -799,6 +800,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
         tools.push(yieldToolDefinition);
     tools.push(memoryStatusToolDefinition());
     tools.push(compactContextToolDefinition());
+    tools.push(cleanupSessionsToolDefinition);
     tools.push(readToolDefinition());
     tools.push(writeToolDefinition());
     tools.push(globToolDefinition());
@@ -946,10 +948,76 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                     Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
                 }
             }
+            else if (marker.name === "working" || marker.name === "memory-hotreload") {
+                // Hot-reload marker: @@working:8k,page:12k@@ or @@memory-hotreload:working=8k,page=12k@@
+                // Parse "working" param from arg (format: "8k,page:12k" or "8k,page=12k")
+                const config = {};
+                // Format 1: @@working:8k,page:12k@@ → marker.name="working", marker.arg="8k,page:12k"
+                if (marker.name === "working") {
+                    // Parse working=8k, page=12k
+                    const parts = marker.arg.split(/[,:]/);
+                    let workingVal;
+                    let pageVal;
+                    // parts[0] is the working value, look for page after comma/colon
+                    workingVal = parts[0]?.trim();
+                    for (let i = 1; i < parts.length; i++) {
+                        const p = parts[i].trim();
+                        if (p.startsWith("page")) {
+                            pageVal = parts[i + 1]?.trim();
+                            break;
+                        }
+                        else if (!p.match(/^\d+/)) {
+                            // Non-numeric, might be the page value
+                            if (i === 1)
+                                pageVal = p;
+                        }
+                    }
+                    if (workingVal) {
+                        const wnum = parseFloat(workingVal) * 1000;
+                        if (!isNaN(wnum))
+                            config.workingMemoryTokens = Math.round(wnum);
+                    }
+                    if (pageVal) {
+                        const pnum = parseFloat(pageVal) * 1000;
+                        if (!isNaN(pnum))
+                            config.pageSlotTokens = Math.round(pnum);
+                    }
+                }
+                // Apply to memory if VirtualMemory
+                if ("hotReloadConfig" in memory && typeof memory.hotReloadConfig === "function") {
+                    const result = memory.hotReloadConfig(config);
+                    Logger.info(`Stream marker: memory hotreload — ${result}`);
+                }
+            }
             else if (marker.name === "memory" && marker.arg) {
-                // Memory hot-swap
-                void swapMemory(marker.arg);
-                Logger.info(`Stream marker: ${marker.name}('${marker.arg}')`);
+            }
+            else if (marker.name === "memory-tune" && marker.arg) {
+                // Hot-tune VirtualMemory: 🧠
+                // Parse key:value pairs separated by commas
+                const tuneParams = {};
+                for (const pair of marker.arg.split(",")) {
+                    const [key, val] = pair.trim().split(":");
+                    if (key && val) {
+                        let numVal = parseInt(val);
+                        if (val.toLowerCase().endsWith("k")) {
+                            numVal = parseInt(val.slice(0, -1)) * 1000;
+                        }
+                        else if (val.toLowerCase().endsWith("m")) {
+                            numVal = parseInt(val.slice(0, -1)) * 1000 * 1000;
+                        }
+                        if (!isNaN(numVal) && numVal > 0) {
+                            tuneParams[key.toLowerCase()] = numVal;
+                        }
+                    }
+                }
+                // Apply to memory controller if it supports hot-tuning
+                if (Object.keys(tuneParams).length > 0 && "tune" in memory && typeof memory.tune === "function") {
+                    memory.tune(tuneParams);
+                    Logger.info(`Stream marker: memory-tune(${marker.arg})`);
+                }
+                else {
+                    Logger.warn(`Stream marker: memory-tune — memory controller doesn't support hot-tuning`);
+                }
             }
         };
         // Select model tier based on current thinking budget (unless agent pinned a model explicitly)
@@ -992,6 +1060,12 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
             spendMeter.setModel(activeModel);
             spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
             Logger.info(spendMeter.format());
+            // Check if budget exceeded
+            const budgetErr = spendMeter.checkBudget(cfg.maxBudgetUsd);
+            if (budgetErr) {
+                Logger.error(`💰 ${budgetErr}`);
+                throw new Error(`Budget limit exceeded: ${budgetErr}`);
+            }
         }
         // Accumulate clean text (markers stripped) for the return value
         const cleanText = markerParser.getCleanText();
@@ -1162,6 +1236,9 @@ Do not get stuck calling listen repeatedly.`
                 else if (fnName === "compact_context") {
                     result = await executeCompactContext(fnArgs, memory);
                 }
+                else if (fnName === "cleanup_sessions") {
+                    result = await executeCleanupSessions(fnArgs);
+                }
                 else if (fnName === "Read") {
                     result = executeRead(fnArgs);
                 }
@@ -1212,17 +1289,6 @@ Do not get stuck calling listen repeatedly.`
                 await violations.inject(memory, "same_tool_loop", loopTool);
             }
         }
-        // Check for same-tool loop (consecutive identical tool calls)
-        if (sameToolLoop) {
-            const toolNames = output.toolCalls.map(tc => tc.function.name);
-            if (sameToolLoop.check(toolNames)) {
-                await memory.add({
-                    role: "user",
-                    from: "System",
-                    content: `[SYSTEM] You have called ${toolNames[0]} ${sameToolLoop['threshold']} times consecutively. This is a same-tool loop. Do one work slice (bash/file tools/git) now before calling ${toolNames[0]} again.`,
-                });
-            }
-        }
         // Auto-save periodically in persistent mode to survive SIGTERM/crashes
         if (cfg.persistent && cfg.sessionPersistence && sessionId && round > 0 && round % AUTO_SAVE_INTERVAL === 0) {
             try {
@@ -1259,6 +1325,12 @@ Do not get stuck calling listen repeatedly.`
             spendMeter.setModel(activeModel);
             spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
             Logger.info(spendMeter.format());
+            // Check if budget exceeded
+            const budgetErr2 = spendMeter.checkBudget(cfg.maxBudgetUsd);
+            if (budgetErr2) {
+                Logger.error(`💰 ${budgetErr2}`);
+                throw new Error(`Budget limit exceeded: ${budgetErr2}`);
+            }
         }
         if (finalOutput.text)
             finalText += finalOutput.text;

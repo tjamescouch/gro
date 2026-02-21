@@ -190,7 +190,6 @@ interface GroConfig {
   batchSummarization: boolean;
   mcpServers: Record<string, McpServerConfig>;
 }
-  maxBudgetUsd: number | null;
 
 function loadMcpServers(mcpConfigPaths: string[]): Record<string, McpServerConfig> {
   // If explicit --mcp-config paths given, use those
@@ -424,7 +423,6 @@ function loadConfig(): GroConfig {
     batchSummarization: flags.batchSummarization === "true",
     showDiffs: flags.showDiffs === "true",
     mcpServers,
-    maxBudgetUsd: flags.maxBudgetUsd ? parseFloat(flags.maxBudgetUsd) : null,
   };
 }
 
@@ -1046,13 +1044,6 @@ async function executeTurn(
       spendMeter.setModel(activeModel);
       spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
       Logger.info(spendMeter.format());
-
-      // Check if budget exceeded
-      const budgetErr = spendMeter.checkBudget(cfg.maxBudgetUsd);
-      if (budgetErr) {
-        Logger.error(`💰 ${budgetErr}`);
-        throw new Error(`Budget limit exceeded: ${budgetErr}`);
-      }
     }
 
     // Accumulate clean text (markers stripped) for the return value
@@ -1325,13 +1316,6 @@ Do not get stuck calling listen repeatedly.`
       spendMeter.setModel(activeModel);
       spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
       Logger.info(spendMeter.format());
-
-      // Check if budget exceeded
-      const budgetErr2 = spendMeter.checkBudget(cfg.maxBudgetUsd);
-      if (budgetErr2) {
-        Logger.error(`💰 ${budgetErr2}`);
-        throw new Error(`Budget limit exceeded: ${budgetErr2}`);
-      }
     }
     if (finalOutput.text) finalText += finalOutput.text;
     await memory.add({ role: "assistant", from: "Assistant", content: finalOutput.text || "" });

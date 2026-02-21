@@ -189,10 +189,10 @@ interface GroConfig {
   showDiffs: boolean;
   batchSummarization: boolean;
   mcpServers: Record<string, McpServerConfig>;
-  maxBudgetUsd: number | null;
 }
 
 function loadMcpServers(mcpConfigPaths: string[]): Record<string, McpServerConfig> {
+  // If explicit --mcp-config paths given, use those
   if (mcpConfigPaths.length > 0) {
     const merged: Record<string, McpServerConfig> = {};
     for (const p of mcpConfigPaths) {
@@ -423,7 +423,6 @@ function loadConfig(): GroConfig {
     batchSummarization: flags.batchSummarization === "true",
     showDiffs: flags.showDiffs === "true",
     mcpServers,
-    maxBudgetUsd: flags.maxBudgetUsd ? parseFloat(flags.maxBudgetUsd) : null,
   };
 }
 
@@ -1045,13 +1044,6 @@ async function executeTurn(
       spendMeter.setModel(activeModel);
       spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
       Logger.info(spendMeter.format());
-
-      // Check if budget exceeded
-      const budgetErr = spendMeter.checkBudget(cfg.maxBudgetUsd);
-      if (budgetErr) {
-        Logger.error(`💰 ${budgetErr}`);
-        throw new Error(`Budget limit exceeded: ${budgetErr}`);
-      }
     }
 
     // Accumulate clean text (markers stripped) for the return value
@@ -1276,6 +1268,18 @@ Do not get stuck calling listen repeatedly.`
       }
     }
 
+    // Check for same-tool loop (consecutive identical tool calls)
+    if (sameToolLoop) {
+      const toolNames = output.toolCalls.map(tc => tc.function.name);
+      if (sameToolLoop.check(toolNames)) {
+        await memory.add({
+          role: "user",
+          from: "System",
+          content: `[SYSTEM] You have called ${toolNames[0]} ${sameToolLoop['threshold']} times consecutively. This is a same-tool loop. Do one work slice (bash/file tools/git) now before calling ${toolNames[0]} again.`,
+        });
+      }
+    }
+
     // Auto-save periodically in persistent mode to survive SIGTERM/crashes
     if (cfg.persistent && cfg.sessionPersistence && sessionId && round > 0 && round % AUTO_SAVE_INTERVAL === 0) {
       try {
@@ -1312,13 +1316,6 @@ Do not get stuck calling listen repeatedly.`
       spendMeter.setModel(activeModel);
       spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
       Logger.info(spendMeter.format());
-
-      // Check if budget exceeded
-      const budgetErr2 = spendMeter.checkBudget(cfg.maxBudgetUsd);
-      if (budgetErr2) {
-        Logger.error(`💰 ${budgetErr2}`);
-        throw new Error(`Budget limit exceeded: ${budgetErr2}`);
-      }
     }
     if (finalOutput.text) finalText += finalOutput.text;
     await memory.add({ role: "assistant", from: "Assistant", content: finalOutput.text || "" });

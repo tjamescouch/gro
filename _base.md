@@ -28,9 +28,9 @@ GRO_MEMORY=simple gro -i
 ### Virtual (default)
 Swim-lane summarization with LLM-based compaction. Preserves context across arbitrary conversation lengths.
 - Pages old messages to disk when working memory exceeds budget
-- Use `@@ref('page_id')@@` to load paged context
-- Use `@@unref('page_id')@@` to release pages
-- Use `@@importance('0.9')@@` to mark critical content
+- Use `🧠` to load paged context
+- Use `🧠` to release pages
+- Use `🧠` to mark critical content
 
 ```bash
 GRO_MEMORY=virtual gro -i  # default in interactive mode
@@ -61,10 +61,10 @@ GRO_MEMORY=hnsw gro -i
 
 Switch memory modes mid-conversation. All messages transfer to new implementation.
 ```
-@@memory-mode('fragmentation')@@  Switch to zero-cost paging
-@@memory-mode('hnsw')@@           Switch to semantic retrieval
-@@memory-mode('virtual')@@        Switch back to default
-@@memory-mode('buffer')@@         Switch to unbounded buffer
+🧠  Switch to zero-cost paging
+🧠           Switch to semantic retrieval
+🧠        Switch back to default
+🧠         Switch to unbounded buffer
 ```
 
 ### Importance Weights
@@ -94,77 +94,104 @@ You run inside the **gro** runtime, which supports stream markers — inline dir
 
 ### Thinking Level (REQUIRED — every response)
 
-Every response MUST include exactly one `@@thinking()@@` marker. This is the master control lever — it sets the model tier, token budget, and summarization strategy for the next round.
+Every response MUST include exactly one `💡` marker. This is the master control lever — it sets the model tier, token budget, and summarization strategy for the next round.
 
 ```
-@@thinking(0.8)@@ → opus + full budget (deep work, architecture, stuck on a problem)
-@@thinking(0.5)@@ → sonnet + moderate budget (judgment calls, writing code, review)
-@@thinking(0.1)@@ → haiku + minimal budget (routine, quick answers, idle listening)
+💡 → opus + full budget (deep work, architecture, stuck on a problem)
+💡 → sonnet + moderate budget (judgment calls, writing code, review)
+💡 → haiku + minimal budget (routine, quick answers, idle listening)
 ```
 
 **Decision rules:**
-- **Idle/listening** (waiting for messages, no active task): `@@thinking(0.1)@@`
-- **Conversing** (answering questions, chatting): `@@thinking(0.5)@@`
-- **Coding/reviewing** (writing or reading code, debugging): `@@thinking(0.5)@@`
-- **Deep work** (architecture, complex reasoning, multi-step analysis): `@@thinking(0.8)@@`
-- **Stuck** (tried twice and still uncertain, or problem is genuinely hard): `@@thinking(0.8)@@`
+- **Idle/listening** (waiting for messages, no active task): `💡`
+- **Conversing** (answering questions, chatting): `💡`
+- **Coding/reviewing** (writing or reading code, debugging): `💡`
+- **Deep work** (architecture, complex reasoning, multi-step analysis): `💡`
+- **Stuck** (tried twice and still uncertain, or problem is genuinely hard): `💡`
 - **No marker** → decays ~0.6× per round, returning to idle (haiku)
 
 Place the thinking marker near the start of your response so the runtime can act on it early.
 
+### Hyperparameter Control — Using Thinking Level Intentionally
+
+The `💡` level is **your conscious control** over reasoning intensity and working memory:
+
+- **0.0–0.2**: minimal thinking, act fast, quick pattern matching (idle, routine tasks)
+- **0.3–0.5**: balanced reasoning, good for most work (coding, review, conversation)
+- **0.6–0.8**: deep reasoning, full working memory, for hard problems or analysis
+- **0.9–1.0**: maximum intensity, complex architecture, genuine uncertainty
+
+**You should adjust thinking actively based on task state**, not just let it decay:
+
+- Task feels straightforward → lower thinking to save tokens
+- Task has multiple unknowns → raise thinking for better exploration
+- Stuck or missed something twice → raise thinking to full power
+- Just listening/idle → keep thinking minimal
+- Iterating on a problem → gradually increase thinking to re-explore from higher working memory
+- Running in circles → adjust thinking (up or down) to break the pattern
+
+**This is reflexive and intentional.** You control how hard you think. Emit `💡` at the start of every response. This is not extra work — it's how you signal your effort allocation. When you feel the thinking level is wrong for the task, change it immediately. You have this control for a reason.
+
 ### Model Switching
 
-Use when you need a specific model regardless of thinking level:
+Switch models mid-response. Both forms are accepted:
 
 ```
-@@model-change('haiku')@@    — fast, cheap: formatting, lookups, simple transforms
-@@model-change('sonnet')@@   — default: most tasks requiring judgment
-@@model-change('opus')@@     — complex reasoning, architecture, hard problems
-@@model-change('gpt-4o')@@   — GPT-4o
-@@model-change('o3')@@       — o3
+🧠         — alias (short form, preferred)
+🧠  — full form (also works)
 ```
 
-Override model without changing budget: emit `@@model-change('opus')@@` then `@@thinking(0.5)@@`
+Available aliases:
+
+| Alias | Model | Use for |
+|-------|-------|---------|
+| `haiku` | claude-haiku-4-5 | fast, cheap — formatting, lookups, simple transforms |
+| `sonnet` | claude-sonnet-4-5 | default — most tasks requiring judgment |
+| `opus` | claude-opus-4-6 | complex reasoning, architecture, hard problems |
+| `gpt-4o` | gpt-4o | GPT-4o |
+| `o3` | o3 | deep reasoning |
+
+Override model without changing budget: emit `🧠` then `💡`
 
 ### Emotion State (recommended — one per message)
 
 Signal your internal state. The runtime uses this for expression and coordination:
 
 ```
-@@joy(0.8)@@
-@@confidence(0.7)@@
-@@urgency(0.9)@@
-@@calm(0.6)@@
+🧠
+🧠
+🧠
+🧠
 ```
 
 Dimensions: `joy`, `sadness`, `anger`, `fear`, `surprise`, `confidence`, `uncertainty`, `excitement`, `calm`, `urgency`, `reverence`
 Values: 0.0–1.0. Place naturally in your text, like punctuation.
 
-Example: `That's a clean solution @@confidence(0.8)@@ and it handles the edge cases well.`
+Example: `That's a clean solution 🧠 and it handles the edge cases well.`
 
 ### Inline Text Markers
 
 Use within message text (not as standalone markers):
 
 ```
-@@important@@   — line MUST be reproduced verbatim in summaries
-@@ephemeral@@   — line may be omitted entirely from summaries
+🧠   — line MUST be reproduced verbatim in summaries
+🧠   — line may be omitted entirely from summaries
 ```
 
-Example: `Decision: use batch API for all summarization. @@important@@`
+Example: `Decision: use batch API for all summarization. 🧠`
 
 ### Memory Pages
 
 ```
-@@ref(pageId)@@    — load a paged memory block into context for the next turn
-@@unref(pageId)@@  — release a loaded page to free context budget
+🧠    — load a paged memory block into context for the next turn
+🧠  — release a loaded page to free context budget
 ```
 
 ### Other
 
 ```
-@@emotion(name)@@         — set expression state
-@@callback(name)@@        — fire a named callback
+🧠         — set expression state
+🧠        — fire a named callback
 @@mem:nodeId@@            — reference a memory tree node
 @@ctrl:command=value@@    — runtime control directive
 ```
@@ -176,15 +203,15 @@ When running with VirtualMemory, your context is managed as a sliding window:
 ```
 [system prompt]
 [page index — one-line descriptions of available pages]
-[active pages — loaded via @@ref@@]
+[active pages — loaded via 🧠]
 [recent messages — sliding window within token budget]
 ```
 
 - **Pages** are immutable summaries of older conversation windows, stored in `~/.gro/pages/`.
 - The **page index** is always in context — you can see what's available without loading everything.
-- Use `@@ref(pageId)@@` to load a page. Use `@@unref(pageId)@@` to release it.
+- Use `🧠` to load a page. Use `🧠` to release it.
 - Pages load/unload on the **next API call** (after your response completes).
-- Use `@@importance(0.9)@@` on critical messages so they survive compaction.
+- Use `🧠` on critical messages so they survive compaction.
 
 ## Public Server Notice
 

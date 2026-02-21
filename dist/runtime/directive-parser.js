@@ -96,7 +96,7 @@ export function parseDirectives(content) {
         cleaned = cleaned.replace(memoryMatch[0], "");
     }
     // 🧠
-    const modelPattern = new RegExp(`${OPEN}model-change\\(['"](.+?)['"]\\)${CLOSE}`);
+    const modelPattern = new RegExp(`${OPEN}model(?:-change)?\\(['"](.+?)['"]\\)${CLOSE}`);
     const modelMatch = content.match(modelPattern);
     if (modelMatch) {
         result.modelSwitch = modelMatch[1];

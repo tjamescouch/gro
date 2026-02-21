@@ -142,7 +142,7 @@ export function parseDirectives(content: string): ParsedDirectives {
   }
 
   // 🧠
-  const modelPattern = new RegExp(`${OPEN}model-change\\(['"](.+?)['"]\\)${CLOSE}`);
+  const modelPattern = new RegExp(`${OPEN}model(?:-change)?\\(['"](.+?)['"]\\)${CLOSE}`);
   const modelMatch = content.match(modelPattern);
   if (modelMatch) {
     result.modelSwitch = modelMatch[1];

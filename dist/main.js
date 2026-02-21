@@ -129,7 +129,6 @@ function discoverExtensions(mcpConfigPaths) {
     return extensions;
 }
 function loadMcpServers(mcpConfigPaths) {
-    // If explicit --mcp-config paths given, use those
     if (mcpConfigPaths.length > 0) {
         const merged = {};
         for (const p of mcpConfigPaths) {
@@ -434,6 +433,7 @@ function loadConfig() {
         batchSummarization: flags.batchSummarization === "true",
         showDiffs: flags.showDiffs === "true",
         mcpServers,
+        maxBudgetUsd: flags.maxBudgetUsd ? parseFloat(flags.maxBudgetUsd) : null,
     };
 }
 function inferProvider(explicit, model) {
@@ -1019,6 +1019,12 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
             spendMeter.setModel(activeModel);
             spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
             Logger.info(spendMeter.format());
+            // Check if budget exceeded
+            const budgetErr = spendMeter.checkBudget(cfg.maxBudgetUsd);
+            if (budgetErr) {
+                Logger.error(`💰 ${budgetErr}`);
+                throw new Error(`Budget limit exceeded: ${budgetErr}`);
+            }
         }
         // Accumulate clean text (markers stripped) for the return value
         const cleanText = markerParser.getCleanText();
@@ -1278,6 +1284,12 @@ Do not get stuck calling listen repeatedly.`
             spendMeter.setModel(activeModel);
             spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
             Logger.info(spendMeter.format());
+            // Check if budget exceeded
+            const budgetErr2 = spendMeter.checkBudget(cfg.maxBudgetUsd);
+            if (budgetErr2) {
+                Logger.error(`💰 ${budgetErr2}`);
+                throw new Error(`Budget limit exceeded: ${budgetErr2}`);
+            }
         }
         if (finalOutput.text)
             finalText += finalOutput.text;

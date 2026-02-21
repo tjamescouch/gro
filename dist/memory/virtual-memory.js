@@ -25,16 +25,16 @@ function getSummarizerPromptBase() {
 }
 const DEFAULTS = {
     pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
-    pageSlotTokens: 30_000,
-    workingMemoryTokens: 30_000,
-    assistantWeight: 8,
-    userWeight: 4,
-    systemWeight: 3,
-    toolWeight: 1,
-    avgCharsPerToken: 2.8,
-    minRecentPerLane: 4,
-    highRatio: 0.75,
-    lowRatio: 0.50,
+    pageSlotTokens: parseInt(process.env.GRO_PAGE_SLOT_TOKENS ?? "6000"),
+    workingMemoryTokens: parseInt(process.env.GRO_WORKING_MEMORY_TOKENS ?? "6000"),
+    assistantWeight: parseInt(process.env.GRO_ASSISTANT_WEIGHT ?? "8"),
+    userWeight: parseInt(process.env.GRO_USER_WEIGHT ?? "4"),
+    systemWeight: parseInt(process.env.GRO_SYSTEM_WEIGHT ?? "3"),
+    toolWeight: parseInt(process.env.GRO_TOOL_WEIGHT ?? "1"),
+    avgCharsPerToken: parseFloat(process.env.GRO_AVG_CHARS_PER_TOKEN ?? "2.8"),
+    minRecentPerLane: parseInt(process.env.GRO_MIN_RECENT_PER_LANE ?? "4"),
+    highRatio: parseFloat(process.env.GRO_HIGH_RATIO ?? "0.75"),
+    lowRatio: parseFloat(process.env.GRO_LOW_RATIO ?? "0.50"),
     systemPrompt: "",
     summarizerModel: "claude-haiku-4-5",
     enableBatchSummarization: false,
@@ -193,6 +193,26 @@ export class VirtualMemory extends AgentMemory {
                     Logger.warn(`VirtualMemory.tune: unknown parameter '${key}'`);
             }
         }
+    }
+    /**
+     * Hot-reload memory configuration from marker (e.g. @@working:8k,page:8k@@).
+     * Parses numeric k-suffix (e.g. "8k" → 8000) and applies to working/page token budgets.
+     * Does NOT trigger compaction — preserves all loaded pages.
+     */
+    hotReloadConfig(config) {
+        const changes = [];
+        if (config.workingMemoryTokens !== undefined) {
+            const old = this.cfg.workingMemoryTokens;
+            this.cfg.workingMemoryTokens = config.workingMemoryTokens;
+            this.baseWorkingMemoryTokens = config.workingMemoryTokens; // Reset baseline
+            changes.push(`workingMemoryTokens: ${old} → ${config.workingMemoryTokens}`);
+        }
+        if (config.pageSlotTokens !== undefined) {
+            const old = this.cfg.pageSlotTokens;
+            this.cfg.pageSlotTokens = config.pageSlotTokens;
+            changes.push(`pageSlotTokens: ${old} → ${config.pageSlotTokens}`);
+        }
+        return changes.length > 0 ? changes.join("; ") : "No config changes";
     }
     // --- Persistence ---
     async load(id) {

@@ -1043,6 +1043,8 @@ async function executeTurn(
           Logger.info(`Stream marker: memory hotreload — ${result}`);
         }
       } else if (marker.name === "memory" && marker.arg) {
+        void swapMemory(marker.arg);
+        Logger.info(`Stream marker: memory('${marker.arg}') triggered`);
      } else if (marker.name === "memory-tune" && marker.arg) {
        // Hot-tune VirtualMemory: 🧠
        // Parse key:value pairs separated by commas

@@ -6,7 +6,7 @@ import { OutputParser } from "./subprocess/output-parser.js";
 function main() {
     const config = parseConfig(process.argv.slice(2));
     const screen = createScreen();
-    const { chatPanel, toolsPanel, logsPanel, inputBox, helpBar, focusables } = createLayout(screen, config);
+    const { chatPanel, toolsPanel, logsPanel, inputBox, focusables } = createLayout(screen, config);
     const parser = new OutputParser();
     const subprocess = new SubprocessManager(config, {
         onStdout(chunk) {
@@ -45,7 +45,6 @@ function main() {
             inputBox.style.border = { fg: "green" };
             inputBox.setLabel(" Type here > ");
             screen.render();
-            // Re-activate input
             inputBox.readInput();
         },
     });
@@ -63,18 +62,20 @@ function main() {
         screen.render();
         subprocess.sendPrompt(text);
     }
-    // Handle enter key for submission
-    inputBox.key("enter", () => {
-        submitInput();
-    });
-    // When textarea submits or cancels, re-activate it
-    inputBox.on("submit", () => {
+    // ── Enter: submit ─────────────────────────────────────────────────────────
+    inputBox.key("enter", () => { submitInput(); });
+    // ── Paste handler: insert clipboard text at cursor ────────────────────────
+    function handlePaste(text) {
+        const current = inputBox.getValue();
+        inputBox.setValue(current + text);
+        screen.render();
+        inputBox.focus();
         inputBox.readInput();
-    });
-    inputBox.on("cancel", () => {
-        inputBox.readInput();
-    });
-    // Click on input box should activate it
+    }
+    // Re-activate textarea after submit/cancel
+    inputBox.on("submit", () => { inputBox.readInput(); });
+    inputBox.on("cancel", () => { inputBox.readInput(); });
+    // Click to focus input
     inputBox.on("click", () => {
         inputBox.focus();
         inputBox.readInput();
@@ -83,14 +84,14 @@ function main() {
         subprocess.kill();
         screen.destroy();
         process.exit(0);
-    });
+    }, handlePaste);
     // Start with input active
     inputBox.focus();
     inputBox.readInput();
-    logsPanel.appendLog(`grotui v0.1.0`, "info");
+    logsPanel.appendLog("grotui v0.1.0", "info");
     logsPanel.appendLog(`cmd: ${config.command} ${config.args.join(" ")}`, "info");
     logsPanel.appendLog("", "info");
-    logsPanel.appendLog("Enter: send | Tab: switch panel", "info");
+    logsPanel.appendLog("↑↓/jk: scroll  Tab: focus  Ctrl+M: copy mode  Ctrl+V: paste", "info");
     logsPanel.appendLog("Ctrl+C: quit", "info");
     screen.render();
 }

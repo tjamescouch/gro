@@ -1,20 +1,20 @@
 /**
  * Stream Marker Parser
  *
- * Intercepts \@@name('arg')\@@ patterns in the token stream.
+ * Intercepts @@name('arg')@@ patterns in the token stream.
  * Generic architecture — any marker type can register a handler.
  *
  * Markers are replaced with emoji indicators in the output stream:
- *   💡 for thinking markers (think, relax, thinking)
+ *   💡 for thinking markers (think, relax, zzz, thinking)
  *   🧠 for all other markers (model-change, importance, ref, etc.)
  *
  * When a complete marker is detected, the registered handler fires.
  *
  * Built-in marker types:
- *   \@@model-change('sonnet')\@@  — switch the active model mid-stream
- *   \@@callback('name')\@@       — fire a named callback
- *   \@@emotion('happy')\@@       — set facial expression / emotion state
- *   \@@importance('0.9')\@@      — tag message importance (0.0-1.0) for memory paging priority
+ *   @@model-change('sonnet')@@  — switch the active model mid-stream
+ *   @@callback('name')@@       — fire a named callback
+ *   @@emotion('happy')@@       — set facial expression / emotion state
+ *   @@importance('0.9')@@      — tag message importance (0.0-1.0) for memory paging priority
  *
  * Usage:
  *   const parser = createMarkerParser({ onMarker: (name, arg) => { ... } });
@@ -26,33 +26,33 @@
 import { Logger } from "./logger.js";
 /**
  * Regex for matching complete markers.
- * Supports: @@name('arg')@@ and @@name("arg")@@ and @@name(arg)@@ and @@name@@
+ * Supports: 🧠 and 🧠 and 🧠 and 🧠
  */
 /**
- * Marker regex: \@@name('arg')\@@ or \@@name("arg")\@@ or \@@name\@@
+ * Marker regex: @@name('arg')@@ or @@name("arg")@@ or @@name@@
  * Non-greedy matching prevents consuming URLs like "http://..." incorrectly.
- * Supports escaped markers: \@@ → treated as literal text.
+ * Supports escaped markers: @@ → treated as literal text.
  */
 const MARKER_RE = /(?<!\\)@@([a-zA-Z][a-zA-Z0-9_-]*)(?:\((?:'([^']*?)'|"([^"]*?)"|([^)]*?))\))?@@/g;
 /**
- * Regex to detect escaped markers (\@@) — these should NOT be processed.
+ * Regex to detect escaped markers (@@) — these should NOT be processed.
  */
-const ESCAPED_MARKER_RE = /\\@@/g;
+const ESCAPED_MARKER_RE = /\@@/g;
 /** Partial marker detection — we might be mid-stream in a marker */
 const PARTIAL_MARKER_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*)?$/;
 /** Thinking-related marker names get 💡, everything else gets 🧠 */
-const THINKING_MARKERS = new Set(["think", "relax", "thinking"]);
+const THINKING_MARKERS = new Set(["think", "relax", "zzz", "thinking"]);
 /**
  * Reserved marker names — cannot be used as emotion dimensions.
  * Prevents collisions with built-in control markers.
  */
 const RESERVED_MARKERS = new Set([
-    "model-change", "ref", "unref", "importance", "thinking", "think", "relax",
+    "model-change", "ref", "unref", "importance", "thinking", "think", "relax", "zzz",
     "memory", "callback", "emotion", "dim", "working", "memory-hotreload", "learn",
     "recall"
 ]);
 /**
- * Emotion dimensions — valid names for \@@dim:value\@@ or \@@dim('0.5')\@@ markers.
+ * Emotion dimensions — valid names for @@dim:value@@ or @@dim('0.5')@@ markers.
  * Prevents misuse of reserved keywords.
  */
 const EMOTION_DIMS = new Set([
@@ -88,11 +88,11 @@ function validateMarker(name, arg) {
     return { valid: true };
 }
 /**
- * Strip escape sequences \@@ → @@ in the output.
+ * Strip escape sequences @@ → @@ in the output.
  * Call this on final clean text to unescape literal @@ markers.
  */
 function unescapeMarkers(text) {
-    return text.replace(/\\@@/g, "@@");
+    return text.replace(/\@@/g, "@@");
 }
 export function extractMarkers(text, onMarker) {
     let cleaned = "";
@@ -100,7 +100,7 @@ export function extractMarkers(text, onMarker) {
     const regex = new RegExp(MARKER_RE.source, "g");
     let match;
     while ((match = regex.exec(text)) !== null) {
-        // Check for escaped marker — if \@@ precedes, skip it
+        // Check for escaped marker — if @@ precedes, skip it
         if (match.index > 0 && text[match.index - 1] === '\\') {
             // This is an escaped marker — treat as literal text
             cleaned += text.slice(lastIndex, match.index + match[0].length);
@@ -145,7 +145,7 @@ export function createMarkerParser(opts) {
         const regex = new RegExp(MARKER_RE.source, "g");
         let match;
         while ((match = regex.exec(buffer)) !== null) {
-            // Check for escaped marker — if \@@ precedes, treat as literal
+            // Check for escaped marker — if @@ precedes, treat as literal
             if (match.index > 0 && buffer[match.index - 1] === '\\') {
                 // Skip this match, it's escaped
                 const before = buffer.slice(lastIndex, match.index + match[0].length);

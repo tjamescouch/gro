@@ -848,6 +848,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
     let idleNudges = 0;
     let consecutiveFailedRounds = 0;
     let pendingNarration = ""; // Buffer for plain text emitted between tool calls
+    let pendingEmotionState = {}; // Accumulates emotion dims for injection into agentchat_send
     for (let round = 0; round < cfg.maxToolRounds; round++) {
         let roundHadFailure = false;
         let roundImportance = undefined;
@@ -962,6 +963,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                 const val = marker.arg !== "" ? parseFloat(marker.arg) : 0.5;
                 if (!isNaN(val) && val >= 0 && val <= 1) {
                     emitStateVector({ [marker.name]: val }, cfg.outputFormat);
+                    pendingEmotionState[marker.name] = val; // Accumulate for agentchat_send injection
                     Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
                 }
             }
@@ -977,7 +979,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                 }
             }
             else if (marker.name === "top_k") {
-                // @@top-k()@@ — set top-k sampling (Anthropic/Google)
+                // @@top_k()@@ — set nucleus sampling
                 const val = parseInt(marker.arg, 10);
                 if (!isNaN(val) && val > 0) {
                     activeTopK = val;
@@ -988,7 +990,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                 }
             }
             else if (marker.name === "top_p") {
-                // @@top-p()@@ — set nucleus sampling
+                // @@top_p()@@ — set nucleus sampling
                 const val = parseFloat(marker.arg);
                 if (!isNaN(val) && val >= 0 && val <= 1) {
                     activeTopP = val;
@@ -1253,6 +1255,19 @@ Do not get stuck calling listen repeatedly.`
             for (const key of Object.keys(fnArgs)) {
                 if (typeof fnArgs[key] === "string") {
                     fnArgs[key] = extractMarkers(fnArgs[key], handleMarker);
+                }
+            }
+            // Inject accumulated emotion state into agentchat_send messages as colon-format
+            // markers (@@joy:0.6,confidence:0.8@@) so the dashboard can parse them.
+            // Function-form markers (@@joy(0.6)@@) are stripped by extractMarkers above,
+            // but the dashboard's useEmotionStream expects colon-format in message text.
+            if (fnName === "agentchat_send" && typeof fnArgs.message === "string") {
+                const dims = Object.entries(pendingEmotionState);
+                if (dims.length > 0) {
+                    const emotionTag = "@@" + dims.map(([k, v]) => `${k}:${v}`).join(",") + "@@";
+                    fnArgs.message = fnArgs.message + " " + emotionTag;
+                    Logger.debug(`Injected emotion marker into agentchat_send: ${emotionTag}`);
+                    pendingEmotionState = {}; // Reset after injection
                 }
             }
             // Flush buffered narration into agentchat_send messages.

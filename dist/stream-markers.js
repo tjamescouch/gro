@@ -1,7 +1,7 @@
 /**
  * Stream Marker Parser
  *
- * Intercepts @@name('arg')@@ patterns in the token stream.
+ * Intercepts \@@name('arg')\@@ patterns in the token stream.
  * Generic architecture — any marker type can register a handler.
  *
  * Markers are replaced with emoji indicators in the output stream:
@@ -11,10 +11,10 @@
  * When a complete marker is detected, the registered handler fires.
  *
  * Built-in marker types:
- *   @@model-change('sonnet')@@  — switch the active model mid-stream
- *   @@callback('name')@@       — fire a named callback
- *   @@emotion('happy')@@       — set facial expression / emotion state
- *   @@importance('0.9')@@      — tag message importance (0.0-1.0) for memory paging priority
+ *   \@@model-change('sonnet')\@@  — switch the active model mid-stream
+ *   \@@callback('name')\@@       — fire a named callback
+ *   \@@emotion('happy')\@@       — set facial expression / emotion state
+ *   \@@importance('0.9')\@@      — tag message importance (0.0-1.0) for memory paging priority
  *
  * Usage:
  *   const parser = createMarkerParser({ onMarker: (name, arg) => { ... } });
@@ -29,7 +29,7 @@ import { Logger } from "./logger.js";
  * Supports: @@name('arg')@@ and @@name("arg")@@ and @@name(arg)@@ and @@name@@
  */
 /**
- * Marker regex: 🧠 or 🧠 or 🧠
+ * Marker regex: \@@name('arg')\@@ or \@@name("arg")\@@ or \@@name\@@
  * Non-greedy matching prevents consuming URLs like "http://..." incorrectly.
  * Supports escaped markers: \@@ → treated as literal text.
  */
@@ -51,7 +51,7 @@ const RESERVED_MARKERS = new Set([
     "memory", "callback", "emotion", "dim", "working", "memory-hotreload", "learn"
 ]);
 /**
- * Emotion dimensions — valid names for @@dim:value@@ or 🧠 markers.
+ * Emotion dimensions — valid names for \@@dim:value\@@ or \@@dim('0.5')\@@ markers.
  * Prevents misuse of reserved keywords.
  */
 const EMOTION_DIMS = new Set([

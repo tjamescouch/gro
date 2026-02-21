@@ -158,10 +158,10 @@ export function makeStreamingOpenAiDriver(cfg) {
             wireMessages.push(msg);
         }
         const payload = { model, messages: wireMessages, stream: true };
-
         if (tools) {
-            payload.tools = tools.map(t => {
-                if (t.type === "function" && t.function) return t;
+            payload.tools = tools.map((t) => {
+                if (t.type === "function" && t.function)
+                    return t;
                 return {
                     type: "function",
                     function: {

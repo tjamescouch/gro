@@ -184,7 +184,7 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     const payload: any = { model, messages: wireMessages, stream: true };
 
     if (tools) {
-      payload.tools = tools.map(t => {
+      payload.tools = tools.map((t: { type: string; function: { name: any; description: any; parameters: any; }; name: any; description: any; inputSchema: any; parameters: any; }) => {
           if (t.type === "function" && t.function) return t;
           return {
               type: "function",

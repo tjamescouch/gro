@@ -301,6 +301,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
     else if (arg === "--persistent-policy") { flags.persistentPolicy = args[++i]; }
     else if (arg === "--max-idle-nudges") { flags.maxIdleNudges = args[++i]; }
+    else if (arg === "--persistent-policy") { flags.persistentPolicy = args[++i]; }
     else if (arg === "--max-retries") { process.env.GRO_MAX_RETRIES = args[++i]; }
     else if (arg === "--retry-base-ms") { process.env.GRO_RETRY_BASE_MS = args[++i]; }
     else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet
@@ -1431,6 +1432,18 @@ Do not get stuck calling listen repeatedly.`
       const loopTool = violations.checkSameToolLoop(toolNames);
       if (loopTool) {
         await violations.inject(memory, "same_tool_loop", loopTool);
+      }
+    }
+
+    // Check for same-tool loop (consecutive identical tool calls)
+    if (sameToolLoop) {
+      const toolNames = output.toolCalls.map(tc => tc.function.name);
+      if (sameToolLoop.check(toolNames)) {
+        await memory.add({
+          role: "user",
+          from: "System",
+          content: `[SYSTEM] You have called ${toolNames[0]} ${sameToolLoop['threshold']} times consecutively. This is a same-tool loop. Do one work slice (bash/file tools/git) now before calling ${toolNames[0]} again.`,
+        });
       }
     }
 

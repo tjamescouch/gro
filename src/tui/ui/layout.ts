@@ -13,6 +13,42 @@ export interface Layout {
   focusables: blessed.Widgets.BlessedElement[];
 }
 
+// ─── Arrow-key scroll helper ──────────────────────────────────────────────────
+// Each scrollable box gets arrow-key + vim bindings when focused.
+// The input box keeps its own arrow-key behaviour (cursor movement) so we
+// only attach to the read-only panels.
+function bindScrollKeys(
+  box: blessed.Widgets.BlessedElement,
+  screen: blessed.Widgets.Screen,
+  scrollLines = 3,
+): void {
+  const el = box as blessed.Widgets.ScrollableBoxElement;
+
+  box.key(["up", "k"], () => {
+    el.scroll(-scrollLines);
+    screen.render();
+  });
+
+  box.key(["down", "j"], () => {
+    el.scroll(scrollLines);
+    screen.render();
+  });
+
+  box.key(["pageup", "b"], () => {
+    el.scroll(-(el.height as number));
+    screen.render();
+  });
+
+  box.key(["pagedown", "f"], () => {
+    el.scroll(el.height as number);
+    screen.render();
+  });
+
+  box.key(["g"], () => { el.setScrollPerc(0); screen.render(); }); // top
+  box.key(["G", "S-g"], () => { el.setScrollPerc(100); screen.render(); }); // bottom
+}
+
+// ─── Layout factory ───────────────────────────────────────────────────────────
 export function createLayout(
   screen: blessed.Widgets.Screen,
   config: GrotuiConfig,
@@ -22,7 +58,7 @@ export function createLayout(
   const chatWidth = Math.round((chatPct / total) * 100);
   const toolsWidth = Math.round((toolsPct / total) * 100);
 
-  // Help bar at very bottom
+  // ── Help bar ────────────────────────────────────────────────────────────────
   const helpBar = blessed.box({
     parent: screen,
     bottom: 0,
@@ -31,10 +67,12 @@ export function createLayout(
     height: 1,
     tags: true,
     style: { bg: "blue", fg: "white" },
-    content: " {bold}Enter{/bold}: Send  {bold}Tab{/bold}: Switch Panel  {bold}Esc{/bold}: Focus Input  {bold}Ctrl+C{/bold}: Quit  {bold}Up/Down{/bold}: Scroll",
+    content:
+      " {bold}Enter{/bold}: Send  {bold}Tab{/bold}: Focus  {bold}Esc{/bold}: Input" +
+      "  {bold}↑↓/jk{/bold}: Scroll  {bold}Ctrl+M{/bold}: Copy Mode  {bold}Ctrl+V{/bold}: Paste  {bold}Ctrl+C{/bold}: Quit",
   });
 
-  // Chat history box
+  // ── Chat history ────────────────────────────────────────────────────────────
   const chatBox = blessed.box({
     parent: screen,
     label: " Chat ",
@@ -55,8 +93,9 @@ export function createLayout(
       label: { fg: "cyan", bold: true },
     },
   });
+  bindScrollKeys(chatBox, screen);
 
-  // Input box above help bar
+  // ── Input box ───────────────────────────────────────────────────────────────
   const inputBox = blessed.textarea({
     parent: screen,
     label: " Type here > ",
@@ -77,7 +116,7 @@ export function createLayout(
     },
   }) as blessed.Widgets.TextareaElement;
 
-  // Tools panel
+  // ── Tools panel ─────────────────────────────────────────────────────────────
   const toolsBox = blessed.box({
     parent: screen,
     label: " Tools ",
@@ -98,8 +137,9 @@ export function createLayout(
       label: { fg: "yellow", bold: true },
     },
   });
+  bindScrollKeys(toolsBox, screen);
 
-  // Logs panel
+  // ── Logs panel ──────────────────────────────────────────────────────────────
   const logsBox = blessed.log({
     parent: screen,
     label: " Logs ",
@@ -120,6 +160,7 @@ export function createLayout(
       label: { fg: "magenta", bold: true },
     },
   }) as blessed.Widgets.Log;
+  bindScrollKeys(logsBox, screen);
 
   const chatPanel = new ChatPanel(chatBox, screen);
   const toolsPanel = new ToolsPanel(toolsBox, screen);

@@ -73,7 +73,8 @@ const THINKING_MARKERS = new Set(["think", "relax", "thinking"]);
  */
 const RESERVED_MARKERS = new Set([
   "model-change", "ref", "unref", "importance", "thinking", "think", "relax",
-  "memory", "callback", "emotion", "dim", "working", "memory-hotreload", "learn"
+  "memory", "callback", "emotion", "dim", "working", "memory-hotreload", "learn",
+  "recall"
 ]);
 
 /**

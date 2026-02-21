@@ -7,3 +7,4 @@ export { VirtualMemory } from "./virtual-memory.js";
 export { HNSWMemory } from "./hnsw-memory.js";
 export { FragmentationMemory } from "./fragmentation-memory.js";
 export { RandomSamplingFragmenter } from "./random-sampling-fragmenter.js";
+export { PerfectMemory } from "./perfect-memory.js";

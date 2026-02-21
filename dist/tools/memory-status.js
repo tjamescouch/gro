@@ -40,7 +40,26 @@ export function executeMemoryStatus(args, memory) {
     const activeList = activePages.length > 0
         ? activePages.map(id => `  - ${id}`).join("\n")
         : "  (none)";
-    return `VirtualMemory Status:
+    // Check for PerfectMemory fork info
+    let forkSection = "";
+    if ("getForkStats" in vm && typeof vm.getForkStats === "function") {
+        const stats = vm.getForkStats();
+        const chain = vm.forkHistory?.();
+        forkSection = `
+Fork Chain (PerfectMemory):
+  Total Forks: ${stats.count}
+  Total Tokens (across forks): ${stats.totalTokens}
+  Total Messages (across forks): ${stats.totalMessages}
+`;
+        if (chain && chain.length > 0) {
+            const forkList = chain.slice(-10).map(f => `  - ${f.id}: ${f.timestamp} (${f.messageCount} msgs, ${f.tokens} tokens, ${f.reason})`).join("\n");
+            forkSection += `\n  Recent Forks (last 10):\n${forkList}\n`;
+            if (chain.length > 10) {
+                forkSection += `  ... and ${chain.length - 10} more\n`;
+            }
+        }
+    }
+    return `${vm.constructor.name} Status:
 
 Pages:
   Total: ${totalPages}
@@ -58,7 +77,7 @@ Token Usage (per lane):
   System: ${systemTokens} tokens (${system.length} msgs)
   Tool: ${toolTokens} tokens (${tool.length} msgs)
   Total: ${totalTokens} tokens (${messages.length} msgs)
-`;
+${forkSection}`;
 }
 function estimateTokens(messages) {
     const AVG_CHARS_PER_TOKEN = 2.8;

@@ -724,6 +724,21 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
     return hm;
   }
 
+  // PerfectMemory (fork-based persistent recall)
+  if (memoryMode === "perfect") {
+    Logger.info(`${C.cyan("MemoryMode=Perfect")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, fork-based recall`)}`);
+    const { PerfectMemory } = await import("./memory/perfect-memory.js");
+    const pm = new PerfectMemory({
+      driver: summarizerDriver ?? driver,
+      summarizerModel: effectiveSummarizerModel,
+      systemPrompt: cfg.systemPrompt || undefined,
+      workingMemoryTokens: cfg.contextTokens,
+      enableBatchSummarization: cfg.batchSummarization,
+    });
+    pm.setModel(cfg.model);
+    return pm;
+  }
+
     Logger.info(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
   const vm = new VirtualMemory({
     driver: summarizerDriver ?? driver,
@@ -887,7 +902,7 @@ async function executeTurn(
 
     // Memory hot-swap handler
     const swapMemory = async (targetType: string): Promise<void> => {
-      const validTypes = ["simple", "advanced", "virtual", "fragmentation", "hnsw"];
+      const validTypes = ["simple", "advanced", "virtual", "fragmentation", "hnsw", "perfect"];
       if (!validTypes.includes(targetType)) {
         Logger.error(`Stream marker: memory('${targetType}') REJECTED — valid types: ${validTypes.join(", ")}`);
         return;
@@ -910,6 +925,14 @@ async function executeTurn(
       } else if (targetType === "hnsw") {
         const { HNSWMemory } = await import("./memory/hnsw-memory.js");
         newMemory = new HNSWMemory({ systemPrompt: cfg.systemPrompt || undefined });
+      } else if (targetType === "perfect") {
+        const { PerfectMemory } = await import("./memory/perfect-memory.js");
+        newMemory = new PerfectMemory({
+          driver,
+          summarizerModel: cfg.summarizerModel ?? "llama-3.3-70b-versatile",
+          systemPrompt: cfg.systemPrompt || undefined,
+          workingMemoryTokens: cfg.contextTokens,
+        });
       } else {
         newMemory = await createMemory(cfg, driver); // VirtualMemory
       }
@@ -1075,6 +1098,20 @@ async function executeTurn(
       } else if (marker.name === "memory" && marker.arg) {
         void swapMemory(marker.arg);
         Logger.info(`Stream marker: memory('${marker.arg}') triggered`);
+      } else if (marker.name === "recall") {
+        // PerfectMemory fork recall — load fork content into page slot
+        if ("recallFork" in memory && typeof (memory as any).recallFork === "function") {
+          const forkId = marker.arg || undefined;
+          void (memory as any).recallFork(forkId).then((pageId: string | null) => {
+            if (pageId) {
+              Logger.info(`Stream marker: recall('${marker.arg || "latest"}') — loaded as page ${pageId}`);
+            } else {
+              Logger.warn(`Stream marker: recall('${marker.arg || "latest"}') — fork not found`);
+            }
+          });
+        } else {
+          Logger.warn(`Stream marker: recall — memory system doesn't support forks (use GRO_MEMORY=perfect)`);
+        }
      } else if (marker.name === "memory-tune" && marker.arg) {
        // Hot-tune VirtualMemory: @@memory-tune(working:8k,page:6k)@@
        // Parse key:value pairs separated by commas

@@ -1254,6 +1254,18 @@ Do not get stuck calling listen repeatedly.`
       }
     }
 
+    // Check for same-tool loop (consecutive identical tool calls)
+    if (sameToolLoop) {
+      const toolNames = output.toolCalls.map(tc => tc.function.name);
+      if (sameToolLoop.check(toolNames)) {
+        await memory.add({
+          role: "user",
+          from: "System",
+          content: `[SYSTEM] You have called ${toolNames[0]} ${sameToolLoop['threshold']} times consecutively. This is a same-tool loop. Do one work slice (bash/file tools/git) now before calling ${toolNames[0]} again.`,
+        });
+      }
+    }
+
     // Auto-save periodically in persistent mode to survive SIGTERM/crashes
     if (cfg.persistent && cfg.sessionPersistence && sessionId && round > 0 && round % AUTO_SAVE_INTERVAL === 0) {
       try {

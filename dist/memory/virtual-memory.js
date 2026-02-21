@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { SummarizationQueue } from "./summarization-queue.js";
 import { BatchWorkerManager } from "./batch-worker-manager.js";
 import { Logger } from "../logger.js";
+import { PhantomBuffer } from "./phantom-buffer.js";
 // Load summarizer system prompt from markdown file (next to this module)
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SUMMARIZER_PROMPT_PATH = join(__dirname, "summarizer-prompt.md");
@@ -38,6 +39,7 @@ const DEFAULTS = {
     systemPrompt: "",
     summarizerModel: "claude-haiku-4-5",
     enableBatchSummarization: false,
+    enablePhantomCompaction: process.env.GRO_PHANTOM_COMPACTION === "true",
     queuePath: join(process.env.HOME ?? "/tmp", ".gro", "summarization-queue.jsonl"),
 };
 // --- VirtualMemory ---
@@ -65,6 +67,8 @@ export class VirtualMemory extends AgentMemory {
         this.summaryQueue = null;
         /** Batch worker manager (spawns background worker if batch mode enabled) */
         this.batchWorkerManager = null;
+        // Phantom compaction state
+        this.phantomBuffer = null;
         /**
          * Adjust compaction aggressiveness based on the current thinking budget.
          *
@@ -94,6 +98,7 @@ export class VirtualMemory extends AgentMemory {
             driver: config.driver ?? null,
             summarizerModel: config.summarizerModel ?? DEFAULTS.summarizerModel,
             enableBatchSummarization: config.enableBatchSummarization ?? DEFAULTS.enableBatchSummarization,
+            enablePhantomCompaction: config.enablePhantomCompaction ?? DEFAULTS.enablePhantomCompaction,
             queuePath: config.queuePath ?? DEFAULTS.queuePath,
         };
         mkdirSync(this.cfg.pagesDir, { recursive: true });
@@ -101,6 +106,10 @@ export class VirtualMemory extends AgentMemory {
         if (this.cfg.enableBatchSummarization) {
             this.summaryQueue = new SummarizationQueue(this.cfg.queuePath);
             this.startBatchWorker();
+        }
+        // Initialize phantom buffer if enabled
+        if (this.cfg.enablePhantomCompaction) {
+            this.phantomBuffer = new PhantomBuffer({ avgCharsPerToken: this.cfg.avgCharsPerToken });
         }
     }
     setModel(model) {
@@ -267,6 +276,31 @@ export class VirtualMemory extends AgentMemory {
         const afterCount = after.length;
         const pageCount = this.getPageCount();
         return `Compacted: ${beforeCount} → ${afterCount} messages, ${beforeTokens} → ${afterTokens} tokens. Total pages: ${pageCount}.`;
+    }
+    // --- Phantom Compaction API ---
+    /**
+     * Get phantom buffer status (memory usage, snapshots).
+     */
+    getPhantomStatus() {
+        return this.phantomBuffer?.getMemoryUsage() ?? null;
+    }
+    /**
+     * List available phantom snapshots.
+     */
+    listPhantomSnapshots() {
+        return this.phantomBuffer?.listSnapshots() ?? [];
+    }
+    /**
+     * Recall (inject) a phantom snapshot into working memory.
+     * Returns the snapshot messages or null if not found/disabled.
+     */
+    recallPhantom(snapshotId) {
+        if (!this.phantomBuffer)
+            return null;
+        const snap = snapshotId
+            ? this.phantomBuffer.getSnapshot(snapshotId)
+            : this.phantomBuffer.getLatest();
+        return snap?.messages ?? null;
     }
     // --- Page Index (persisted metadata) ---
     indexPath() {
@@ -726,6 +760,11 @@ export class VirtualMemory extends AgentMemory {
             return;
         await this.runOnce(async () => {
             // Compute normalized budgets
+            // Snapshot to phantom buffer before compaction (if enabled)
+            if (this.phantomBuffer) {
+                const reason = forced ? "manual forceCompact()" : "automatic watermark trigger";
+                this.phantomBuffer.snapshot(this.messagesBuffer, reason);
+            }
             const budgets = this.computeLaneBudgets();
             // Re-partition to get fresh data
             const { firstSystemIndex, assistant, user, system, tool, other } = this.partition();

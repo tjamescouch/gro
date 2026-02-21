@@ -215,6 +215,13 @@ export function makeAnthropicDriver(cfg) {
         else if (supportsAdaptiveThinking(resolvedModel)) {
             body.thinking = { type: "adaptive" };
         }
+        // Sampling parameters (optional runtime overrides)
+        if (opts?.temperature !== undefined)
+            body.temperature = opts.temperature;
+        if (opts?.top_k !== undefined)
+            body.top_k = opts.top_k;
+        if (opts?.top_p !== undefined)
+            body.top_p = opts.top_p;
         // Prompt caching: wrap system prompt in content block with cache_control
         if (systemPrompt) {
             if (enablePromptCaching) {

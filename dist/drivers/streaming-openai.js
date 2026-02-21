@@ -158,10 +158,27 @@ export function makeStreamingOpenAiDriver(cfg) {
             wireMessages.push(msg);
         }
         const payload = { model, messages: wireMessages, stream: true };
+
         if (tools) {
-            payload.tools = tools;
+            payload.tools = tools.map(t => {
+                if (t.type === "function" && t.function) return t;
+                return {
+                    type: "function",
+                    function: {
+                        name: t.name ?? t.function?.name ?? "unknown",
+                        description: t.description ?? t.function?.description ?? "",
+                        parameters: t.inputSchema ?? t.parameters ?? t.function?.parameters ?? { type: "object", properties: {} },
+                    }
+                };
+            });
             payload.tool_choice = "auto";
         }
+        // Sampling parameters (optional runtime overrides)
+        if (opts?.temperature !== undefined)
+            payload.temperature = opts.temperature;
+        if (opts?.top_p !== undefined)
+            payload.top_p = opts.top_p;
+        // Note: OpenAI doesn't support top_k directly (Anthropic extension)
         try {
             let res;
             for (let attempt = 0;; attempt++) {

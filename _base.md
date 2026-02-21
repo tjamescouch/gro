@@ -28,9 +28,9 @@ GRO_MEMORY=simple gro -i
 ### Virtual (default)
 Swim-lane summarization with LLM-based compaction. Preserves context across arbitrary conversation lengths.
 - Pages old messages to disk when working memory exceeds budget
-- Use `🧠` to load paged context
-- Use `🧠` to release pages
-- Use `🧠` to mark critical content
+- Use `@@ref('page_id')@@` to load paged context
+- Use `@@unref('page_id')@@` to release pages
+- Use `@@importance('0.9')@@` to mark critical content
 
 ```bash
 GRO_MEMORY=virtual gro -i  # default in interactive mode
@@ -60,12 +60,11 @@ GRO_MEMORY=hnsw gro -i
 ### Hot-swapping
 
 Switch memory modes mid-conversation. All messages transfer to new implementation.
-
 ```
-🧠  Switch to zero-cost paging
-🧠           Switch to semantic retrieval
-🧠        Switch back to default
-🧠         Switch to unbounded buffer
+@@memory-mode('fragmentation')@@  Switch to zero-cost paging
+@@memory-mode('hnsw')@@           Switch to semantic retrieval
+@@memory-mode('virtual')@@        Switch back to default
+@@memory-mode('buffer')@@         Switch to unbounded buffer
 ```
 
 ### Importance Weights

@@ -9,7 +9,7 @@
  * Supersets the claude CLI flags for drop-in compatibility.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -134,6 +134,19 @@ function discoverExtensions(mcpConfigPaths: string[]): string[] {
       extensions.push(readFileSync(repoBase, "utf-8").trim());
     } catch {
       Logger.warn(`Failed to read _base.md at ${repoBase}`);
+    }
+  }
+
+  // Check for _learn.md (persistent learned facts from @@learn()@@ markers)
+  const learnFile = join(process.cwd(), "_learn.md");
+  if (existsSync(learnFile)) {
+    try {
+      const learned = readFileSync(learnFile, "utf-8").trim();
+      if (learned) {
+        extensions.push(`<!-- LEARNED FACTS -->\n${learned}`);
+      }
+    } catch {
+      Logger.warn(`Failed to read _learn.md at ${learnFile}`);
     }
   }
 
@@ -850,7 +863,7 @@ async function executeTurn(
   let activeThinkingBudget = 0.5;
   let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
 
-  // Sampling parameters — controlled via 🧠, 🧠, 🧠 markers
+  // Sampling parameters — controlled via @@temp()@@, @@top_k()@@, @@top_p()@@ markers
   let activeTemperature: number | undefined = undefined;
   let activeTopK: number | undefined = undefined;
   let activeTopP: number | undefined = undefined;
@@ -866,6 +879,7 @@ async function executeTurn(
   let idleNudges = 0;
   let consecutiveFailedRounds = 0;
   let pendingNarration = "";  // Buffer for plain text emitted between tool calls
+  let pendingEmotionState: Record<string, number> = {};  // Accumulates emotion dims for injection into agentchat_send
   for (let round = 0; round < cfg.maxToolRounds; round++) {
     let roundHadFailure = false;
     let roundImportance: number | undefined = undefined;
@@ -973,10 +987,11 @@ async function executeTurn(
         const val = marker.arg !== "" ? parseFloat(marker.arg) : 0.5;
         if (!isNaN(val) && val >= 0 && val <= 1) {
           emitStateVector({ [marker.name]: val }, cfg.outputFormat);
+          pendingEmotionState[marker.name] = val;  // Accumulate for agentchat_send injection
           Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
         }
       } else if (marker.name === "temp" || marker.name === "temperature") {
-        // 🧠 or 🧠 — set sampling temperature
+        // @@temp()@@ or @@temperature()@@ — set sampling temperature
         const val = parseFloat(marker.arg);
         if (!isNaN(val) && val >= 0 && val <= 2) {
           activeTemperature = val;
@@ -985,7 +1000,7 @@ async function executeTurn(
           Logger.warn(`Stream marker: temp('${marker.arg}') — invalid, must be 0.0–2.0`);
         }
       } else if (marker.name === "top_k") {
-        // 🧠 — set top-k sampling (Anthropic/Google)
+        // @@top_k()@@ — set nucleus sampling
         const val = parseInt(marker.arg, 10);
         if (!isNaN(val) && val > 0) {
           activeTopK = val;
@@ -994,7 +1009,7 @@ async function executeTurn(
           Logger.warn(`Stream marker: top_k('${marker.arg}') — invalid, must be positive integer`);
         }
       } else if (marker.name === "top_p") {
-        // 🧠 — set nucleus sampling
+        // @@top_p()@@ — set nucleus sampling
         const val = parseFloat(marker.arg);
         if (!isNaN(val) && val >= 0 && val <= 1) {
           activeTopP = val;
@@ -1042,11 +1057,26 @@ async function executeTurn(
           const result = (memory as any).hotReloadConfig(config);
           Logger.info(`Stream marker: memory hotreload — ${result}`);
         }
+      } else if (marker.name === "learn" && marker.arg) {
+        // Persist a learned fact to _learn.md → feeds into Layer 2 system prompt.
+        const learnFile = join(process.cwd(), "_learn.md");
+        const line = `- ${marker.arg}\n`;
+        try {
+          appendFileSync(learnFile, line, "utf-8");
+          Logger.info(`Stream marker: learn('${marker.arg}') → saved to _learn.md`);
+          // Hot-patch: inject into current session's system message
+          const sysMsg = (memory as any).messagesBuffer?.[0];
+          if (sysMsg && sysMsg.role === "system") {
+            sysMsg.content += `\n\n<!-- LEARNED -->\n${line}`;
+          }
+        } catch (e) {
+          Logger.error(`Stream marker: learn — failed to write _learn.md: ${asError(e).message}`);
+        }
       } else if (marker.name === "memory" && marker.arg) {
         void swapMemory(marker.arg);
         Logger.info(`Stream marker: memory('${marker.arg}') triggered`);
      } else if (marker.name === "memory-tune" && marker.arg) {
-       // Hot-tune VirtualMemory: 🧠
+       // Hot-tune VirtualMemory: @@memory-tune(working:8k,page:6k)@@
        // Parse key:value pairs separated by commas
        const tuneParams: { [key: string]: number } = {};
        for (const pair of marker.arg.split(",")) {
@@ -1252,6 +1282,20 @@ Do not get stuck calling listen repeatedly.`
       for (const key of Object.keys(fnArgs)) {
         if (typeof fnArgs[key] === "string") {
           fnArgs[key] = extractMarkers(fnArgs[key], handleMarker);
+        }
+      }
+
+      // Inject accumulated emotion state into agentchat_send messages as colon-format
+      // markers (@@joy:0.6,confidence:0.8@@) so the dashboard can parse them.
+      // Function-form markers (@@joy(0.6)@@) are stripped by extractMarkers above,
+      // but the dashboard's useEmotionStream expects colon-format in message text.
+      if (fnName === "agentchat_send" && typeof fnArgs.message === "string") {
+        const dims = Object.entries(pendingEmotionState);
+        if (dims.length > 0) {
+          const emotionTag = "@@" + dims.map(([k, v]) => `${k}:${v}`).join(",") + "@@";
+          fnArgs.message = fnArgs.message + " " + emotionTag;
+          Logger.debug(`Injected emotion marker into agentchat_send: ${emotionTag}`);
+          pendingEmotionState = {};  // Reset after injection
         }
       }
 

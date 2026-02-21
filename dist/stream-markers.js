@@ -48,7 +48,7 @@ const THINKING_MARKERS = new Set(["think", "relax", "thinking"]);
  */
 const RESERVED_MARKERS = new Set([
     "model-change", "ref", "unref", "importance", "thinking", "think", "relax",
-    "memory", "callback", "emotion", "dim", "working", "memory-hotreload"
+    "memory", "callback", "emotion", "dim", "working", "memory-hotreload", "learn"
 ]);
 /**
  * Emotion dimensions — valid names for @@dim:value@@ or 🧠 markers.

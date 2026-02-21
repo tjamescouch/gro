@@ -57,6 +57,10 @@ Dims: joy sadness anger fear surprise confidence uncertainty excitement calm urg
 `@@ref('id')@@` — load page into context next turn
 `@@unref('id')@@` — release page from context
 
+**Learn:**
+`@@learn('fact')@@` — persist a fact to `_learn.md`, injected into Layer 2 system prompt.
+Takes effect immediately (hot-patched) and persists across sessions.
+
 ## Model Alias Table
 
 ### Anthropic

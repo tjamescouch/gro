@@ -8,7 +8,7 @@
  *
  * Supersets the claude CLI flags for drop-in compatibility.
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -108,6 +108,19 @@ function discoverExtensions(mcpConfigPaths) {
         }
         catch {
             Logger.warn(`Failed to read _base.md at ${repoBase}`);
+        }
+    }
+    // Check for _learn.md (persistent learned facts from @@learn()@@ markers)
+    const learnFile = join(process.cwd(), "_learn.md");
+    if (existsSync(learnFile)) {
+        try {
+            const learned = readFileSync(learnFile, "utf-8").trim();
+            if (learned) {
+                extensions.push(`<!-- LEARNED FACTS -->\n${learned}`);
+            }
+        }
+        catch {
+            Logger.warn(`Failed to read _learn.md at ${learnFile}`);
         }
     }
     // Check for agentchat SKILL.md in common locations
@@ -820,7 +833,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
     // Emit @@thinking(0.8)@@ to go into the phone booth; let it decay to come back out.
     let activeThinkingBudget = 0.5;
     let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
-    // Sampling parameters — controlled via 🧠, 🧠, 🧠 markers
+    // Sampling parameters — controlled via @@temp()@@, @@top_k()@@, @@top_p()@@ markers
     let activeTemperature = undefined;
     let activeTopK = undefined;
     let activeTopP = undefined;
@@ -953,7 +966,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                 }
             }
             else if (marker.name === "temp" || marker.name === "temperature") {
-                // 🧠 or 🧠 — set sampling temperature
+                // @@temp()@@ or @@temperature()@@ — set sampling temperature
                 const val = parseFloat(marker.arg);
                 if (!isNaN(val) && val >= 0 && val <= 2) {
                     activeTemperature = val;
@@ -964,7 +977,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                 }
             }
             else if (marker.name === "top_k") {
-                // 🧠 — set top-k sampling (Anthropic/Google)
+                // @@top-k()@@ — set top-k sampling (Anthropic/Google)
                 const val = parseInt(marker.arg, 10);
                 if (!isNaN(val) && val > 0) {
                     activeTopK = val;
@@ -975,7 +988,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                 }
             }
             else if (marker.name === "top_p") {
-                // 🧠 — set nucleus sampling
+                // @@top-p()@@ — set nucleus sampling
                 const val = parseFloat(marker.arg);
                 if (!isNaN(val) && val >= 0 && val <= 1) {
                     activeTopP = val;
@@ -1026,10 +1039,29 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, same
                     Logger.info(`Stream marker: memory hotreload — ${result}`);
                 }
             }
+            else if (marker.name === "learn" && marker.arg) {
+                // Persist a learned fact to _learn.md → feeds into Layer 2 system prompt.
+                const learnFile = join(process.cwd(), "_learn.md");
+                const line = `- ${marker.arg}\n`;
+                try {
+                    appendFileSync(learnFile, line, "utf-8");
+                    Logger.info(`Stream marker: learn('${marker.arg}') → saved to _learn.md`);
+                    // Hot-patch: inject into current session's system message
+                    const sysMsg = memory.messagesBuffer?.[0];
+                    if (sysMsg && sysMsg.role === "system") {
+                        sysMsg.content += `\n\n<!-- LEARNED -->\n${line}`;
+                    }
+                }
+                catch (e) {
+                    Logger.error(`Stream marker: learn — failed to write _learn.md: ${asError(e).message}`);
+                }
+            }
             else if (marker.name === "memory" && marker.arg) {
+                void swapMemory(marker.arg);
+                Logger.info(`Stream marker: memory('${marker.arg}') triggered`);
             }
             else if (marker.name === "memory-tune" && marker.arg) {
-                // Hot-tune VirtualMemory: 🧠
+                // Hot-tune VirtualMemory: @@memory-tune(working:8k,page:6k)@@
                 // Parse key:value pairs separated by commas
                 const tuneParams = {};
                 for (const pair of marker.arg.split(",")) {

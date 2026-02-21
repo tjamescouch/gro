@@ -791,8 +791,8 @@ function formatOutput(text: string, format: GroConfig["outputFormat"]): string {
  */
 const MODEL_ALIASES: Record<string, string> = {
   // Anthropic
-  "haiku": "claude-haiku-4-5",
-  "sonnet": "claude-sonnet-4-5",
+  "haiku": "claude-haiku-4-5-20251001",
+  "sonnet": "claude-sonnet-4-6",
   "opus": "claude-opus-4-6",
   // OpenAI — GPT-5 family
   "gpt5-nano": "gpt-5-nano",
@@ -963,6 +963,13 @@ async function executeTurn(
     const handleMarker = (marker: { name: string; arg: string }) => {
       if (marker.name === "model-change") {
         const newModel = resolveModelAlias(marker.arg);
+        // Validate: must be a known alias or match a recognized model ID pattern
+        const isKnownAlias = MODEL_ALIASES.hasOwnProperty(marker.arg.trim().toLowerCase());
+        const isValidModelId = /^(claude-|gpt-|o[134]-|chatgpt-|gemini-|grok-|llama|gemma|mixtral|phi|qwen|deepseek|whisper-)/.test(newModel);
+        if (!isKnownAlias && !isValidModelId) {
+          Logger.warn(`Stream marker: model-change '${marker.arg}' IGNORED — not a recognized model or alias`);
+          return;
+        }
         const newProvider = inferProvider(undefined, newModel);
         if (newProvider !== cfg.provider) {
           Logger.error(`Stream marker: model-change '${marker.arg}' REJECTED — cross-provider swap (${cfg.provider} → ${newProvider}) is not supported. Stay on ${cfg.provider} models.`);

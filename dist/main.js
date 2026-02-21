@@ -287,6 +287,9 @@ function loadConfig() {
         else if (arg === "--max-budget-usd") {
             flags.maxBudgetUsd = args[++i];
         } // accepted, not used yet
+        else if (arg === "--max-tier") {
+            flags.maxTier = args[++i];
+        }
         else if (arg === "--summarizer-model") {
             flags.summarizerModel = args[++i];
         }
@@ -456,6 +459,7 @@ function loadConfig() {
         showDiffs: flags.showDiffs === "true",
         mcpServers,
         maxBudgetUsd: flags.maxBudgetUsd ? parseFloat(flags.maxBudgetUsd) : null,
+        maxTier: (flags.maxTier || process.env.GRO_MAX_TIER || null),
     };
 }
 function inferProvider(explicit, model) {
@@ -536,6 +540,7 @@ options:
   --max-idle-nudges      max consecutive nudges before giving up (default: 10)
   --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
   --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
+  --max-tier             low | mid | high — cap tier promotion (env: GRO_MAX_TIER)
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string
@@ -871,7 +876,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
      */
     function thinkingTierModel(budget) {
         const provider = inferProvider(cfg.provider, cfg.model);
-        return selectTierModel(budget, provider, cfg.model, MODEL_ALIASES);
+        return selectTierModel(budget, provider, cfg.model, MODEL_ALIASES, cfg.maxTier ?? undefined);
     }
     let brokeCleanly = false;
     let idleNudges = 0;
@@ -1743,6 +1748,7 @@ async function main() {
         "--resume", "-r",
         "--max-retries", "--retry-base-ms",
         "--max-idle-nudges", "--wake-notes", "--name", "--set-key",
+        "--max-tier",
     ];
     for (let i = 0; i < args.length; i++) {
         if (args[i].startsWith("-")) {

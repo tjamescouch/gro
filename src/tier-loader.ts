@@ -53,30 +53,48 @@ export function loadTierConfigs(): Map<string, ProviderTierConfig> {
   return cache;
 }
 
-/** Select model tier based on thinking budget and provider config */
+/** Tier rank for clamping */
+const TIER_RANK: Record<string, number> = { low: 0, mid: 1, high: 2 };
+
+/** Select model tier based on thinking budget and provider config.
+ *  maxTier ("low" | "mid" | "high") caps the tier selection — useful when
+ *  the runtime proxy only supports a subset of models.
+ */
 export function thinkingTierModel(
   budget: number,
   provider: string,
   fallbackModel: string,
-  modelAliases: Record<string, string>
+  modelAliases: Record<string, string>,
+  maxTier?: "low" | "mid" | "high"
 ): string {
   const tierConfigs = loadTierConfigs();
   const tierConfig = tierConfigs.get(provider);
-  
+
+  // Determine the raw tier from budget
+  let selectedTier: "low" | "mid" | "high";
+
   if (!tierConfig) {
     // Fallback: anthropic defaults for unknown providers
-    if (budget < 0.25) return modelAliases["haiku"] ?? fallbackModel;
-    if (budget < 0.65) return modelAliases["sonnet"] ?? fallbackModel;
-    return modelAliases["opus"] ?? fallbackModel;
+    if (budget < 0.25) selectedTier = "low";
+    else if (budget < 0.65) selectedTier = "mid";
+    else selectedTier = "high";
+  } else {
+    const { thresholds } = tierConfig;
+    if (budget < thresholds.low) selectedTier = "low";
+    else if (budget < thresholds.mid) selectedTier = "mid";
+    else selectedTier = "high";
   }
-  
-  const { tiers, thresholds } = tierConfig;
-  
-  if (budget < thresholds.low) {
-    return tiers.low ?? fallbackModel;
+
+  // Clamp to maxTier if specified
+  if (maxTier && TIER_RANK[selectedTier] > TIER_RANK[maxTier]) {
+    selectedTier = maxTier;
   }
-  if (budget < thresholds.mid) {
-    return tiers.mid ?? fallbackModel;
+
+  // Resolve model from tier
+  if (!tierConfig) {
+    const aliasMap: Record<string, string> = { low: "haiku", mid: "sonnet", high: "opus" };
+    return modelAliases[aliasMap[selectedTier]] ?? fallbackModel;
   }
-  return tiers.high ?? fallbackModel;
+
+  return tierConfig.tiers[selectedTier] ?? fallbackModel;
 }

@@ -209,6 +209,7 @@ interface GroConfig {
   batchSummarization: boolean;
   mcpServers: Record<string, McpServerConfig>;
   maxBudgetUsd: number | null;
+  maxTier: "low" | "mid" | "high" | null;
 }
 
 function loadMcpServers(mcpConfigPaths: string[]): Record<string, McpServerConfig> {
@@ -312,6 +313,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--retry-base-ms") { process.env.GRO_RETRY_BASE_MS = args[++i]; }
     else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet
     else if (arg === "--max-budget-usd") { flags.maxBudgetUsd = args[++i]; } // accepted, not used yet
+    else if (arg === "--max-tier") { flags.maxTier = args[++i]; }
     else if (arg === "--summarizer-model") { flags.summarizerModel = args[++i]; }
     else if (arg === "--output-format") { flags.outputFormat = args[++i]; }
     else if (arg === "--batch-summarization") { flags.batchSummarization = "true"; }
@@ -444,6 +446,7 @@ function loadConfig(): GroConfig {
     showDiffs: flags.showDiffs === "true",
     mcpServers,
     maxBudgetUsd: flags.maxBudgetUsd ? parseFloat(flags.maxBudgetUsd) : null,
+    maxTier: (flags.maxTier || process.env.GRO_MAX_TIER || null) as GroConfig["maxTier"],
   };
 }
 
@@ -522,6 +525,7 @@ options:
   --max-idle-nudges      max consecutive nudges before giving up (default: 10)
   --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
   --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
+  --max-tier             low | mid | high — cap tier promotion (env: GRO_MAX_TIER)
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string
@@ -901,7 +905,7 @@ async function executeTurn(
    */
   function thinkingTierModel(budget: number): string {
     const provider = inferProvider(cfg.provider, cfg.model);
-    return selectTierModel(budget, provider, cfg.model, MODEL_ALIASES);
+    return selectTierModel(budget, provider, cfg.model, MODEL_ALIASES, cfg.maxTier ?? undefined);
   }
 
   let brokeCleanly = false;
@@ -1794,6 +1798,7 @@ async function main() {
     "--resume", "-r",
     "--max-retries", "--retry-base-ms",
     "--max-idle-nudges", "--wake-notes", "--name", "--set-key",
+    "--max-tier",
   ];
   for (let i = 0; i < args.length; i++) {
     if (args[i].startsWith("-")) {

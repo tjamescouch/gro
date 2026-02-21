@@ -125,8 +125,10 @@ export function parseDirectives(content: string): ParsedDirectives {
     learnFacts: [],
   };
 
-  // Build prose-only view: code blocks blanked so markers in code don't execute
-  const proseOnly = segmentByCode(content)
+  // Build a prose-only view for directive matching — strips code blocks/spans
+  // so directives inside fenced blocks or backtick spans are never executed.
+  // We replace protected segments with whitespace of equal length to preserve offsets
+  // isn't needed — we just need a string safe to match against.  const proseOnly = segmentByCode(content)
     .map((seg) => (seg.protected ? " ".repeat(seg.text.length) : seg.text))
     .join("");
 

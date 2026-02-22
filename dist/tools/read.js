@@ -70,6 +70,6 @@ export function executeRead(args) {
         return result;
     }
     catch (e) {
-        return `Error reading file: ${e.message}`;
+        return `Error reading file: ${String(e)}`;
     }
 }

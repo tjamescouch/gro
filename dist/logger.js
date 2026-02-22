@@ -20,16 +20,16 @@ function writeRaw(s) {
 export class Logger {
     static setVerbose(v) { Logger._verbose = v; }
     static isVerbose() { return Logger._verbose; }
-    static info(...a) {
-        console.log(...a);
+    static info(...args) {
+        console.log(...args);
     }
-    static warn(...a) { console.warn(...a); }
-    static error(...a) { console.error(...a); }
-    static debug(...a) {
+    static warn(...args) { console.warn(...args); }
+    static error(...args) { console.error(...args); }
+    static debug(...args) {
         // Debug requires BOTH verbose mode AND GRO_LOG_LEVEL=DEBUG
         const debugLevel = (process.env.GRO_LOG_LEVEL ?? "").toUpperCase() === "DEBUG";
         if (Logger._verbose && debugLevel)
-            console.log(...a);
+            console.log(...args);
     }
     static streamInfo(s) { writeRaw(s); }
     static endStreamLine(suffix = "") { writeRaw(suffix + "\n"); }

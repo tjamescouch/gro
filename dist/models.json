@@ -30,6 +30,7 @@
     "gemini3-pro": "gemini-3-pro",
 
     "grok-fast": "grok-4-fast-reasoning",
+    "grok-4-fast": "grok-4-fast-reasoning",
     "grok": "grok-4-fast-reasoning",
     "grok4": "grok-4-0709",
 

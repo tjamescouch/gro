@@ -63,7 +63,7 @@ export function executeGlob(args) {
         return header + "\n" + result.join("\n");
     }
     catch (e) {
-        return `Error: ${e.message}`;
+        return `Error: ${String(e)}`;
     }
 }
 /**

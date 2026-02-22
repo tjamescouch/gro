@@ -177,7 +177,7 @@ export async function executeDirectives(directives) {
             await runtimeConfig.learn(fact);
         }
         catch (err) {
-            Logger.error(`Failed to execute @@learn: ${err.message}`);
+            Logger.error(`Failed to execute @@learn: ${String(err)}`);
         }
     }
     // Memory swap
@@ -186,7 +186,7 @@ export async function executeDirectives(directives) {
             await runtimeConfig.swapMemory(directives.memorySwap);
         }
         catch (err) {
-            Logger.error(`Failed to swap memory to '${directives.memorySwap}': ${err.message}`);
+            Logger.error(`Failed to swap memory to '${directives.memorySwap}': ${String(err)}`);
         }
     }
     // Thinking level

@@ -41,15 +41,16 @@ export function executeBash(args) {
     }
     catch (e) {
         // execSync throws on non-zero exit — capture stdout + stderr
+        const err = e;
         let result = "";
-        if (e.stdout)
-            result += e.stdout;
-        if (e.stderr)
-            result += (result ? "\n" : "") + e.stderr;
+        if (err.stdout)
+            result += err.stdout;
+        if (err.stderr)
+            result += (result ? "\n" : "") + err.stderr;
         if (!result)
-            result = e.message || "Command failed";
-        if (e.status != null)
-            result += `\n[exit code: ${e.status}]`;
+            result = err.message || String(e) || "Command failed";
+        if (err.status != null)
+            result += `\n[exit code: ${err.status}]`;
         return truncate(result);
     }
 }

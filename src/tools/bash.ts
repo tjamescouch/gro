@@ -45,11 +45,12 @@ export function executeBash(args: Record<string, unknown>): string {
     return truncate(output);
   } catch (e: unknown) {
     // execSync throws on non-zero exit — capture stdout + stderr
+    const err = e as Record<string, any>;
     let result = "";
-    if (e.stdout) result += e.stdout;
-    if (e.stderr) result += (result ? "\n" : "") + e.stderr;
-    if (!result) result = e.message || String(e) || "Command failed";
-    if (e.status != null) result += `\n[exit code: ${e.status}]`;
+    if (err.stdout) result += err.stdout;
+    if (err.stderr) result += (result ? "\n" : "") + err.stderr;
+    if (!result) result = err.message || String(e) || "Command failed";
+    if (err.status != null) result += `\n[exit code: ${err.status}]`;
     return truncate(result);
   }
 }

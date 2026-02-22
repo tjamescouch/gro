@@ -52,6 +52,6 @@ export function executeWrite(args) {
         return `Successfully wrote ${content.length} bytes to ${resolved}`;
     }
     catch (e) {
-        return `Error writing file: ${e.message}`;
+        return `Error writing file: ${String(e)}`;
     }
 }

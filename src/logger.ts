@@ -22,14 +22,14 @@ export class Logger {
   static setVerbose(v: boolean) { Logger._verbose = v; }
   static isVerbose() { return Logger._verbose; }
 
-  static info(...a: any[]) {
+  static info(...args: any[]) {
     console.log(...args);
   }
 
-  static warn(...a: any[]) { console.warn(...args); }
-  static error(...a: any[]) { console.error(...args); }
+  static warn(...args: any[]) { console.warn(...args); }
+  static error(...args: any[]) { console.error(...args); }
 
-  static debug(...a: any[]) {
+  static debug(...args: any[]) {
     // Debug requires BOTH verbose mode AND GRO_LOG_LEVEL=DEBUG
     const debugLevel = (process.env.GRO_LOG_LEVEL ?? "").toUpperCase() === "DEBUG";
     if (Logger._verbose && debugLevel) console.log(...args);

@@ -73,6 +73,6 @@ export function executeGrep(args) {
         if (e.status === 1) {
             return `No matches found for: ${pattern}`;
         }
-        return `Error: ${e.message}`;
+        return `Error: ${String(e)}`;
     }
 }

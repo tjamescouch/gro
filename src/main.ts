@@ -372,10 +372,6 @@ function loadConfig(): GroConfig {
     else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
     else if (arg === "--bash") { flags.bash = "true"; }
     else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
-    else if (arg === "--persistent-policy") { flags.persistentPolicy = args[++i]; }
-    else if (arg === "--max-idle-nudges") { flags.maxIdleNudges = args[++i]; }
-    else if (arg === "--persistent-policy") { flags.persistentPolicy = args[++i]; }
-    else if (arg === "--max-retries") { process.env.GRO_MAX_RETRIES = args[++i]; }
     else if (arg === "--retry-base-ms") { process.env.GRO_RETRY_BASE_MS = args[++i]; }
     else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet
     else if (arg === "--max-budget-usd") { flags.maxBudgetUsd = args[++i]; } // accepted, not used yet
@@ -408,7 +404,7 @@ function loadConfig(): GroConfig {
       }
     }
     else if (arg === "--set-key") { flags.setKey = args[++i]; }
-    else if (arg === "-V" || arg === "--version") { console.log(`gro ${VERSION}`); process.exit(0); }
+    else if (arg === "-V" || arg === "--version") { Logger.info(`gro ${VERSION}`); process.exit(0); }
     else if (arg === "-h" || arg === "--help") { usage(); process.exit(0); }
     // --- graceful degradation for unsupported claude flags ---
     else if (UNSUPPORTED_VALUE_FLAGS.has(arg)) {
@@ -534,7 +530,7 @@ function resolveApiKey(provider: string): string {
 }
 
 function usage() {
-  console.log(`gro ${VERSION} — provider-agnostic LLM runtime
+  Logger.info(`gro ${VERSION} — provider-agnostic LLM runtime
 
 usage:
   gro [options] "prompt"
@@ -558,8 +554,6 @@ options:
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
-  --persistent-policy    work-first | listen-only (default: work-first)
-  --max-idle-nudges      max consecutive nudges before giving up (default: 10)
   --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
   --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
   --max-tier             low | mid | high — cap tier promotion (env: GRO_MAX_TIER)
@@ -594,7 +588,7 @@ async function runSetKey(provider: string): Promise<void> {
     process.stdout.write(`Keychain already has a key for ${provider} (${current.slice(0, 8)}…). Overwrite? [y/N] `);
     const answer = await readLine();
     if (!answer.toLowerCase().startsWith("y")) {
-      console.log("Aborted.");
+      Logger.info("Aborted.");
       return;
     }
   }

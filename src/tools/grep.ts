@@ -39,7 +39,7 @@ export function grepToolDefinition(): any {
   };
 }
 
-export function executeGrep(args: Record<string, any>): string {
+export function executeGrep(args: Record<string, unknown>): string {
   const pattern = args.pattern as string;
   if (!pattern) return "Error: pattern is required";
 
@@ -79,11 +79,11 @@ export function executeGrep(args: Record<string, any>): string {
     header += `:`;
 
     return header + "\n" + result.join("\n");
-  } catch (e: any) {
+  } catch (e: unknown) {
     // grep exits 1 on no matches — that's not an error
     if (e.status === 1) {
       return `No matches found for: ${pattern}`;
     }
-    return `Error: ${e.message}`;
+    return `Error: ${String(e)}`;
   }
 }

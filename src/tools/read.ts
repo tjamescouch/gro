@@ -39,7 +39,7 @@ export function readToolDefinition(): any {
   };
 }
 
-export function executeRead(args: Record<string, any>): string {
+export function executeRead(args: Record<string, unknown>): string {
   const filePath = args.file_path as string;
   if (!filePath) return "Error: file_path is required";
 
@@ -81,7 +81,7 @@ export function executeRead(args: Record<string, any>): string {
     }
 
     return result;
-  } catch (e: any) {
-    return `Error reading file: ${e.message}`;
+  } catch (e: unknown) {
+    return `Error reading file: ${String(e)}`;
   }
 }

@@ -26,7 +26,7 @@ export function bashToolDefinition(): any {
   };
 }
 
-export function executeBash(args: Record<string, any>): string {
+export function executeBash(args: Record<string, unknown>): string {
   const command = args.command as string;
   if (!command) return "Error: no command provided";
 
@@ -43,12 +43,12 @@ export function executeBash(args: Record<string, any>): string {
       stdio: ["pipe", "pipe", "pipe"],
     });
     return truncate(output);
-  } catch (e: any) {
+  } catch (e: unknown) {
     // execSync throws on non-zero exit — capture stdout + stderr
     let result = "";
     if (e.stdout) result += e.stdout;
     if (e.stderr) result += (result ? "\n" : "") + e.stderr;
-    if (!result) result = e.message || "Command failed";
+    if (!result) result = e.message || String(e) || "Command failed";
     if (e.status != null) result += `\n[exit code: ${e.status}]`;
     return truncate(result);
   }

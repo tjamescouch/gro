@@ -34,7 +34,7 @@ export function writeToolDefinition(): any {
   };
 }
 
-export function executeWrite(args: Record<string, any>): string {
+export function executeWrite(args: Record<string, unknown>): string {
   const filePath = args.file_path as string;
   const content = args.content as string;
 
@@ -57,7 +57,7 @@ export function executeWrite(args: Record<string, any>): string {
     writeFileSync(resolved, content, "utf-8");
     const existed = existsSync(resolved);
     return `Successfully wrote ${content.length} bytes to ${resolved}`;
-  } catch (e: any) {
-    return `Error writing file: ${e.message}`;
+  } catch (e: unknown) {
+    return `Error writing file: ${String(e)}`;
   }
 }

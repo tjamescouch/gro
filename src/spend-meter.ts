@@ -23,7 +23,6 @@ const PRICING: Record<string, { in: number; out: number }> = {
   "o3-mini":                    { in: 1.10,  out: 4.40  },
   "grok-4-fast-reasoning":      { in: 5.00,  out: 15.00 },
   // Groq,
-  "grok-4-fast-reasoning":      { in: 5.00,  out: 15.00 },
   "llama-3.3-70b-versatile":    { in: 0.59,  out: 0.79  },
   "llama-3.1-70b-versatile":    { in: 0.59,  out: 0.79  },
   "llama-3.1-8b-instant":       { in: 0.05,  out: 0.08  },

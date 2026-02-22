@@ -206,6 +206,7 @@ interface GroConfig {
   persistentPolicy: "listen-only" | "work-first";
   maxIdleNudges: number;
   bash: boolean;
+  lfs: string | null;
   summarizerModel: string | null;
   outputFormat: "text" | "json" | "stream-json";
   continueSession: boolean;
@@ -372,6 +373,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
     else if (arg === "--bash") { flags.bash = "true"; }
     else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
+    else if (arg === "--lfs") { flags.lfs = args[++i]; }
     else if (arg === "--retry-base-ms") { process.env.GRO_RETRY_BASE_MS = args[++i]; }
     else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet
     else if (arg === "--max-budget-usd") { flags.maxBudgetUsd = args[++i]; } // accepted, not used yet
@@ -497,6 +499,7 @@ function loadConfig(): GroConfig {
     persistentPolicy: (flags.persistentPolicy as "listen-only" | "work-first") || "work-first",
     maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
     bash: flags.bash === "true",
+    lfs: flags.lfs || process.env.GRO_LFS || null,
     summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
     outputFormat: (flags.outputFormat as GroConfig["outputFormat"]) || "text",
     continueSession: flags.continue === "true",
@@ -554,6 +557,7 @@ options:
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
+  --lfs <url>            enable LLM-Face Streaming to personas server (e.g. http://localhost:3100)
   --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
   --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
   --max-tier             low | mid | high — cap tier promotion (env: GRO_MAX_TIER)
@@ -883,6 +887,17 @@ async function executeTurn(
   const rawOnReasoningToken = cfg.outputFormat === "stream-json"
     ? (t: string) => process.stdout.write(JSON.stringify({ type: "reasoning", token: t }) + "\n")
     : undefined;
+
+  // LFS face signal integration
+  let lfsExtractor: any = null;
+  let lfsPoster: any = null;
+  if (cfg.lfs) {
+    const { SignalExtractor } = await import("./lfs/signal-extractor.js");
+    const { LfsPoster } = await import("./lfs/lfs-poster.js");
+    lfsExtractor = new SignalExtractor();
+    lfsPoster = new LfsPoster(cfg.lfs as string);
+    Logger.info(`LFS enabled → ${cfg.lfs}`);
+  }
 
   const THINKING_MEAN = 0.5;  // cruising altitude — mid-tier, not idle
   const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle round
@@ -1232,10 +1247,19 @@ async function executeTurn(
       temperature: activeTemperature,
       top_k: activeTopK,
       top_p: activeTopP,
+      logprobs: !!lfsExtractor,
+      top_logprobs: lfsExtractor ? 5 : undefined,
+      onLogprobs: lfsExtractor ? (lp: any) => {
+        const signals = lfsExtractor.extract(lp.token, lp);
+        if (lfsPoster) lfsPoster.postBatch(signals);
+      } : undefined,
     });
 
     // Flush any remaining buffered tokens from the marker parser
     markerParser.flush();
+
+    // Flush remaining LFS signals
+    if (lfsPoster) await lfsPoster.close();
 
     // Decay thinking level toward THINKING_MEAN if not refreshed this round.
     // Agents coast at mid-tier when idle — emit @@thinking(X)@@ each round to maintain level.
@@ -1878,7 +1902,7 @@ async function main() {
     "--resume", "-r",
     "--max-retries", "--retry-base-ms",
     "--max-idle-nudges", "--wake-notes", "--name", "--set-key",
-    "--max-tier",
+    "--max-tier", "--lfs",
   ];
   for (let i = 0; i < args.length; i++) {
     if (args[i].startsWith("-")) {

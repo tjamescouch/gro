@@ -100,6 +100,7 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     const onToken: ((t: string) => void) | undefined = opts?.onToken;
     const onReasoningToken: ((t: string) => void) | undefined = opts?.onReasoningToken;
     const onToolCallDelta: ((t: ChatToolCall) => void) | undefined = opts?.onToolCallDelta;
+    const onLogprobs: ((data: { token: string; logprob: number; top_logprobs?: Array<{ token: string; logprob: number }> }) => void) | undefined = opts?.onLogprobs;
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (cfg.apiKey) headers["Authorization"] = `Bearer ${cfg.apiKey}`;
@@ -200,6 +201,12 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     if (opts?.top_p !== undefined) payload.top_p = opts.top_p;
     // Note: OpenAI doesn't support top_k directly (Anthropic extension)
 
+    // LFS: enable logprobs for face signal extraction
+    if (opts?.logprobs) {
+      payload.logprobs = true;
+      payload.top_logprobs = opts.top_logprobs ?? 5;
+    }
+
     try {
       let res!: Response;
       for (let attempt = 0; ; attempt++) {
@@ -292,6 +299,16 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
             }
           } else {
             await yb.maybe(delta.content.length);
+          }
+        }
+
+        // LFS: extract logprob data and forward to callback
+        if (onLogprobs) {
+          const lpContent = payload?.choices?.[0]?.logprobs?.content;
+          if (Array.isArray(lpContent)) {
+            for (const lp of lpContent) {
+              try { onLogprobs(lp); } catch {}
+            }
           }
         }
 

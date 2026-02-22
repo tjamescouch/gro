@@ -304,6 +304,9 @@ function loadConfig() {
         else if (arg === "--persistent" || arg === "--keep-alive") {
             flags.persistent = "true";
         }
+        else if (arg === "--lfs") {
+            flags.lfs = args[++i];
+        }
         else if (arg === "--retry-base-ms") {
             process.env.GRO_RETRY_BASE_MS = args[++i];
         }
@@ -474,6 +477,7 @@ function loadConfig() {
         persistentPolicy: flags.persistentPolicy || "work-first",
         maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
         bash: flags.bash === "true",
+        lfs: flags.lfs || process.env.GRO_LFS || null,
         summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
         outputFormat: flags.outputFormat || "text",
         continueSession: flags.continue === "true",
@@ -528,6 +532,7 @@ options:
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
+  --lfs <url>            enable LLM-Face Streaming to personas server (e.g. http://localhost:3100)
   --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
   --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
   --max-tier             low | mid | high — cap tier promotion (env: GRO_MAX_TIER)
@@ -815,6 +820,16 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     const rawOnReasoningToken = cfg.outputFormat === "stream-json"
         ? (t) => process.stdout.write(JSON.stringify({ type: "reasoning", token: t }) + "\n")
         : undefined;
+    // LFS face signal integration
+    let lfsExtractor = null;
+    let lfsPoster = null;
+    if (cfg.lfs) {
+        const { SignalExtractor } = await import("./lfs/signal-extractor.js");
+        const { LfsPoster } = await import("./lfs/lfs-poster.js");
+        lfsExtractor = new SignalExtractor();
+        lfsPoster = new LfsPoster(cfg.lfs);
+        Logger.info(`LFS enabled → ${cfg.lfs}`);
+    }
     const THINKING_MEAN = 0.5; // cruising altitude — mid-tier, not idle
     const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle round
     // Mutable model reference — stream markers can switch this mid-turn
@@ -1188,9 +1203,19 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             temperature: activeTemperature,
             top_k: activeTopK,
             top_p: activeTopP,
+            logprobs: !!lfsExtractor,
+            top_logprobs: lfsExtractor ? 5 : undefined,
+            onLogprobs: lfsExtractor ? (lp) => {
+                const signals = lfsExtractor.extract(lp.token, lp);
+                if (lfsPoster)
+                    lfsPoster.postBatch(signals);
+            } : undefined,
         });
         // Flush any remaining buffered tokens from the marker parser
         markerParser.flush();
+        // Flush remaining LFS signals
+        if (lfsPoster)
+            await lfsPoster.close();
         // Decay thinking level toward THINKING_MEAN if not refreshed this round.
         // Agents coast at mid-tier when idle — emit @@thinking(X)@@ each round to maintain level.
         if (!thinkingSeenThisTurn) {
@@ -1791,7 +1816,7 @@ async function main() {
         "--resume", "-r",
         "--max-retries", "--retry-base-ms",
         "--max-idle-nudges", "--wake-notes", "--name", "--set-key",
-        "--max-tier",
+        "--max-tier", "--lfs",
     ];
     for (let i = 0; i < args.length; i++) {
         if (args[i].startsWith("-")) {

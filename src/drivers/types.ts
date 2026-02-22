@@ -48,5 +48,11 @@ export interface ChatDriver {
     top_k?: number;
     /** Top-p (nucleus) sampling (0.0–1.0, default varies by provider) */
     top_p?: number;
+    /** Request logprobs from the provider (for LFS face signals) */
+    logprobs?: boolean;
+    /** Number of top logprobs to return (default: 5) */
+    top_logprobs?: number;
+    /** Called per token with logprob data when logprobs is enabled */
+    onLogprobs?: (data: { token: string; logprob: number; top_logprobs?: Array<{ token: string; logprob: number }> }) => void;
   }): Promise<ChatOutput>;
 }

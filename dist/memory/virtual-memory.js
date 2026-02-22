@@ -744,6 +744,100 @@ export class VirtualMemory extends AgentMemory {
     }
     // --- Background Summarization ---
     /**
+     * Repair orphaned tool call/result pairs after memory compaction.
+     * Independent lane paging can break the strict pairing OpenAI requires:
+     *   assistant (with tool_calls) → tool (with matching tool_call_id)
+     *
+     * Instead of removing orphaned messages (losing data), this inserts synthetic
+     * stub messages for the missing partner:
+     *   - Missing tool result → insert stub tool message with truncated content
+     *   - Missing assistant tool_call → insert stub assistant with truncated invocation
+     */
+    repairToolPairs() {
+        const buf = this.messagesBuffer;
+        let repairCount = 0;
+        // Index all existing tool_call_ids from results and from assistant tool_calls
+        const resultIds = new Set();
+        const callIds = new Set();
+        for (const m of buf) {
+            if (m.role === "tool" && m.tool_call_id) {
+                resultIds.add(m.tool_call_id);
+            }
+            const tc = m.tool_calls;
+            if (m.role === "assistant" && Array.isArray(tc)) {
+                for (const call of tc) {
+                    if (call?.id)
+                        callIds.add(call.id);
+                }
+            }
+        }
+        // Pass 1: Insert missing tool results after assistant messages with tool_calls.
+        // Iterate backward so insertions don't affect earlier indices.
+        for (let i = buf.length - 1; i >= 0; i--) {
+            const msg = buf[i];
+            const tc = msg.tool_calls;
+            if (msg.role !== "assistant" || !Array.isArray(tc) || tc.length === 0)
+                continue;
+            const missingCalls = tc.filter((c) => c?.id && !resultIds.has(c.id));
+            if (missingCalls.length === 0)
+                continue;
+            // Insert after the assistant message and any existing consecutive tool results
+            let insertAt = i + 1;
+            while (insertAt < buf.length && buf[insertAt].role === "tool")
+                insertAt++;
+            const stubs = missingCalls.map((call) => ({
+                role: "tool",
+                from: "VirtualMemory",
+                content: "[context compressed — tool result truncated]",
+                tool_call_id: call.id,
+                name: call.function?.name || "unknown_tool",
+            }));
+            buf.splice(insertAt, 0, ...stubs);
+            repairCount += stubs.length;
+            for (const call of missingCalls)
+                resultIds.add(call.id);
+        }
+        // Pass 2: Insert synthetic assistant before orphaned tool messages.
+        let i = 0;
+        while (i < buf.length) {
+            if (buf[i].role !== "tool" || !buf[i].tool_call_id || callIds.has(buf[i].tool_call_id)) {
+                i++;
+                continue;
+            }
+            // Collect consecutive orphaned tool messages
+            const groupStart = i;
+            const orphanedCalls = [];
+            while (i < buf.length &&
+                buf[i].role === "tool" &&
+                buf[i].tool_call_id &&
+                !callIds.has(buf[i].tool_call_id)) {
+                orphanedCalls.push({
+                    id: buf[i].tool_call_id,
+                    name: buf[i].name || "unknown_tool",
+                });
+                i++;
+            }
+            const syntheticAssistant = {
+                role: "assistant",
+                from: "VirtualMemory",
+                content: "[context compressed — tool invocation truncated]",
+            };
+            syntheticAssistant.tool_calls = orphanedCalls.map(c => ({
+                id: c.id,
+                type: "function",
+                function: { name: c.name, arguments: "{}" },
+            }));
+            buf.splice(groupStart, 0, syntheticAssistant);
+            for (const c of orphanedCalls)
+                callIds.add(c.id);
+            repairCount++;
+            i++; // Account for inserted element shifting subsequent indices
+        }
+        if (repairCount > 0) {
+            Logger.info(`[VM] repairToolPairs: inserted ${repairCount} synthetic stubs`);
+        }
+    }
+    /**
      * Find a safe boundary for chunking messages that doesn't split tool call/result pairs.
      * Scans backward from the proposed chunkSize to find a position where the next message
      * is NOT a tool result (role !== "tool"), ensuring we don't orphan tool messages.
@@ -891,6 +985,8 @@ export class VirtualMemory extends AgentMemory {
             // Insert summaries at the beginning (after system prompt if present)
             const rebuilt = [...summaries, ...orderedKept];
             this.messagesBuffer.splice(0, this.messagesBuffer.length, ...rebuilt);
+            // Repair orphaned tool call/result pairs broken by independent lane paging
+            this.repairToolPairs();
             // Calculate metrics after cleanup
             const afterNonSys = this.messagesBuffer.filter(m => m.role !== "system");
             const afterTokens = this.msgTokens(afterNonSys);

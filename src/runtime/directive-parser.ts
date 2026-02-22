@@ -4,12 +4,22 @@
  * Supported directives:
  * - 🧠        — persist fact to _learn.md and hot-patch system prompt
  * - @@ctrl:memory=type@@     — swap memory type at runtime
- * - 🧠 — request model switch
- * - 💡        — set thinking level
+ * - 🧠 or 🧠 — request model switch
+ * - 💡    — set thinking level
  * - 🧠          — bump thinking +0.3
  * - 🧠        — reduce thinking -0.3
  *
- * Directives are stripped from the displayed message but executed immediately.
+ * Directives are stripped from the displayed message but replaced with semantic emoji indicators:
+ *   🦉 — thinking markers
+ *   🔀 — model switch
+ *   📚 — learn
+ *   ⚙️ — control/config
+ *   😊 — emotion
+ *   ⚖️ — importance
+ *   📎 — ref/unref
+ *   💾 — memory
+ *   🧠 — generic fallback
+ *
  * Marker syntax inside fenced code blocks and backtick spans is preserved as-is
  * so documentation and examples render correctly.
  */
@@ -76,6 +86,7 @@ const CLOSE = "@@";
 /**
  * Strip live directive markers from prose segments only.
  * Markers inside fenced code blocks or backtick spans pass through untouched.
+ * Each marker type is replaced with a semantic emoji.
  */
 function stripMarkersOutsideCode(content: string): string {
   const segments = segmentByCode(content);
@@ -86,11 +97,17 @@ function stripMarkersOutsideCode(content: string): string {
 
       let t = seg.text;
 
-      // Named markers with arguments
-      t = t.replace(new RegExp(`${OPEN}importance\\(['"][\\d.]+['"]\\)${CLOSE}`, "g"), "\u{2696}\u{FE0F}");
-      t = t.replace(new RegExp(`${OPEN}ref\\(['"][\\w-]+['"]\\)${CLOSE}`, "g"), "\u{1F4CE}");
-      t = t.replace(new RegExp(`${OPEN}unref\\(['"][\\w-]+['"]\\)${CLOSE}`, "g"), "\u{1F4CE}");
-      t = t.replace(new RegExp(`${OPEN}mem:[\\w-]+${CLOSE}`, "g"), "\u{1F4BE}");
+      // Marker-specific emoji replacements (order matters — most specific first)
+      t = t.replace(new RegExp(`${OPEN}importance\\(['"][\\d.]+['"]\\)${CLOSE}`, "g"), "⚖️");
+      t = t.replace(new RegExp(`${OPEN}ref\\(['"][\\w-]+['"]\\)${CLOSE}`, "g"), "📎");
+      t = t.replace(new RegExp(`${OPEN}unref\\(['"][\\w-]+['"]\\)${CLOSE}`, "g"), "📎");
+      t = t.replace(new RegExp(`${OPEN}mem:[\\w-]+${CLOSE}`, "g"), "💾");
+      t = t.replace(new RegExp(`${OPEN}learn\\(['"].+?['"]\\)${CLOSE}`, "g"), "📚");
+      t = t.replace(new RegExp(`${OPEN}(?:model-change|model)\\(['"].+?['"]\\)${CLOSE}`, "g"), "🔀");
+      t = t.replace(new RegExp(`${OPEN}thinking\\([\\d.]+\\)${CLOSE}`, "g"), "🦉");
+      t = t.replace(new RegExp(`${OPEN}(?:thinking-up|think)${CLOSE}`, "g"), "🦉");
+      t = t.replace(new RegExp(`${OPEN}(?:thinking-down|relax|zzz)${CLOSE}`, "g"), "🦉");
+      t = t.replace(new RegExp(`${OPEN}ctrl:[\\w=]+${CLOSE}`, "g"), "⚙️");
 
       // Emotion markers: @@joy:0.5@@ @@sadness:0.2,urgency:0.8@@ etc.
       const emotions = "joy|sadness|anger|fear|surprise|confidence|uncertainty|excitement|calm|urgency|reverence";
@@ -99,11 +116,11 @@ function stripMarkersOutsideCode(content: string): string {
           `${OPEN}(?:${emotions}):[0-9.]+(?:,(?:${emotions}):[0-9.]+)*${CLOSE}`,
           "g"
         ),
-        "\u{1F60A}"
+        "😊"
       );
 
-      // Generic fallback — any remaining markers
-      t = t.replace(new RegExp(`${OPEN}[a-zA-Z][a-zA-Z0-9_-]*(?:\\([^)]*\\))?${CLOSE}`, "g"), "\u{1F9E0}");
+      // Generic fallback — any remaining markers → 🧠
+      t = t.replace(new RegExp(`${OPEN}[a-zA-Z][a-zA-Z0-9_-]*(?:\\([^)]*\\))?${CLOSE}`, "g"), "🧠");
 
       return t;
     })
@@ -135,7 +152,7 @@ export function parseDirectives(content: string): ParsedDirectives {
   let match;
   while ((match = learnPattern.exec(proseOnly)) !== null) {
     result.learnFacts.push(match[1]);
-    cleaned = cleaned.replace(match[0], "");
+    cleaned = cleaned.replace(match[0], "📚");
   }
 
   // @@ctrl:memory=type@@
@@ -143,15 +160,15 @@ export function parseDirectives(content: string): ParsedDirectives {
   const memoryMatch = proseOnly.match(memoryPattern);
   if (memoryMatch) {
     result.memorySwap = memoryMatch[1];
-    cleaned = cleaned.replace(memoryMatch[0], "");
+    cleaned = cleaned.replace(memoryMatch[0], "⚙️");
   }
 
-  // 🧠
-  const modelPattern = new RegExp(`${OPEN}model-change\\(['"](.+?)['"]\\)${CLOSE}`);
+  // 🧠 or 🧠
+  const modelPattern = new RegExp(`${OPEN}(?:model-change|model)\\(['"](.+?)['"]\\)${CLOSE}`);
   const modelMatch = proseOnly.match(modelPattern);
   if (modelMatch) {
     result.modelSwitch = modelMatch[1];
-    cleaned = cleaned.replace(modelMatch[0], "");
+    cleaned = cleaned.replace(modelMatch[0], "🔀");
   }
 
   // 💡
@@ -161,32 +178,40 @@ export function parseDirectives(content: string): ParsedDirectives {
     const level = parseFloat(thinkingMatch[1]);
     if (!isNaN(level)) {
       result.thinkingLevel = level;
-      cleaned = cleaned.replace(thinkingMatch[0], "");
+      cleaned = cleaned.replace(thinkingMatch[0], "🦉");
     }
   }
 
-  // 🧠 — bump +0.3
-  const thinkingUp = new RegExp(`${OPEN}thinking-up${CLOSE}`, "g");
+  // 🧠 or 💡 — bump +0.3
+  const thinkingUp = new RegExp(`${OPEN}(?:thinking-up|think)${CLOSE}`, "g");
   if (thinkingUp.test(proseOnly)) {
     const current = runtimeConfig.getThinkingLevel();
     result.thinkingLevel = Math.min(1.0, current + 0.3);
-    cleaned = cleaned.replace(thinkingUp, "");
+    cleaned = cleaned.replace(thinkingUp, "🦉");
   }
 
-  // 🧠 — reduce -0.3
-  const thinkingDown = new RegExp(`${OPEN}thinking-down${CLOSE}`, "g");
+  // 🧠 or 💡 or 💡 — reduce -0.3
+  const thinkingDown = new RegExp(`${OPEN}(?:thinking-down|relax|zzz)${CLOSE}`, "g");
   if (thinkingDown.test(proseOnly)) {
     const current = runtimeConfig.getThinkingLevel();
     result.thinkingLevel = Math.max(0.0, current - 0.3);
-    cleaned = cleaned.replace(thinkingDown, "");
+    cleaned = cleaned.replace(thinkingDown, "🦉");
   }
 
   // Strip display-only markers from prose only — code blocks/spans pass through
   cleaned = stripMarkersOutsideCode(cleaned);
 
-  // Collapse duplicate emoji
+  // Collapse consecutive duplicate emoji
   cleaned = cleaned.replace(/🧠+/g, "🧠");
   cleaned = cleaned.replace(/💡+/g, "💡");
+  cleaned = cleaned.replace(/🦉+/g, "🦉");
+  cleaned = cleaned.replace(/🔀+/g, "🔀");
+  cleaned = cleaned.replace(/📚+/g, "📚");
+  cleaned = cleaned.replace(/😊+/g, "😊");
+  cleaned = cleaned.replace(/⚖️+/g, "⚖️");
+  cleaned = cleaned.replace(/📎+/g, "📎");
+  cleaned = cleaned.replace(/💾+/g, "💾");
+  cleaned = cleaned.replace(/⚙️+/g, "⚙️");
 
   result.cleanedMessage = cleaned.trim();
   return result;

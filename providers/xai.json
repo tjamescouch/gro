@@ -2,8 +2,8 @@
   "$schema": "../schema/provider-tiers.schema.json",
   "provider": "xai",
   "tiers": {
-    "low": "grok-4.1-fast",
-    "mid": "grok-4.1-fast",
+    "low": "grok-4-latest",
+    "mid": "grok-4-latest",
     "high": "grok-4"
   },
   "thresholds": {

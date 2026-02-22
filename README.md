@@ -54,7 +54,7 @@ Provider is auto-inferred from model name — `-m claude-sonnet-4-5` uses Anthro
 | **Anthropic** (default) | `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-opus-4-5` | `ANTHROPIC_API_KEY` | Yes (default provider) |
 | **OpenAI** | `gpt-4.1`, `gpt-4.1-mini`, `o3`, `o4-mini` | `OPENAI_API_KEY` | Only if using OpenAI models |
 | **Google** | `gemini-2.5-flash`, `gemini-2.5-pro` | `GOOGLE_API_KEY` | Only if using Gemini models |
-| **xAI** | `grok-4`, `grok-4.1-fast` | `XAI_API_KEY` | Only if using Grok models |
+| **xAI** | `grok-4`, `grok-4-latest` | `XAI_API_KEY` | Only if using Grok models |
 | **Groq** | `llama-3.3-70b-versatile` | `GROQ_API_KEY` | Only if using Groq-hosted models |
 | **Local** | `llama3`, `mistral`, `qwen` | — | No key needed (Ollama / LM Studio) |
 

@@ -48,7 +48,7 @@ import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { ViolationTracker } from "./violations.js";
 import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
 import { parseDirectives, executeDirectives } from "./runtime/index.js";
-import { runtimeConfig, runtimeState } from "./runtime/index.js";
+import { runtimeConfig } from "./runtime/index.js";
 
 const VERSION = getGroVersion();
 
@@ -883,18 +883,18 @@ async function executeTurn(
 
   const THINKING_MEAN = 0.5;  // cruising altitude — mid-tier, not idle
   const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle round
-  // RuntimeStateManager singleton — owns all mutable per-session model/sampling state.
-  // Replaces: activeModel, activeThinkingBudget, modelExplicitlySet, activeTemperature/TopK/TopP
-  runtimeState.initialize(cfg.model, 0.5);
+  // Mutable model reference — stream markers can switch this mid-turn
+  let activeModel = cfg.model;
+  // Thinking level: 0.0 = idle (haiku), 1.0 = full (opus + max budget).
+  // Decays toward THINKING_MEAN each round without @@thinking()@@ — agents coast at mid-tier.
+  // Emit @@thinking(0.8)@@ to go into the phone booth; let it decay to come back out.
+  let activeThinkingBudget = 0.5;
+  let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
 
-  // Convenience aliases — these delegate reads to runtimeState for local readability.
-  // Write through runtimeState.set*() methods.
-  const getActiveModel = () => runtimeState.activeModel;
-  const setActiveModel = (m: string) => runtimeState.setActiveModel(m);
-  const getThinkingBudget = () => runtimeState.thinkingBudget;
-  const setThinkingBudget = (v: number) => runtimeState.setThinkingBudget(v);
-  const isModelExplicitlySet = () => runtimeState.modelExplicitlySet;
-  const setModelExplicitlySet = (v: boolean) => runtimeState.setModelExplicitlySet(v);
+  // Sampling parameters — controlled via @@temp()@@, @@top_k()@@, @@top_p()@@ markers
+  let activeTemperature: number | undefined = undefined;
+  let activeTopK: number | undefined = undefined;
+  let activeTopP: number | undefined = undefined;
 
   /** Select model tier based on thinking budget and provider.
    * Loads tier ladders from providers/*.json config files.
@@ -933,7 +933,7 @@ async function executeTurn(
         newMemory = new SimpleMemory(cfg.systemPrompt || undefined);
         (newMemory as SimpleMemory).setMeta(cfg.provider, cfg.model);
       } else if (targetType === "advanced") {
-        newMemory = new AdvancedMemory({ driver, model: getActiveModel(), systemPrompt: cfg.systemPrompt || undefined });
+        newMemory = new AdvancedMemory({ driver, model: activeModel, systemPrompt: cfg.systemPrompt || undefined });
       } else if (targetType === "fragmentation") {
         newMemory = new FragmentationMemory({ systemPrompt: cfg.systemPrompt || undefined });
       } else if (targetType === "hnsw") {
@@ -975,10 +975,10 @@ async function executeTurn(
           Logger.error(`Stream marker: model-change '${marker.arg}' REJECTED — cross-provider swap (${cfg.provider} → ${newProvider}) is not supported. Stay on ${cfg.provider} models.`);
         } else {
           Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
-          setActiveModel(newModel);
+          activeModel = newModel;
           cfg.model = newModel;       // persist across turns
           memory.setModel(newModel);  // persist in session metadata on save
-          setModelExplicitlySet(true);  // suppress thinking-tier auto-select
+          modelExplicitlySet = true;  // suppress thinking-tier auto-select
         }
       } else if (marker.name === "ref" && marker.arg) {
         // VirtualMemory page ref — load a page into context for next turn
@@ -1007,7 +1007,7 @@ async function executeTurn(
         // Decays toward THINKING_MEAN each idle round — emit each round to maintain level.
         const level = parseFloat(marker.arg !== "" ? marker.arg : "0.5");
         if (!isNaN(level) && level >= 0 && level <= 1) {
-          setThinkingBudget(level);
+          activeThinkingBudget = level;
           thinkingSeenThisTurn = true;
           Logger.info(`Stream marker: thinking(${level}) → budget=${level}`);
           emitStateVector({ thinking: level }, cfg.outputFormat);
@@ -1016,16 +1016,16 @@ async function executeTurn(
         }
       } else if (marker.name === "think") {
         // Shorthand: bump thinking intensity by 0.3, capped at 1.0
-        setThinkingBudget(Math.min(1.0, getThinkingBudget() + 0.3));
+        activeThinkingBudget = Math.min(1.0, activeThinkingBudget + 0.3);
         thinkingSeenThisTurn = true;
-        Logger.info(`Stream marker: think → budget=${getThinkingBudget().toFixed(2)}`);
-        emitStateVector({ thinking: getThinkingBudget() }, cfg.outputFormat);
+        Logger.info(`Stream marker: think → budget=${activeThinkingBudget.toFixed(2)}`);
+        emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
       } else if (marker.name === "relax") {
         // Shorthand: reduce thinking intensity by 0.3, floored at 0.0
-        setThinkingBudget(Math.max(0.0, getThinkingBudget() - 0.3));
+        activeThinkingBudget = Math.max(0.0, activeThinkingBudget - 0.3);
         thinkingSeenThisTurn = true;
-        Logger.info(`Stream marker: relax → budget=${getThinkingBudget().toFixed(2)}`);
-        emitStateVector({ thinking: getThinkingBudget() }, cfg.outputFormat);
+        Logger.info(`Stream marker: relax → budget=${activeThinkingBudget.toFixed(2)}`);
+        emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
       } else if (EMOTION_DIMENSIONS.has(marker.name)) {
         // Function-form emotion marker @@joy(0.6)@@ — route to visage as state vector.
         const val = marker.arg !== "" ? parseFloat(marker.arg) : 0.5;
@@ -1038,7 +1038,7 @@ async function executeTurn(
         // @@temp()@@ or @@temperature()@@ — set sampling temperature
         const val = parseFloat(marker.arg);
         if (!isNaN(val) && val >= 0 && val <= 2) {
-          runtimeState.setTemperature(val);
+          activeTemperature = val;
           Logger.info(`Stream marker: temp(${val})`);
         } else {
           Logger.warn(`Stream marker: temp('${marker.arg}') — invalid, must be 0.0–2.0`);
@@ -1047,7 +1047,7 @@ async function executeTurn(
         // @@top_k()@@ — set nucleus sampling
         const val = parseInt(marker.arg, 10);
         if (!isNaN(val) && val > 0) {
-          runtimeState.setTopK(val);
+          activeTopK = val;
           Logger.info(`Stream marker: top_k(${val})`);
         } else {
           Logger.warn(`Stream marker: top_k('${marker.arg}') — invalid, must be positive integer`);
@@ -1056,7 +1056,7 @@ async function executeTurn(
         // @@top_p()@@ — set nucleus sampling
         const val = parseFloat(marker.arg);
         if (!isNaN(val) && val >= 0 && val <= 1) {
-          runtimeState.setTopP(val);
+          activeTopP = val;
           Logger.info(`Stream marker: top_p(${val})`);
         } else {
           Logger.warn(`Stream marker: top_p('${marker.arg}') — invalid, must be 0.0–1.0`);
@@ -1162,16 +1162,16 @@ async function executeTurn(
     };
 
     // Select model tier based on current thinking budget (unless agent pinned a model explicitly)
-    if (!isModelExplicitlySet()) {
-      const tierModel = thinkingTierModel(getThinkingBudget());
-      if (tierModel !== getActiveModel()) {
-        Logger.info(`Thinking budget ${getThinkingBudget().toFixed(2)} → model tier: ${tierModel}`);
-        setActiveModel(tierModel);
+    if (!modelExplicitlySet) {
+      const tierModel = thinkingTierModel(activeThinkingBudget);
+      if (tierModel !== activeModel) {
+        Logger.info(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierModel}`);
+        activeModel = tierModel;
       }
     }
 
     // Sync thinking budget to memory — scales compaction aggressiveness
-    memory.setThinkingBudget(getThinkingBudget());
+    memory.setThinkingBudget(activeThinkingBudget);
 
     // Create a fresh marker parser per round so partial state doesn't leak
     const markerParser = createMarkerParser({
@@ -1180,13 +1180,13 @@ async function executeTurn(
     });
 
     const output: ChatOutput = await driver.chat(memory.messages(), {
-      model: getActiveModel(),
+      model: activeModel,
       tools: tools.length > 0 ? tools : undefined,
       onToken: markerParser.onToken,
-      thinkingBudget: getThinkingBudget(),
-      temperature: runtimeState.temperature,
-      top_k: runtimeState.topK,
-      top_p: runtimeState.topP,
+      thinkingBudget: activeThinkingBudget,
+      temperature: activeTemperature,
+      top_k: activeTopK,
+      top_p: activeTopP,
     });
 
     // Flush any remaining buffered tokens from the marker parser
@@ -1198,7 +1198,7 @@ async function executeTurn(
       // Regress toward mean — agents coast at cruising altitude, not idle.
       // From opus (0.8) → settles at ~0.5 (mid-tier) in ~4 rounds.
       // From haiku (0.1) → pulls UP to ~0.5 (mid-tier) in ~3 rounds.
-      setThinkingBudget(getThinkingBudget() + (THINKING_MEAN - getThinkingBudget()) * THINKING_REGRESSION_RATE);
+      activeThinkingBudget += (THINKING_MEAN - activeThinkingBudget) * THINKING_REGRESSION_RATE;
     }
 
     // Track token usage for niki budget enforcement and spend meter
@@ -1207,7 +1207,7 @@ async function executeTurn(
       turnTokensOut += output.usage.outputTokens;
       // Log cumulative usage to stderr — niki parses these patterns for budget enforcement
       process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
-      spendMeter.setModel(getActiveModel());
+      spendMeter.setModel(activeModel);
       spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
       Logger.info(spendMeter.format());
 
@@ -1414,7 +1414,7 @@ Do not get stuck calling listen repeatedly.`
           result = await executeYield(fnArgs);
         } else if (fnName === "gro_version") {
           const memoryMode = process.env.GRO_MEMORY === "simple" ? "simple" : "virtual";
-          result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode, thinkingBudget: getThinkingBudget(), activeModel: getActiveModel() });
+          result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode, thinkingBudget: activeThinkingBudget, activeModel });
         } else if (fnName === "memory_status") {
           result = executeMemoryStatus(fnArgs, memory);
         } else if (fnName === "memory_report") {
@@ -1500,17 +1500,17 @@ Do not get stuck calling listen repeatedly.`
   if (!brokeCleanly && tools.length > 0) {
     Logger.debug("Max tool rounds reached — final turn with no tools");
     const finalOutput: ChatOutput = await driver.chat(memory.messages(), {
-      model: getActiveModel(),
-      temperature: runtimeState.temperature,
-      top_k: runtimeState.topK,
-      top_p: runtimeState.topP,
+      model: activeModel,
+      temperature: activeTemperature,
+      top_k: activeTopK,
+      top_p: activeTopP,
       onToken: rawOnToken,
     });
     if (finalOutput.usage) {
       turnTokensIn += finalOutput.usage.inputTokens;
       turnTokensOut += finalOutput.usage.outputTokens;
       process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
-      spendMeter.setModel(getActiveModel());
+      spendMeter.setModel(activeModel);
       spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
       Logger.info(spendMeter.format());
 

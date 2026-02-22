@@ -1,6 +1,6 @@
 {
   "name": "@tjamescouch/gro",
-  "version": "1.9.12",
+  "version": "1.9.13",
   "description": "Provider-agnostic LLM runtime with context management",
   "bin": {
     "gro": "./dist/main.js"
@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "@tjamescouch/gro": "^1.9.12",
     "blessed": "^0.1.81",
     "isexe": "^4.0.0"
   }

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Logger } from "./logger.js";
@@ -16,16 +16,26 @@ export function loadModelConfig(): ModelConfig {
   if (cached) return cached;
 
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  const configPath = join(__dirname, "..", "models.json");
+  // Try package root first (../models.json from dist/), then same dir as fallback
+  const candidates = [
+    join(__dirname, "..", "models.json"),
+    join(__dirname, "models.json"),
+  ];
 
-  try {
-    cached = JSON.parse(readFileSync(configPath, "utf-8")) as ModelConfig;
-    Logger.debug(`Loaded model config: ${Object.keys(cached.aliases).length} aliases, ${Object.keys(cached.defaults).length} provider defaults`);
-  } catch (e: unknown) {
-    Logger.warn(`Failed to load models.json: ${(e as Error).message} — using empty config`);
-    cached = { aliases: {}, defaults: {}, providerPrefixes: {} };
+  for (const configPath of candidates) {
+    if (existsSync(configPath)) {
+      try {
+        cached = JSON.parse(readFileSync(configPath, "utf-8")) as ModelConfig;
+        Logger.debug(`Loaded model config: ${Object.keys(cached.aliases).length} aliases, ${Object.keys(cached.defaults).length} provider defaults`);
+        return cached;
+      } catch (e: unknown) {
+        Logger.warn(`Failed to parse ${configPath}: ${(e as Error).message}`);
+      }
+    }
   }
 
+  Logger.warn(`models.json not found — using empty config`);
+  cached = { aliases: {}, defaults: {}, providerPrefixes: {} };
   return cached;
 }
 
@@ -70,11 +80,13 @@ export function inferProvider(explicit?: string, model?: string): Provider {
     return "anthropic";
   }
   if (model) {
+    // Resolve alias first so short names like "grok" match their provider
+    const resolved = resolveModelAlias(model);
     const { providerPrefixes } = loadModelConfig();
-    // Check providers in defined order
+    // Check providers in defined order, trying both raw and resolved model names
     for (const [provider, prefixes] of Object.entries(providerPrefixes)) {
       for (const prefix of prefixes) {
-        if (model.startsWith(prefix)) return provider as Provider;
+        if (model.startsWith(prefix) || resolved.startsWith(prefix)) return provider as Provider;
       }
     }
   }

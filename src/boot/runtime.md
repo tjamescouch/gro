@@ -100,7 +100,8 @@ Takes effect immediately (hot-patched) and persists across sessions.
 | Alias | Model | $/M in/out | Notes |
 |-------|-------|-----------|-------|
 | grok-fast | grok-4-fast-reasoning | $0.20/$0.50 | 2M ctx |
-| grok | grok-4 | $3/$15 | deep reasoning |
+| grok | grok-4-fast-reasoning | $0.20/$0.50 | default xAI |
+| grok4 | grok-4-0709 | $3/$15 | deep reasoning |
 
 ### Local
 | Alias | Model | Notes |

@@ -42,6 +42,7 @@ import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { ViolationTracker } from "./violations.js";
 import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
+import { loadModelConfig, resolveModelAlias, isKnownAlias, defaultModel, modelIdPrefixPattern, inferProvider, } from "./model-config.js";
 import { parseDirectives, executeDirectives } from "./runtime/index.js";
 import { runtimeConfig, runtimeState } from "./runtime/index.js";
 const VERSION = getGroVersion();
@@ -501,42 +502,6 @@ function loadConfig() {
         toolRoles: { idleTool: null, idleToolDefaultArgs: {}, idleToolArgStrategy: "last-call", sendTool: null, sendToolMessageField: "message" },
     };
 }
-function inferProvider(explicit, model) {
-    if (explicit) {
-        const known = ["openai", "anthropic", "groq", "google", "xai", "local"];
-        if (known.includes(explicit))
-            return explicit;
-        Logger.warn(`Unknown provider "${explicit}", defaulting to anthropic`);
-        return "anthropic";
-    }
-    if (model) {
-        if (/^(gpt-|o1-|o3|o4-|chatgpt-)/.test(model))
-            return "openai";
-        if (/^(claude-|sonnet|haiku|opus)/.test(model))
-            return "anthropic";
-        if (/^gemini-/.test(model))
-            return "google";
-        if (/^grok-/.test(model))
-            return "xai";
-        // Groq-hosted models
-        if (/^(llama-3|gemma2-|gemma-|mixtral-|whisper-)/.test(model))
-            return "groq";
-        if (/^(gemma|llama|mistral|phi|qwen|deepseek)/.test(model))
-            return "local";
-    }
-    return "anthropic";
-}
-function defaultModel(provider) {
-    switch (provider) {
-        case "openai": return "gpt-5.2-codex";
-        case "anthropic": return "claude-sonnet-4-5";
-        case "groq": return "llama-3.3-70b-versatile";
-        case "google": return "gemini-2.5-flash";
-        case "xai": return "grok-4-fast-reasoning";
-        case "local": return "llama3";
-        default: return "claude-sonnet-4-5";
-    }
-}
 function defaultBaseUrl(provider) {
     switch (provider) {
         case "openai": return process.env.OPENAI_BASE_URL || "https://api.openai.com";
@@ -806,53 +771,6 @@ function formatOutput(text, format) {
 // ---------------------------------------------------------------------------
 // Tool execution loop
 // ---------------------------------------------------------------------------
-/**
- * Resolve short model aliases to full model identifiers.
- * Allows stream markers like @@model-change('haiku')@@ without
- * the model needing to know the full versioned name.
- */
-const MODEL_ALIASES = {
-    // Anthropic
-    "haiku": "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
-    "opus": "claude-opus-4-6",
-    // OpenAI — GPT-5 family
-    "gpt5-nano": "gpt-5-nano",
-    "gpt5-mini": "gpt-5-mini",
-    "gpt5": "gpt-5",
-    "gpt5.2": "gpt-5.2",
-    "gpt5.2-codex": "gpt-5.2-codex",
-    "gpt5.2-pro": "gpt-5.2-pro",
-    // OpenAI — GPT-4.1 family
-    "gpt4.1-nano": "gpt-4.1-nano",
-    "gpt4.1-mini": "gpt-4.1-mini",
-    "gpt4.1": "gpt-4.1",
-    // OpenAI — reasoning
-    "o3": "o3",
-    "o4-mini": "o4-mini",
-    // OpenAI — legacy
-    "gpt4o": "gpt-4o",
-    "gpt4o-mini": "gpt-4o-mini",
-    "gpt4": "gpt-4o",
-    // Google
-    "flash-lite": "gemini-2.5-flash-lite",
-    "flash": "gemini-2.5-flash",
-    "gemini-pro": "gemini-2.5-pro",
-    "gemini3-flash": "gemini-3-flash",
-    "gemini3-pro": "gemini-3-pro",
-    // xAI
-    "grok-fast": "grok-4-fast-reasoning",
-    "grok": "grok-4-fast-reasoning",
-    "grok4": "grok-4",
-    // Local
-    "llama3": "llama3",
-    "qwen": "qwen",
-    "deepseek": "deepseek",
-};
-function resolveModelAlias(alias) {
-    const lower = alias.trim().toLowerCase();
-    return MODEL_ALIASES[lower] ?? alias;
-}
 /** Emotion dimensions routed to visage as state-vector events via @@dim(value)@@ markers. */
 const EMOTION_DIMENSIONS = new Set([
     "joy", "sadness", "anger", "fear", "surprise", "disgust",
@@ -916,7 +834,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
      */
     function thinkingTierModel(budget) {
         const provider = inferProvider(cfg.provider, cfg.model);
-        return selectTierModel(budget, provider, cfg.model, MODEL_ALIASES, cfg.maxTier ?? undefined);
+        return selectTierModel(budget, provider, cfg.model, loadModelConfig().aliases, cfg.maxTier ?? undefined);
     }
     let brokeCleanly = false;
     let idleNudges = 0;
@@ -977,9 +895,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             if (marker.name === "model-change") {
                 const newModel = resolveModelAlias(marker.arg);
                 // Validate: must be a known alias or match a recognized model ID pattern
-                const isKnownAlias = MODEL_ALIASES.hasOwnProperty(marker.arg.trim().toLowerCase());
-                const isValidModelId = /^(claude-|gpt-|o[134]-|chatgpt-|gemini-|grok-|llama|gemma|mixtral|phi|qwen|deepseek|whisper-)/.test(newModel);
-                if (!isKnownAlias && !isValidModelId) {
+                const knownAlias = isKnownAlias(marker.arg);
+                const isValidModelId = modelIdPrefixPattern().test(newModel);
+                if (!knownAlias && !isValidModelId) {
                     Logger.warn(`Stream marker: model-change '${marker.arg}' IGNORED — not a recognized model or alias`);
                     return;
                 }

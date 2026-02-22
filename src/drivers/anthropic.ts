@@ -145,6 +145,67 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
     apiMessages.push({ role: "user", content: m.content });
   }
 
+  // Final validation: ensure every tool_use is immediately followed by its tool_result.
+  // After VM compaction, messages can be reordered (summaries injected, concurrent adds)
+  // such that a tool_result exists but is NOT immediately after its tool_use — causing
+  // Anthropic API 400: "tool_use ids found without tool_result blocks immediately after".
+  for (let i = apiMessages.length - 1; i >= 0; i--) {
+    const msg = apiMessages[i];
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+
+    const toolUseBlocks = msg.content.filter((b: any) => b.type === "tool_use");
+    if (toolUseBlocks.length === 0) continue;
+
+    // Collect tool_result IDs from the immediately following message
+    const next = apiMessages[i + 1];
+    const immediateResultIds = new Set<string>();
+    if (next && next.role === "user" && Array.isArray(next.content)) {
+      for (const b of next.content) {
+        if (b.type === "tool_result" && b.tool_use_id) {
+          immediateResultIds.add(b.tool_use_id);
+        }
+      }
+    }
+
+    // Strip tool_use blocks whose results aren't immediately following
+    const orphaned = toolUseBlocks.filter((b: any) => !immediateResultIds.has(b.id));
+    if (orphaned.length > 0) {
+      Logger.warn(`Stripping ${orphaned.length} tool_use(s) without immediate tool_result: ${orphaned.map((b: any) => b.id).join(", ")}`);
+      const orphanedIds = new Set(orphaned.map((b: any) => b.id));
+      msg.content = msg.content.filter((b: any) => b.type !== "tool_use" || !orphanedIds.has(b.id));
+
+      // If assistant message is now empty, remove it
+      if (msg.content.length === 0) {
+        apiMessages.splice(i, 1);
+      }
+    }
+  }
+
+  // Second pass: remove orphaned tool_result blocks (their tool_use was stripped above).
+  // Rebuild the set of surviving tool_use IDs.
+  const survivingToolUseIds = new Set<string>();
+  for (const msg of apiMessages) {
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      for (const b of msg.content) {
+        if (b.type === "tool_use" && b.id) survivingToolUseIds.add(b.id);
+      }
+    }
+  }
+  for (let i = apiMessages.length - 1; i >= 0; i--) {
+    const msg = apiMessages[i];
+    if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
+    const hasToolResults = msg.content.some((b: any) => b.type === "tool_result");
+    if (!hasToolResults) continue;
+
+    msg.content = msg.content.filter((b: any) =>
+      b.type !== "tool_result" || survivingToolUseIds.has(b.tool_use_id)
+    );
+    // If user message is now empty, remove it
+    if (msg.content.length === 0) {
+      apiMessages.splice(i, 1);
+    }
+  }
+
   return { system: systemPrompt, apiMessages };
 }
 

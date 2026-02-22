@@ -238,4 +238,34 @@ describe("createMarkerParser", () => {
     assert.equal(markers[0].arg, "0.9");
     assert.equal(parser.getCleanText(), "\u{2696}\u{FE0F} critical info");
   });
+
+  it("@@max-context('200k')@@ gets 📐 emoji", () => {
+    const markers: StreamMarker[] = [];
+    const parser = createMarkerParser({
+      onMarker: (m) => markers.push(m),
+    });
+
+    parser.onToken("@@max-context('200k')@@ expanded");
+    parser.flush();
+
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0].name, "max-context");
+    assert.equal(markers[0].arg, "200k");
+    assert.equal(parser.getCleanText(), "\u{1F4D0} expanded");
+  });
+
+  it("@@max-context('1mb')@@ gets 📐 emoji", () => {
+    const markers: StreamMarker[] = [];
+    const parser = createMarkerParser({
+      onMarker: (m) => markers.push(m),
+    });
+
+    parser.onToken("@@max-context('1mb')@@ full context");
+    parser.flush();
+
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0].name, "max-context");
+    assert.equal(markers[0].arg, "1mb");
+    assert.equal(parser.getCleanText(), "\u{1F4D0} full context");
+  });
 });

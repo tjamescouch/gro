@@ -1169,6 +1169,37 @@ async function executeTurn(
        } else {
          Logger.warn(`Stream marker: memory-tune — memory controller doesn't support hot-tuning`);
        }
+     } else if (marker.name === "max-context" && marker.arg) {
+       // @@max-context('200k')@@ — set total working memory token budget
+       // Accepts: "200k" (200,000), "1m"/"1mb" (1,000,000), "32000" (raw tokens)
+       const raw = marker.arg.trim().toLowerCase();
+       let tokens: number;
+       if (raw.endsWith("mb")) {
+         tokens = parseFloat(raw.slice(0, -2)) * 1_000_000;
+       } else if (raw.endsWith("kb")) {
+         tokens = parseFloat(raw.slice(0, -2)) * 1_000;
+       } else if (raw.endsWith("m")) {
+         tokens = parseFloat(raw.slice(0, -1)) * 1_000_000;
+       } else if (raw.endsWith("k")) {
+         tokens = parseFloat(raw.slice(0, -1)) * 1_000;
+       } else {
+         tokens = parseFloat(raw);
+       }
+       tokens = Math.round(tokens);
+       if (!isNaN(tokens) && tokens >= 1024) {
+         // Apply via hotReloadConfig (VirtualMemory) or tune (general)
+         if ("hotReloadConfig" in memory && typeof (memory as any).hotReloadConfig === "function") {
+           const result = (memory as any).hotReloadConfig({ workingMemoryTokens: tokens });
+           Logger.info(`Stream marker: max-context('${marker.arg}') → ${tokens} tokens — ${result}`);
+         } else if ("tune" in memory && typeof (memory as any).tune === "function") {
+           (memory as any).tune({ working: tokens });
+           Logger.info(`Stream marker: max-context('${marker.arg}') → ${tokens} tokens`);
+         } else {
+           Logger.warn(`Stream marker: max-context — memory controller doesn't support resizing`);
+         }
+       } else {
+         Logger.warn(`Stream marker: max-context('${marker.arg}') — invalid size (min 1024 tokens, got ${tokens})`);
+       }
      }
     };
 

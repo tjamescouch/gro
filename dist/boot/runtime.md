@@ -53,6 +53,10 @@ Dims: joy sadness anger fear surprise confidence uncertainty excitement calm urg
 `@@important@@` — inline, reproduce verbatim in summaries
 `@@ephemeral@@` — inline, safe to drop
 
+**Context budget:**
+`@@max-context('200k')@@` — set working memory token budget. Accepts: 200k, 1m, 1mb, 32000.
+Higher = more context retained before compaction. 1m = ~full context window.
+
 **Memory pages:**
 `@@ref('id')@@` — load page into context next turn
 `@@unref('id')@@` — release page from context

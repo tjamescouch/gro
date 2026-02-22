@@ -213,12 +213,18 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
 const TRANSIENT_ERROR_RE = /fetch timeout|fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EAI_AGAIN|socket hang up/i;
 
 /** Parse response content blocks into text + tool calls + token usage */
-function parseResponseContent(data: any, onToken?: (t: string) => void): ChatOutput {
+function parseResponseContent(data: any, onToken?: (t: string) => void, onReasoningToken?: (t: string) => void): ChatOutput {
   let text = "";
+  let reasoning = "";
   const toolCalls: ChatToolCall[] = [];
 
   for (const block of data.content ?? []) {
-    if (block.type === "text") {
+    if (block.type === "thinking" && block.thinking) {
+      reasoning += block.thinking;
+      if (onReasoningToken) {
+        try { onReasoningToken(block.thinking); } catch {}
+      }
+    } else if (block.type === "text") {
       text += block.text;
       if (onToken) {
         try { onToken(block.text); } catch {}
@@ -254,7 +260,7 @@ function parseResponseContent(data: any, onToken?: (t: string) => void): ChatOut
   }
   Logger.info(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}`);
 
-  return { text, toolCalls, usage };
+  return { text, toolCalls, reasoning: reasoning || undefined, usage };
 }
 
 /**
@@ -288,6 +294,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
     await rateLimiter.limit("llm-ask", 1);
 
     const onToken: ((t: string) => void) | undefined = opts?.onToken;
+    const onReasoningToken: ((t: string) => void) | undefined = opts?.onReasoningToken;
     const resolvedModel = opts?.model ?? model;
 
     const { system: systemPrompt, apiMessages } = convertMessages(messages);
@@ -434,7 +441,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
       }
 
       const data = await res.json() as any;
-      return parseResponseContent(data, onToken);
+      return parseResponseContent(data, onToken, onReasoningToken);
     } catch (e: unknown) {
       if (isGroError(e)) throw e; // already wrapped above
 

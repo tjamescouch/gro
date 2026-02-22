@@ -943,6 +943,10 @@ async function executeTurn(
     ? (t: string) => process.stdout.write(JSON.stringify({ type: "token", token: t }) + "\n")
     : (t: string) => process.stdout.write(t);
 
+  const rawOnReasoningToken = cfg.outputFormat === "stream-json"
+    ? (t: string) => process.stdout.write(JSON.stringify({ type: "reasoning", token: t }) + "\n")
+    : undefined;
+
   const THINKING_MEAN = 0.5;  // cruising altitude — mid-tier, not idle
   const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle round
   // Mutable model reference — stream markers can switch this mid-turn
@@ -1286,6 +1290,7 @@ async function executeTurn(
       model: activeModel,
       tools: tools.length > 0 ? tools : undefined,
       onToken: markerParser.onToken,
+      onReasoningToken: rawOnReasoningToken,
       thinkingBudget: activeThinkingBudget,
       temperature: activeTemperature,
       top_k: activeTopK,
@@ -1620,6 +1625,7 @@ Do not get stuck calling ${idleToolName} repeatedly.`
       top_k: activeTopK,
       top_p: activeTopP,
       onToken: rawOnToken,
+      onReasoningToken: rawOnReasoningToken,
     });
     if (finalOutput.usage) {
       turnTokensIn += finalOutput.usage.inputTokens;

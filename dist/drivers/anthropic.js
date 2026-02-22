@@ -196,11 +196,21 @@ function convertMessages(messages) {
 /** Pattern matching transient network errors that should be retried */
 const TRANSIENT_ERROR_RE = /fetch timeout|fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EAI_AGAIN|socket hang up/i;
 /** Parse response content blocks into text + tool calls + token usage */
-function parseResponseContent(data, onToken) {
+function parseResponseContent(data, onToken, onReasoningToken) {
     let text = "";
+    let reasoning = "";
     const toolCalls = [];
     for (const block of data.content ?? []) {
-        if (block.type === "text") {
+        if (block.type === "thinking" && block.thinking) {
+            reasoning += block.thinking;
+            if (onReasoningToken) {
+                try {
+                    onReasoningToken(block.thinking);
+                }
+                catch { }
+            }
+        }
+        else if (block.type === "text") {
             text += block.text;
             if (onToken) {
                 try {
@@ -239,7 +249,7 @@ function parseResponseContent(data, onToken) {
         cacheInfo = ` ${C.cyan(`[cache ${parts.join(", ")}]`)}`;
     }
     Logger.info(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}`);
-    return { text, toolCalls, usage };
+    return { text, toolCalls, reasoning: reasoning || undefined, usage };
 }
 /**
  * Determine if a model supports Anthropic adaptive/extended thinking.
@@ -273,6 +283,7 @@ export function makeAnthropicDriver(cfg) {
     async function chat(messages, opts) {
         await rateLimiter.limit("llm-ask", 1);
         const onToken = opts?.onToken;
+        const onReasoningToken = opts?.onReasoningToken;
         const resolvedModel = opts?.model ?? model;
         const { system: systemPrompt, apiMessages } = convertMessages(messages);
         // Guard: if all non-system messages were dropped (e.g. orphaned tool_results),
@@ -408,7 +419,7 @@ export function makeAnthropicDriver(cfg) {
                 throw ge;
             }
             const data = await res.json();
-            return parseResponseContent(data, onToken);
+            return parseResponseContent(data, onToken, onReasoningToken);
         }
         catch (e) {
             if (isGroError(e))

@@ -76,3 +76,60 @@ export function envVarName(provider: string): string {
 export function resolveKey(provider: string): string {
   return getKey(provider) || getTheSystemKey(provider) || process.env[envVarName(provider)] || "";
 }
+
+// ---------------------------------------------------------------------------
+// Agentauth proxy auto-discovery
+// ---------------------------------------------------------------------------
+
+const PROXY_PROBE_HOSTS = [
+  "host.lima.internal",       // Lima VM → macOS host
+  "host.containers.internal", // Podman container → host
+  "localhost",                // local dev
+];
+const PROXY_DEFAULT_PORT = 9999;
+
+let _proxyResult: { url: string; providers: string[] } | null | undefined = undefined; // undefined = not probed yet
+
+/**
+ * Probe well-known locations for an agentauth proxy.
+ * Caches result (including negative) so at most N probes happen per process.
+ * Returns proxy base URL (e.g. "http://host.lima.internal:9999") or null.
+ */
+export function discoverProxy(): { url: string; providers: string[] } | null {
+  if (_proxyResult !== undefined) return _proxyResult;
+
+  const port = process.env.AGENTAUTH_PORT || String(PROXY_DEFAULT_PORT);
+  for (const host of PROXY_PROBE_HOSTS) {
+    try {
+      const resp = new URL(`http://${host}:${port}/agentauth/health`);
+      // Synchronous HTTP probe — keeps startup simple and deterministic.
+      const r = spawnSync("node", [
+        "-e",
+        `fetch("${resp}").then(r=>r.json()).then(j=>{process.stdout.write(JSON.stringify(j));process.exit(0)}).catch(()=>process.exit(1))`,
+      ], { encoding: "utf8", timeout: 2000 });
+      if (r.status === 0 && r.stdout) {
+        const health = JSON.parse(r.stdout);
+        if (health.status === "ok") {
+          _proxyResult = { url: `http://${host}:${port}`, providers: health.backends || [] };
+          return _proxyResult;
+        }
+      }
+    } catch {
+      // probe failed, try next
+    }
+  }
+  _proxyResult = null;
+  return null;
+}
+
+/**
+ * Resolve base URL for a provider, auto-discovering agentauth proxy if needed.
+ * Called when no API key is found — checks if a proxy can provide access.
+ * Returns { baseUrl, apiKey } if proxy found, null otherwise.
+ */
+export function resolveProxy(provider: string): { baseUrl: string; apiKey: string } | null {
+  const proxy = discoverProxy();
+  if (!proxy) return null;
+  if (!proxy.providers.includes(provider)) return null;
+  return { baseUrl: `${proxy.url}/${provider}`, apiKey: "proxy-managed" };
+}

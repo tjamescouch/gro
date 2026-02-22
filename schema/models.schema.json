@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Model Configuration",
+  "description": "Model aliases, provider defaults, and provider inference prefixes",
+  "type": "object",
+  "required": ["aliases", "defaults", "providerPrefixes"],
+  "properties": {
+    "aliases": {
+      "type": "object",
+      "description": "Short alias → full model identifier mapping. Keys are lowercase.",
+      "additionalProperties": { "type": "string" }
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Default model per provider.",
+      "additionalProperties": { "type": "string" }
+    },
+    "providerPrefixes": {
+      "type": "object",
+      "description": "Provider name → array of model ID prefixes used to infer provider from a model string. Order matters: earlier providers are checked first.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    }
+  }
+}

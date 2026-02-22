@@ -532,7 +532,7 @@ function defaultModel(provider) {
         case "anthropic": return "claude-sonnet-4-5";
         case "groq": return "llama-3.3-70b-versatile";
         case "google": return "gemini-2.5-flash";
-        case "xai": return "grok-4-latest";
+        case "xai": return "grok-4-fast-reasoning";
         case "local": return "llama3";
         default: return "claude-sonnet-4-5";
     }
@@ -841,8 +841,9 @@ const MODEL_ALIASES = {
     "gemini3-flash": "gemini-3-flash",
     "gemini3-pro": "gemini-3-pro",
     // xAI
-    "grok-fast": "grok-4-latest",
-    "grok": "grok-4",
+    "grok-fast": "grok-4-fast-reasoning",
+    "grok": "grok-4-fast-reasoning",
+    "grok4": "grok-4",
     // Local
     "llama3": "llama3",
     "qwen": "qwen",

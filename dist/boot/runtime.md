@@ -99,7 +99,7 @@ Takes effect immediately (hot-patched) and persists across sessions.
 ### xAI
 | Alias | Model | $/M in/out | Notes |
 |-------|-------|-----------|-------|
-| grok-fast | grok-4-latest | $0.20/$0.50 | 2M ctx |
+| grok-fast | grok-4-fast-reasoning | $0.20/$0.50 | 2M ctx |
 | grok | grok-4 | $3/$15 | deep reasoning |
 
 ### Local

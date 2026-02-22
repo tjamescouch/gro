@@ -133,6 +133,25 @@ export class ViolationTracker {
   }
 
   /**
+   * Get current violation statistics.
+   */
+  getStats(): {
+    total: number;
+    byType: Record<ViolationType, number>;
+    penaltyFactor: number;
+  } {
+    return {
+      total: this.totalViolations,
+      byType: {
+        plain_text: this.plainTextResponses,
+        idle: this.idleRounds,
+        same_tool_loop: this.sameToolLoops,
+      },
+      penaltyFactor: this.penaltyFactor(),
+    };
+  }
+
+  /**
    * Compute a penalty factor for the spend meter.
    * 1.0 = no penalty. Grows with violations.
    */

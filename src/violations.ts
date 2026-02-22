@@ -133,6 +133,25 @@ export class ViolationTracker {
   }
 
   /**
+   * Get current violation statistics.
+   */
+  getStats(): {
+    total: number;
+    byType: Record<ViolationType, number>;
+    penaltyFactor: number;
+  } {
+    return {
+      total: this.totalViolations,
+      byType: {
+        plain_text: this.plainTextResponses,
+        idle: this.idleRounds,
+        same_tool_loop: this.sameToolLoops,
+      },
+      penaltyFactor: this.penaltyFactor(),
+    };
+  }
+
+  /**
    * Compute a penalty factor for the spend meter.
    * 1.0 = no penalty. Grows with violations.
    */
@@ -145,3 +164,49 @@ export class ViolationTracker {
  * Track consecutive calls to the same tool.
  * Returns true if a same-tool-loop violation should be recorded.
  */
+export class SameToolLoopTracker {
+  private lastTool: string | null = null;
+  private consecutiveCount = 0;
+  private readonly threshold: number;
+
+  constructor(opts?: { threshold?: number }) {
+    this.threshold = opts?.threshold ?? 5;
+  }
+
+  /**
+   * Check if tool calls indicate a same-tool loop.
+   * Returns true if the threshold is exceeded.
+   */
+  check(toolNames: string[]): boolean {
+    if (toolNames.length === 0) {
+      this.reset();
+      return false;
+    }
+
+    // Mixed tool usage — not a loop
+    if (toolNames.length > 1 && new Set(toolNames).size > 1) {
+      this.reset();
+      return false;
+    }
+
+    const currentTool = toolNames[0];
+    
+    if (currentTool === this.lastTool) {
+      this.consecutiveCount++;
+      if (this.consecutiveCount >= this.threshold) {
+        this.reset(); // fire once, then reset
+        return true;
+      }
+    } else {
+      this.lastTool = currentTool;
+      this.consecutiveCount = 1;
+    }
+
+    return false;
+  }
+
+  reset(): void {
+    this.lastTool = null;
+    this.consecutiveCount = 0;
+  }
+}

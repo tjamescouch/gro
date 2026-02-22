@@ -6,14 +6,12 @@ import { C } from "./logger.js";
 
 // Pricing per million tokens (input / output) in USD
 const PRICING: Record<string, { in: number; out: number }> = {
-  // Haiku
+  // Anthropic
   "claude-haiku-4-5":           { in: 0.80,  out: 4.00  },
   "claude-haiku-4-5-20251001":  { in: 0.80,  out: 4.00  },
-  // Sonnet
   "claude-sonnet-4-5":                   { in: 3.00,  out: 15.00 },
   "claude-sonnet-4-5-20250929":          { in: 3.00,  out: 15.00 },
   "claude-sonnet-4-20250514":            { in: 3.00,  out: 15.00 },
-  // Opus
   "claude-opus-4-6":            { in: 15.00, out: 75.00 },
   // OpenAI
   "gpt-4o":                     { in: 5.00,  out: 15.00 },
@@ -21,8 +19,29 @@ const PRICING: Record<string, { in: number; out: number }> = {
   "gpt-4-turbo":                { in: 10.00, out: 30.00 },
   "o1":                         { in: 15.00, out: 60.00 },
   "o3-mini":                    { in: 1.10,  out: 4.40  },
-  "grok-4-fast-reasoning":      { in: 5.00,  out: 15.00 },
-  // Groq,
+  "gpt-5-nano":                 { in: 0.05,  out: 0.40  },
+  "gpt-5-mini":                 { in: 0.25,  out: 2.00  },
+  "gpt-4.1-nano":               { in: 0.10,  out: 0.40  },
+  "gpt-4.1-mini":               { in: 0.40,  out: 1.60  },
+  "gpt-4.1":                    { in: 2.00,  out: 8.00  },
+  "gpt-5.2-codex":              { in: 1.25,  out: 10.00 },
+  "gpt-5.2":                    { in: 1.75,  out: 14.00 },
+  "o3":                         { in: 2.00,  out: 8.00  },
+  "o4-mini":                    { in: 1.10,  out: 4.40  },
+  // Google
+  "gemini-2.5-flash-lite":      { in: 0.10,  out: 0.40  },
+  "gemini-2.5-flash":           { in: 0.15,  out: 0.60  },
+  "gemini-2.5-pro":             { in: 1.25,  out: 10.00 },
+  "gemini-3-flash":             { in: 0.50,  out: 3.00  },
+  "gemini-3-pro":               { in: 2.00,  out: 12.00 },
+  // xAI
+  "grok-4-fast-reasoning":      { in: 0.20,  out: 0.50  },
+  "grok-4-0709":                { in: 3.00,  out: 15.00 },
+  // Local (free)
+  "llama3":                     { in: 0.00,  out: 0.00  },
+  "qwen":                       { in: 0.00,  out: 0.00  },
+  "deepseek":                   { in: 0.00,  out: 0.00  },
+  // Groq
   "llama-3.3-70b-versatile":    { in: 0.59,  out: 0.79  },
   "llama-3.1-70b-versatile":    { in: 0.59,  out: 0.79  },
   "llama-3.1-8b-instant":       { in: 0.05,  out: 0.08  },

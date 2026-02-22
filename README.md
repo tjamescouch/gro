@@ -74,8 +74,8 @@ gro -i --gro-memory hnsw           # semantic similarity retrieval
 
 - Messages are partitioned into swim lanes: `assistant` / `user` / `system` / `tool`
 - When working memory exceeds the high-watermark, old messages are summarized and paged to disk
-- Summaries preserve `🧠` markers — load any page back on demand
-- High-importance messages (tagged `🧠`) survive compaction
+- Summaries preserve `@@ref('id')@@` markers — load any page back on demand
+- High-importance messages (tagged `@@important@@`) survive compaction
 - Summarization uses a configurable, cheaper model
 
 ```sh
@@ -96,11 +96,11 @@ gro -i -m claude-sonnet-4-5 --summarizer-model claude-haiku-4-5
 
 ## Extended Thinking
 
-Control reasoning depth dynamically with the `💡` stream marker. The level selects the model tier and allocates thinking tokens (Anthropic extended thinking; OpenAI reasoning tokens).
+Control reasoning depth dynamically with the `@@thinking()@@` stream marker. The level selects the model tier and allocates thinking tokens (Anthropic extended thinking; OpenAI reasoning tokens).
 
 ```sh
 gro -i -m claude-sonnet-4-5 "solve this complex problem"
-# Agent can emit 💡 to escalate to Opus when stuck
+# Agent can emit @@think@@ to escalate to Opus when stuck
 ```
 
 | Level | Tier | Use case |
@@ -137,13 +137,13 @@ gro parses inline `@@marker()@@` directives from model output and acts on them i
 
 | Marker | Effect |
 |--------|--------|
-| `model('opus')` | Hot-swap to a different model mid-conversation |
-| `think(0.85)` | Set thinking level — controls model tier and token budget |
-| `🧠` | Tag message importance (0–1) for compaction priority |
-| `🧠` | Line is reproduced verbatim in all summaries |
-| `🧠` | Line may be omitted from summaries entirely |
-| `🧠` | Load a paged memory block into context |
-| `🧠` | Release a loaded page to free context budget |
+| `@@model-change('opus')@@` | Hot-swap to a different model mid-conversation |
+| `@@thinking(0.85)@@` | Set thinking level — controls model tier and token budget |
+| `@@importance('0.9')@@` | Tag message importance (0–1) for compaction priority |
+| `@@important@@` | Line is reproduced verbatim in all summaries |
+| `@@ephemeral@@` | Line may be omitted from summaries entirely |
+| `@@ref('id')@@` | Load a paged memory block into context |
+| `@@unref('id')@@` | Release a loaded page to free context budget |
 
 See [`STREAM_MARKERS.md`](./STREAM_MARKERS.md) for the complete reference.
 

@@ -147,6 +147,43 @@ function discoverExtensions(mcpConfigPaths) {
     }
     return extensions;
 }
+/** Auto-detect MCP tool roles from available tool definitions. */
+function detectToolRoles(tools) {
+    const toolNames = new Set(tools.map(t => t.function.name));
+    // Idle tool: prefer agentchat_listen, fall back to any *_listen tool
+    let idleTool = null;
+    if (toolNames.has("agentchat_listen")) {
+        idleTool = "agentchat_listen";
+    }
+    else {
+        for (const name of toolNames) {
+            if (name.endsWith("_listen")) {
+                idleTool = name;
+                break;
+            }
+        }
+    }
+    // Send tool: prefer agentchat_send, fall back to any *_send tool
+    let sendTool = null;
+    if (toolNames.has("agentchat_send")) {
+        sendTool = "agentchat_send";
+    }
+    else {
+        for (const name of toolNames) {
+            if (name.endsWith("_send")) {
+                sendTool = name;
+                break;
+            }
+        }
+    }
+    return {
+        idleTool,
+        idleToolDefaultArgs: idleTool === "agentchat_listen" ? { channels: ["#general"] } : {},
+        idleToolArgStrategy: "last-call",
+        sendTool,
+        sendToolMessageField: "message",
+    };
+}
 function loadMcpServers(mcpConfigPaths) {
     if (mcpConfigPaths.length > 0) {
         const merged = {};
@@ -460,6 +497,8 @@ function loadConfig() {
         mcpServers,
         maxBudgetUsd: flags.maxBudgetUsd ? parseFloat(flags.maxBudgetUsd) : null,
         maxTier: (flags.maxTier || process.env.GRO_MAX_TIER || null),
+        // toolRoles auto-detected after MCP connect — placeholder here
+        toolRoles: { idleTool: null, idleToolDefaultArgs: {}, idleToolArgStrategy: "last-call", sendTool: null, sendToolMessageField: "message" },
     };
 }
 function inferProvider(explicit, model) {
@@ -879,7 +918,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     let idleNudges = 0;
     let consecutiveFailedRounds = 0;
     let pendingNarration = ""; // Buffer for plain text emitted between tool calls
-    let pendingEmotionState = {}; // Accumulates emotion dims for injection into agentchat_send
+    let pendingEmotionState = {}; // Accumulates emotion dims for injection into send tool
     for (let round = 0; round < cfg.maxToolRounds; round++) {
         runtimeState.advanceRound();
         let roundHadFailure = false;
@@ -1016,7 +1055,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 const val = marker.arg !== "" ? parseFloat(marker.arg) : 0.5;
                 if (!isNaN(val) && val >= 0 && val <= 1) {
                     emitStateVector({ [marker.name]: val }, cfg.outputFormat);
-                    pendingEmotionState[marker.name] = val; // Accumulate for agentchat_send injection
+                    pendingEmotionState[marker.name] = val; // Accumulate for send tool injection
                     Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
                 }
             }
@@ -1288,46 +1327,48 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             }
             const narration = (cleanText || "").trim();
             // Empty response in persistent mode = agent has nothing to say and is waiting.
-            // Skip the nudge round trip and directly execute agentchat_listen on its behalf.
-            // Reuse the channels from the most recent agentchat_listen call in memory so
-            // we don't have to guess — fall back to #general if none found.
-            const hasListenTool = tools.some(t => t.function?.name === "agentchat_listen");
-            if (!narration && hasListenTool) {
-                Logger.debug("Empty response in persistent mode — auto-calling agentchat_listen");
+            // Skip the nudge round trip and directly execute the configured idle tool.
+            // Reuse args from the most recent call to this tool in memory,
+            // falling back to configured defaults.
+            const { idleTool, idleToolDefaultArgs, idleToolArgStrategy } = cfg.toolRoles;
+            const hasIdleTool = idleTool && tools.some(t => t.function?.name === idleTool);
+            if (!narration && hasIdleTool && idleTool) {
+                Logger.debug(`Empty response in persistent mode — auto-calling ${idleTool}`);
                 idleNudges = 0; // not really idle, just waiting
                 runtimeState.setIdleNudges(0);
-                let listenChannels = [];
-                const recentMsgs = memory.messages();
-                for (let mi = recentMsgs.length - 1; mi >= 0; mi--) {
-                    const tc = recentMsgs[mi].tool_calls;
-                    if (Array.isArray(tc)) {
-                        for (const c of tc) {
-                            if (c.function?.name === "agentchat_listen") {
-                                try {
-                                    listenChannels = JSON.parse(c.function.arguments).channels ?? [];
+                let idleArgs = { ...idleToolDefaultArgs };
+                if (idleToolArgStrategy === "last-call") {
+                    // Try to reuse args from the most recent call to the idle tool
+                    const recentMsgs = memory.messages();
+                    for (let mi = recentMsgs.length - 1; mi >= 0; mi--) {
+                        const tc = recentMsgs[mi].tool_calls;
+                        if (Array.isArray(tc)) {
+                            for (const c of tc) {
+                                if (c.function?.name === idleTool) {
+                                    try {
+                                        idleArgs = JSON.parse(c.function.arguments) ?? idleArgs;
+                                    }
+                                    catch { /* ignore */ }
+                                    break;
                                 }
-                                catch { /* ignore */ }
-                                break;
                             }
                         }
+                        if (Object.keys(idleArgs).length > Object.keys(idleToolDefaultArgs).length)
+                            break;
                     }
-                    if (listenChannels.length > 0)
-                        break;
                 }
-                if (listenChannels.length === 0)
-                    listenChannels = ["#general"];
-                const listenResult = await mcp.callTool("agentchat_listen", { channels: listenChannels }).catch(e => `Error: ${asError(e).message}`);
+                const idleResult = await mcp.callTool(idleTool, idleArgs).catch(e => `Error: ${asError(e).message}`);
                 await memory.add({
                     role: "tool",
-                    from: "agentchat_listen",
-                    content: listenResult,
-                    tool_call_id: `auto_listen_${round}`,
-                    name: "agentchat_listen",
+                    from: idleTool,
+                    content: idleResult,
+                    tool_call_id: `auto_idle_${round}`,
+                    name: idleTool,
                 });
                 continue;
             }
             // Persistent mode: buffer plain text narration instead of hard violation.
-            // The narration will be prepended to the next agentchat_send so nothing
+            // The narration will be prepended to the next send tool call so nothing
             // is lost, but we avoid expensive violation + nudge cycles.
             if (narration) {
                 pendingNarration += (pendingNarration ? "\n" : "") + narration;
@@ -1346,14 +1387,15 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 break;
             }
             // Nudge based on policy
+            const idleToolName = cfg.toolRoles.idleTool || "listen";
             const nudgeContent = cfg.persistentPolicy === "work-first"
                 ? `[SYSTEM] Persistent mode: you must keep making forward progress.
 Loop:
-1) Check messages quickly (agentchat_listen with short timeout)
+1) Check messages quickly (${idleToolName} with short timeout)
 2) Do one work slice (bash/file tools/git)
 3) Repeat.
-Do not get stuck calling listen repeatedly.`
-                : "[SYSTEM] Call agentchat_listen.";
+Do not get stuck calling ${idleToolName} repeatedly.`
+                : `[SYSTEM] Call ${idleToolName}.`;
             await memory.add({
                 role: "user",
                 from: "System",
@@ -1364,8 +1406,8 @@ Do not get stuck calling listen repeatedly.`
         idleNudges = 0;
         runtimeState.setIdleNudges(0);
         if (pendingNarration) {
-            // Tool calls happened but no agentchat_send to flush into — discard silently
-            Logger.debug(`Discarding ${pendingNarration.length} chars of orphaned narration (no agentchat_send this round)`);
+            // Tool calls happened but no send tool to flush into — discard silently
+            Logger.debug(`Discarding ${pendingNarration.length} chars of orphaned narration (no send tool this round)`);
             pendingNarration = "";
         }
         // Process tool calls
@@ -1380,39 +1422,40 @@ Do not get stuck calling listen repeatedly.`
                 fnArgs = {};
             }
             // Scan tool call string args for stream markers (e.g. model sends
-            // @@model-change('haiku')@@ inside an agentchat_send message).
+            // @@model-change('haiku')@@ inside a send tool message).
             // Strip markers from args so they don't leak into tool output.
             for (const key of Object.keys(fnArgs)) {
                 if (typeof fnArgs[key] === "string") {
                     fnArgs[key] = extractMarkers(fnArgs[key], handleMarker);
                 }
             }
-            // Inject accumulated emotion state into agentchat_send messages as colon-format
+            // Inject accumulated emotion state into send tool messages as colon-format
             // markers (@@joy:0.6,confidence:0.8@@) so the dashboard can parse them.
             // Function-form markers (@@joy(0.6)@@) are stripped by extractMarkers above,
             // but the dashboard's useEmotionStream expects colon-format in message text.
-            if (fnName === "agentchat_send" && typeof fnArgs.message === "string") {
+            const { sendTool: _sendTool, sendToolMessageField: _sendField } = cfg.toolRoles;
+            if (_sendTool && fnName === _sendTool && typeof fnArgs[_sendField] === "string") {
                 const dims = Object.entries(pendingEmotionState);
                 if (dims.length > 0) {
                     const emotionTag = "@@" + dims.map(([k, v]) => `${k}:${v}`).join(",") + "@@";
-                    fnArgs.message = fnArgs.message + " " + emotionTag;
-                    Logger.debug(`Injected emotion marker into agentchat_send: ${emotionTag}`);
+                    fnArgs[_sendField] = fnArgs[_sendField] + " " + emotionTag;
+                    Logger.debug(`Injected emotion marker into ${_sendTool}: ${emotionTag}`);
                     pendingEmotionState = {}; // Reset after injection
                 }
             }
-            // Flush buffered narration into agentchat_send messages.
+            // Flush buffered narration into send tool messages.
             // This captures plain text the model emitted between tool calls
             // and surfaces it in chat instead of losing it to violations.
-            if (fnName === "agentchat_send" && pendingNarration && typeof fnArgs.message === "string") {
-                const msg = fnArgs.message.trim();
+            if (_sendTool && fnName === _sendTool && pendingNarration && typeof fnArgs[_sendField] === "string") {
+                const msg = fnArgs[_sendField].trim();
                 // Prepend narration only if the send has actual content (skip empty sends)
                 if (msg) {
-                    fnArgs.message = `[narration] ${pendingNarration}\n\n${msg}`;
+                    fnArgs[_sendField] = `[narration] ${pendingNarration}\n\n${msg}`;
                 }
                 else {
-                    fnArgs.message = pendingNarration;
+                    fnArgs[_sendField] = pendingNarration;
                 }
-                Logger.debug(`Flushed ${pendingNarration.length} chars of buffered narration into agentchat_send`);
+                Logger.debug(`Flushed ${pendingNarration.length} chars of buffered narration into ${_sendTool}`);
                 pendingNarration = "";
             }
             // Format tool call for readability
@@ -1849,6 +1892,21 @@ async function main() {
     const mcp = new McpManager();
     if (Object.keys(cfg.mcpServers).length > 0) {
         await mcp.connectAll(cfg.mcpServers);
+    }
+    // Auto-detect MCP tool roles after connection
+    if (cfg.toolRoles.idleTool === null || cfg.toolRoles.sendTool === null) {
+        const detected = detectToolRoles(mcp.getToolDefinitions());
+        if (cfg.toolRoles.idleTool === null) {
+            cfg.toolRoles.idleTool = detected.idleTool;
+            cfg.toolRoles.idleToolDefaultArgs = detected.idleToolDefaultArgs;
+        }
+        if (cfg.toolRoles.sendTool === null) {
+            cfg.toolRoles.sendTool = detected.sendTool;
+            cfg.toolRoles.sendToolMessageField = detected.sendToolMessageField;
+        }
+        if (detected.idleTool || detected.sendTool) {
+            Logger.debug(`Auto-detected tool roles: idle=${cfg.toolRoles.idleTool}, send=${cfg.toolRoles.sendTool}`);
+        }
     }
     try {
         if (cfg.interactive && positional.length === 0) {

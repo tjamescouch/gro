@@ -1198,8 +1198,16 @@ export class VirtualMemory extends AgentMemory {
       ]);
 
       const orderedKept: ChatMessage[] = [];
+      // Collect messages added DURING compaction (not in any lane) so they aren't lost.
+      // Messages can be added via memory.add() while summarization API calls are in flight.
+      const allLaneMessages = new Set([...sysHead, ...assistant, ...user, ...system, ...tool, ...other]);
       for (const m of this.messagesBuffer) {
-        if (keptSet.has(m)) orderedKept.push(m);
+        if (keptSet.has(m)) {
+          orderedKept.push(m);
+        } else if (!allLaneMessages.has(m)) {
+          // Message was added after partition() ran — preserve it
+          orderedKept.push(m);
+        }
       }
 
       // Insert summaries at the beginning (after system prompt if present)

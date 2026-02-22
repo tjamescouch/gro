@@ -925,7 +925,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             }
             // Transfer messages to new memory
             for (const msg of currentMessages) {
-                newMemory.add(msg);
+                await newMemory.add(msg);
             }
             memory = newMemory;
         };

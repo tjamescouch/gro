@@ -56,6 +56,7 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
   // (missing tool_result) — both cause Anthropic API 400 errors.
   const knownToolUseIds = new Set<string>();
   const knownToolResultIds = new Set<string>();
+  const answeredToolUseIds = new Set<string>();
   for (const m of messages) {
     if (m.role === "assistant") {
       const toolCalls = (m as any).tool_calls;
@@ -116,6 +117,12 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
         Logger.warn(`Dropping orphaned tool_result for missing tool_use id=${m.tool_call_id}`);
         continue;
       }
+      // Skip duplicate tool_results — can arise from session reload or memory merging
+      if (m.tool_call_id && answeredToolUseIds.has(m.tool_call_id)) {
+        Logger.warn(`Dropping duplicate tool_result for tool_use id=${m.tool_call_id}`);
+        continue;
+      }
+      if (m.tool_call_id) answeredToolUseIds.add(m.tool_call_id);
       // Tool results must be in a user message with tool_result content blocks
       const block = {
         type: "tool_result",

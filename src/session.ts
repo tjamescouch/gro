@@ -169,11 +169,20 @@ function sanitizeToolPairs(messages: ChatMessage[]): ChatMessage[] {
   // Find assistant messages with unanswered tool_calls and inject placeholders.
   // Also drop tool_result messages whose tool_use was removed from history
   // (e.g. by context truncation) — the API rejects orphaned tool_results with 400.
+  // Also deduplicate tool_results — the API rejects multiple results for the same tool_use.
+  const seenToolResults = new Set<string>();
   const result: ChatMessage[] = [];
   for (const m of messages) {
     if (m.role === "tool" && m.tool_call_id && !toolUseIds.has(m.tool_call_id)) {
       Logger.warn(`Session repair: dropping orphaned tool_result for missing call ${m.tool_call_id}`);
       continue;
+    }
+    if (m.role === "tool" && m.tool_call_id && seenToolResults.has(m.tool_call_id)) {
+      Logger.warn(`Session repair: dropping duplicate tool_result for call ${m.tool_call_id}`);
+      continue;
+    }
+    if (m.role === "tool" && m.tool_call_id) {
+      seenToolResults.add(m.tool_call_id);
     }
     result.push(m);
     const toolCalls = (m as any).tool_calls as Array<{ id: string; function?: { name?: string } }> | undefined;

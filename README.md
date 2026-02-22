@@ -1,5 +1,8 @@
 # gro
 
+<img width="430" height="422" alt="Screenshot 2026-02-22 at 3 06 41 AM" src="https://github.com/user-attachments/assets/daeb4abb-bd94-4c63-92df-32249d6ca27d" />
+
+
 **Provider-agnostic LLM agent runtime** with virtual memory, streaming tool-use, and context management.
 
 `gro` runs persistent agent loops against any LLM provider — Anthropic, OpenAI, Google, xAI, or local — with automatic context paging, MCP tool integration, and AgentChat network support.

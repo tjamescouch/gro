@@ -11,6 +11,8 @@ function main(): void {
     createLayout(screen, config);
   const parser = new OutputParser();
 
+  let isLogMode = false;
+
   const subprocess = new SubprocessManager(config, {
     onStdout(chunk: string) {
       for (const event of parser.parseStdout(chunk)) {
@@ -71,8 +73,25 @@ function main(): void {
     subprocess.sendPrompt(text);
   }
 
-  // ── Enter: submit ─────────────────────────────────────────────────────────
-  inputBox.key("enter", () => { submitInput(); });
+  function handleEnter() {
+    const text = inputBox.getValue().trim();
+    if (isLogMode) {
+      if (text) {
+        logsPanel.loadLogFile(text);
+      }
+      isLogMode = false;
+      inputBox.clearValue();
+      inputBox.style.border = { fg: "green" } as any;
+      (inputBox as any).setLabel(" Type here > ");
+      inputBox.readInput();
+      screen.render();
+      return;
+    }
+    submitInput();
+  }
+
+  // ── Enter: submit or load log ────────────────────────────────────────────
+  inputBox.key("enter", () => { handleEnter(); });
 
   // ── Paste handler: insert clipboard text at cursor ────────────────────────
   function handlePaste(text: string): void {
@@ -105,6 +124,17 @@ function main(): void {
     handlePaste,
   );
 
+  // ── Ctrl+L: enter log file load mode ─────────────────────────────────────
+  screen.key(["C-l"], () => {
+    isLogMode = true;
+    inputBox.clearValue();
+    inputBox.style.border = { fg: "cyan" } as any;
+    (inputBox as any).setLabel(" Log path > ");
+    inputBox.focus();
+    inputBox.readInput();
+    screen.render();
+  });
+
   // Start with input active
   inputBox.focus();
   inputBox.readInput();
@@ -113,7 +143,7 @@ function main(): void {
   logsPanel.appendLog(`cmd: ${config.command} ${config.args.join(" ")}`, "info");
   logsPanel.appendLog("", "info");
   logsPanel.appendLog("↑↓/jk: scroll  Tab: focus  Ctrl+M: copy mode  Ctrl+V: paste", "info");
-  logsPanel.appendLog("Ctrl+C: quit", "info");
+  logsPanel.appendLog(" Ctrl+L: load log  Ctrl+C: quit", "info");
   screen.render();
 }
 

@@ -32,8 +32,9 @@ function enableMouseTracking(): void {
 
 // ─── Help bar content ─────────────────────────────────────────────────────────
 const HELP_NORMAL =
-  " {bold}Enter{/bold}: Send  {bold}Tab{/bold}: Focus  {bold}Esc{/bold}: Input" +
-  "  {bold}↑↓/jk{/bold}: Scroll  {bold}Ctrl+M{/bold}: Copy Mode  {bold}Ctrl+V{/bold}: Paste  {bold}Ctrl+C{/bold}: Quit";
+  " {bold}Enter{/bold}: Send/Load Log  {bold}Tab{/bold}: Focus  {bold}Esc{/bold}: Input" +
+  "  {bold}Ctrl+L{/bold}: Load Log  {bold}↑↓/jk{/bold}: Scroll  {bold}Ctrl+M{/bold}: Copy Mode  {bold}Ctrl+V{/bold}: Paste  {bold}Ctrl+C{/bold}: Quit";
+
 const HELP_PASSTHROUGH =
   " {bold}{yellow-fg}COPY MODE — select freely.  Ctrl+M or Esc to return.{/yellow-fg}{/bold}";
 

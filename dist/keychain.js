@@ -24,6 +24,17 @@ export function getKey(provider) {
     const key = r.stdout.trim();
     return key || null;
 }
+/** Read an API key from the thesystem keychain (service: "thesystem/<provider>"). */
+function getTheSystemKey(provider) {
+    if (process.platform !== "darwin")
+        return null;
+    const r = spawnSync("security", [
+        "find-generic-password", "-a", provider, "-s", `thesystem/${provider}`, "-w",
+    ], { encoding: "utf8" });
+    if (r.status !== 0)
+        return null;
+    return r.stdout.trim() || null;
+}
 /** Store an API key in macOS Keychain. Throws on failure or non-macOS. */
 export function setKey(provider, key) {
     if (process.platform !== "darwin") {
@@ -59,5 +70,5 @@ export function envVarName(provider) {
  * Returns empty string if neither is set.
  */
 export function resolveKey(provider) {
-    return getKey(provider) || process.env[envVarName(provider)] || "";
+    return getKey(provider) || getTheSystemKey(provider) || process.env[envVarName(provider)] || "";
 }

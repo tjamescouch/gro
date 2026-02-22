@@ -684,18 +684,18 @@ function createDriverForModel(provider, model, apiKey, baseUrl, maxTokens) {
             return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
         case "google":
             // Google Gemini via OpenAI-compatible endpoint
-            if (!apiKey) {
+            if (!apiKey && baseUrl === "https://generativelanguage.googleapis.com/v1beta/openai") {
                 Logger.error(`gro: no API key for google — set GOOGLE_API_KEY or run: gro --set-key google`);
                 process.exit(1);
             }
-            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
+            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey: apiKey || undefined });
         case "xai":
             // xAI Grok via OpenAI-compatible endpoint
-            if (!apiKey) {
+            if (!apiKey && baseUrl === "https://api.x.ai") {
                 Logger.error(`gro: no API key for xai — set XAI_API_KEY or run: gro --set-key xai`);
                 process.exit(1);
             }
-            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
+            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey: apiKey || undefined });
         case "local":
             return makeStreamingOpenAiDriver({ baseUrl, model });
         default:

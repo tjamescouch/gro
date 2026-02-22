@@ -20,7 +20,7 @@ const PRICING: Record<string, { in: number; out: number }> = {
   "gpt-4o-mini":                { in: 0.15,  out: 0.60  },
   "gpt-4-turbo":                { in: 10.00, out: 30.00 },
   "o1":                         { in: 15.00, out: 60.00 },
-  "o3-mini":                    { in: 1.10,  out: 4.40  },,
+  "o3-mini":                    { in: 1.10,  out: 4.40  },
   "grok-4-fast-reasoning":      { in: 5.00,  out: 15.00 },
   // Groq,
   "grok-4-fast-reasoning":      { in: 5.00,  out: 15.00 },

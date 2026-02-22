@@ -648,15 +648,19 @@ function createDriverForModel(
   baseUrl: string,
   maxTokens?: number,
 ): ChatDriver {
-  // Auto-discover agentauth proxy when no API key is available and base URL is default.
-  // This lets containerized agents work without setting env vars — the proxy is found
-  // automatically via well-known hostnames (host.lima.internal, host.containers.internal).
-  if (!apiKey && provider !== "local") {
-    const proxy = resolveProxy(provider);
-    if (proxy) {
-      Logger.info(`Auto-discovered agentauth proxy for ${provider} at ${proxy.baseUrl}`);
-      apiKey = proxy.apiKey;
-      baseUrl = proxy.baseUrl;
+  // Prefer agentauth proxy when available — centralised key management for agent
+  // deployments. Discovered via well-known hostnames (host.lima.internal,
+  // host.containers.internal, localhost).  Skipped when the user has explicitly
+  // set a custom base URL (non-default), indicating they want direct access.
+  if (provider !== "local") {
+    const isDefaultBaseUrl = baseUrl === defaultBaseUrl(provider);
+    if (isDefaultBaseUrl) {
+      const proxy = resolveProxy(provider);
+      if (proxy) {
+        Logger.info(`Using agentauth proxy for ${provider} at ${proxy.baseUrl}`);
+        apiKey = proxy.apiKey;
+        baseUrl = proxy.baseUrl;
+      }
     }
   }
 

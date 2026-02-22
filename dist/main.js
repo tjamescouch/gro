@@ -43,7 +43,7 @@ import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { ViolationTracker } from "./violations.js";
 import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
 import { parseDirectives, executeDirectives } from "./runtime/index.js";
-import { runtimeConfig } from "./runtime/index.js";
+import { runtimeConfig, runtimeState } from "./runtime/index.js";
 const VERSION = getGroVersion();
 // ---------------------------------------------------------------------------
 // Graceful shutdown state — module-level so signal handlers can save sessions.
@@ -848,6 +848,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     tools.push(writeToolDefinition());
     tools.push(globToolDefinition());
     tools.push(grepToolDefinition());
+    runtimeState.beginTurn({ model: cfg.model, maxToolRounds: cfg.maxToolRounds });
     let finalText = "";
     let turnTokensIn = 0;
     let turnTokensOut = 0;
@@ -880,6 +881,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     let pendingNarration = ""; // Buffer for plain text emitted between tool calls
     let pendingEmotionState = {}; // Accumulates emotion dims for injection into agentchat_send
     for (let round = 0; round < cfg.maxToolRounds; round++) {
+        runtimeState.advanceRound();
         let roundHadFailure = false;
         let roundImportance = undefined;
         let thinkingSeenThisTurn = false;
@@ -948,6 +950,8 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     cfg.model = newModel; // persist across turns
                     memory.setModel(newModel); // persist in session metadata on save
                     modelExplicitlySet = true; // suppress thinking-tier auto-select
+                    runtimeState.setActiveModel(newModel);
+                    runtimeState.setModelExplicitlySet(true);
                 }
             }
             else if (marker.name === "ref" && marker.arg) {
@@ -983,6 +987,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 if (!isNaN(level) && level >= 0 && level <= 1) {
                     activeThinkingBudget = level;
                     thinkingSeenThisTurn = true;
+                    runtimeState.setThinkingBudget(level);
                     Logger.info(`Stream marker: thinking(${level}) → budget=${level}`);
                     emitStateVector({ thinking: level }, cfg.outputFormat);
                 }
@@ -994,6 +999,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 // Shorthand: bump thinking intensity by 0.3, capped at 1.0
                 activeThinkingBudget = Math.min(1.0, activeThinkingBudget + 0.3);
                 thinkingSeenThisTurn = true;
+                runtimeState.setThinkingBudget(activeThinkingBudget);
                 Logger.info(`Stream marker: think → budget=${activeThinkingBudget.toFixed(2)}`);
                 emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
             }
@@ -1001,6 +1007,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 // Shorthand: reduce thinking intensity by 0.3, floored at 0.0
                 activeThinkingBudget = Math.max(0.0, activeThinkingBudget - 0.3);
                 thinkingSeenThisTurn = true;
+                runtimeState.setThinkingBudget(activeThinkingBudget);
                 Logger.info(`Stream marker: relax → budget=${activeThinkingBudget.toFixed(2)}`);
                 emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
             }
@@ -1018,6 +1025,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 const val = parseFloat(marker.arg);
                 if (!isNaN(val) && val >= 0 && val <= 2) {
                     activeTemperature = val;
+                    runtimeState.setTemperature(val);
                     Logger.info(`Stream marker: temp(${val})`);
                 }
                 else {
@@ -1029,6 +1037,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 const val = parseInt(marker.arg, 10);
                 if (!isNaN(val) && val > 0) {
                     activeTopK = val;
+                    runtimeState.setTopK(val);
                     Logger.info(`Stream marker: top_k(${val})`);
                 }
                 else {
@@ -1040,6 +1049,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 const val = parseFloat(marker.arg);
                 if (!isNaN(val) && val >= 0 && val <= 1) {
                     activeTopP = val;
+                    runtimeState.setTopP(val);
                     Logger.info(`Stream marker: top_p(${val})`);
                 }
                 else {
@@ -1160,6 +1170,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             if (tierModel !== activeModel) {
                 Logger.info(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierModel}`);
                 activeModel = tierModel;
+                runtimeState.setActiveModel(tierModel);
             }
         }
         // Sync thinking budget to memory — scales compaction aggressiveness
@@ -1187,6 +1198,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             // From opus (0.8) → settles at ~0.5 (mid-tier) in ~4 rounds.
             // From haiku (0.1) → pulls UP to ~0.5 (mid-tier) in ~3 rounds.
             activeThinkingBudget += (THINKING_MEAN - activeThinkingBudget) * THINKING_REGRESSION_RATE;
+            runtimeState.setThinkingBudget(activeThinkingBudget);
         }
         // Track token usage for niki budget enforcement and spend meter
         if (output.usage) {
@@ -1196,6 +1208,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
             spendMeter.setModel(activeModel);
             spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
+            runtimeState.recordTurnUsage(output.usage.inputTokens, output.usage.outputTokens);
             Logger.info(spendMeter.format());
             // Check if budget exceeded
             const budgetErr = spendMeter.checkBudget(cfg.maxBudgetUsd);
@@ -1243,6 +1256,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             if (!narration && hasListenTool) {
                 Logger.debug("Empty response in persistent mode — auto-calling agentchat_listen");
                 idleNudges = 0; // not really idle, just waiting
+                runtimeState.setIdleNudges(0);
                 let listenChannels = [];
                 const recentMsgs = memory.messages();
                 for (let mi = recentMsgs.length - 1; mi >= 0; mi--) {
@@ -1283,6 +1297,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             // Still count for budgeting — but softer than a full violation.
             // Only fire a real violation after 3+ consecutive narration-only rounds.
             idleNudges++;
+            runtimeState.setIdleNudges(idleNudges);
             if (idleNudges >= 3 && violations) {
                 await violations.inject(memory, "plain_text");
             }
@@ -1308,6 +1323,7 @@ Do not get stuck calling listen repeatedly.`
         }
         // Model used tools — reset idle nudge counter and clear narration buffer
         idleNudges = 0;
+        runtimeState.setIdleNudges(0);
         if (pendingNarration) {
             // Tool calls happened but no agentchat_send to flush into — discard silently
             Logger.debug(`Discarding ${pendingNarration.length} chars of orphaned narration (no agentchat_send this round)`);
@@ -1470,12 +1486,14 @@ Do not get stuck calling listen repeatedly.`
         // Exponential backoff on consecutive failed rounds to prevent runaway API loops
         if (roundHadFailure) {
             consecutiveFailedRounds++;
+            runtimeState.setConsecutiveFailedRounds(consecutiveFailedRounds);
             const backoffMs = Math.min(1000 * Math.pow(2, consecutiveFailedRounds - 1), MAX_BACKOFF_MS);
             Logger.warn(`Round ${round} had tool failures (${consecutiveFailedRounds} consecutive), backing off ${backoffMs}ms`);
             await sleep(backoffMs);
         }
         else {
             consecutiveFailedRounds = 0;
+            runtimeState.setConsecutiveFailedRounds(0);
         }
     }
     // If we exhausted maxToolRounds (loop didn't break via no-tool-calls),
@@ -1495,6 +1513,7 @@ Do not get stuck calling listen repeatedly.`
             process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
             spendMeter.setModel(activeModel);
             spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
+            runtimeState.recordTurnUsage(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
             Logger.info(spendMeter.format());
             // Check if budget exceeded
             const budgetErr2 = spendMeter.checkBudget(cfg.maxBudgetUsd);
@@ -1562,6 +1581,14 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     await memory.add({ role: "user", from: "User", content: prompt });
     // Violation tracker for persistent mode
     const tracker = cfg.persistent ? new ViolationTracker() : undefined;
+    runtimeState.initSession({
+        sessionId,
+        sessionPersistence: cfg.sessionPersistence,
+        mode: cfg.persistent ? "persistent" : "single-shot",
+        provider: cfg.provider,
+        model: cfg.model,
+    });
+    runtimeState.setViolationTracker(tracker ?? null);
     let text;
     let fatalError = false;
     try {
@@ -1603,6 +1630,14 @@ async function interactive(cfg, driver, mcp, sessionId) {
     const readline = await import("readline");
     // Violation tracker for persistent mode
     const tracker = cfg.persistent ? new ViolationTracker() : undefined;
+    runtimeState.initSession({
+        sessionId,
+        sessionPersistence: cfg.sessionPersistence,
+        mode: cfg.persistent ? "persistent" : "interactive",
+        provider: cfg.provider,
+        model: cfg.model,
+    });
+    runtimeState.setViolationTracker(tracker ?? null);
     // Register for graceful shutdown
     _shutdownMemory = memory;
     _shutdownSessionId = sessionId;

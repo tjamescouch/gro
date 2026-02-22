@@ -4,3 +4,4 @@
 
 export { parseDirectives, executeDirectives, type ParsedDirectives } from "./directive-parser.js";
 export { runtimeConfig, RuntimeConfigurationManager, type RuntimeConfig } from "./config-manager.js";
+export { runtimeState, RuntimeStateManager, type RuntimeSnapshot, type TurnState, type SessionState } from "./state-manager.js";

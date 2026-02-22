@@ -570,6 +570,31 @@ export class VirtualMemory extends AgentMemory {
             if (wmTokens > wmBudget * 2)
                 break;
         }
+        // Sanitize window front: strip orphan tool results and unpaired assistant tool_calls.
+        // When the budget cut severs a tool_call/tool_result pair, the window can start with
+        // a 'tool' role message that has no preceding assistant+tool_calls — causing a 400.
+        while (window.length > 0) {
+            const first = window[0];
+            if (first.role === 'tool') {
+                // Orphaned tool result — its assistant message was paged out. Drop it.
+                window.shift();
+            }
+            else if (first.role === 'assistant' &&
+                Array.isArray(first.tool_calls) &&
+                first.tool_calls.length > 0) {
+                // Dangling tool_calls with no following tool results. Drop it.
+                const hasResults = window.length > 1 && window[1].role === 'tool';
+                if (!hasResults) {
+                    window.shift();
+                }
+                else {
+                    break;
+                }
+            }
+            else {
+                break;
+            }
+        }
         result.push(...window);
         // Safety cap: verify total context size doesn't exceed a hard limit.
         // Even with accurate token estimation, defend against edge cases where

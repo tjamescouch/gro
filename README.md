@@ -133,12 +133,12 @@ When `enableBatchSummarization` is set, context compaction queues summarization 
 
 ## Stream Markers
 
-gro parses inline `🧠` directives from model output and acts on them in real-time. Markers are stripped before display — users never see them. Models use them as a runtime control plane.
+gro parses inline `@@marker()@@` directives from model output and acts on them in real-time. Markers are stripped before display — users never see them. Models use them as a runtime control plane.
 
 | Marker | Effect |
 |--------|--------|
-| `🧠` | Hot-swap to a different model mid-conversation |
-| `💡` | Set thinking level — controls model tier and token budget |
+| `model('opus')` | Hot-swap to a different model mid-conversation |
+| `think(0.85)` | Set thinking level — controls model tier and token budget |
 | `🧠` | Tag message importance (0–1) for compaction priority |
 | `🧠` | Line is reproduced verbatim in all summaries |
 | `🧠` | Line may be omitted from summaries entirely |

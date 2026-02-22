@@ -35,7 +35,7 @@ export function globToolDefinition(): any {
   };
 }
 
-export function executeGlob(args: Record<string, any>): string {
+export function executeGlob(args: Record<string, unknown>): string {
   const pattern = args.pattern as string;
   if (!pattern) return "Error: pattern is required";
 
@@ -75,8 +75,8 @@ export function executeGlob(args: Record<string, any>): string {
     header += `:`;
 
     return header + "\n" + result.join("\n");
-  } catch (e: any) {
-    return `Error: ${e.message}`;
+  } catch (e: unknown) {
+    return `Error: ${String(e)}`;
   }
 }
 

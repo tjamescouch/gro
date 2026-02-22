@@ -23,16 +23,16 @@ export class Logger {
   static isVerbose() { return Logger._verbose; }
 
   static info(...a: any[]) {
-    console.log(...a);
+    console.log(...args);
   }
 
-  static warn(...a: any[]) { console.warn(...a); }
-  static error(...a: any[]) { console.error(...a); }
+  static warn(...a: any[]) { console.warn(...args); }
+  static error(...a: any[]) { console.error(...args); }
 
   static debug(...a: any[]) {
     // Debug requires BOTH verbose mode AND GRO_LOG_LEVEL=DEBUG
     const debugLevel = (process.env.GRO_LOG_LEVEL ?? "").toUpperCase() === "DEBUG";
-    if (Logger._verbose && debugLevel) console.log(...a);
+    if (Logger._verbose && debugLevel) console.log(...args);
   }
 
   static streamInfo(s: string) { writeRaw(s); }

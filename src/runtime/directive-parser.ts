@@ -229,8 +229,8 @@ export async function executeDirectives(directives: ParsedDirectives): Promise<v
   for (const fact of directives.learnFacts) {
     try {
       await runtimeConfig.learn(fact);
-    } catch (err: any) {
-      Logger.error(`Failed to execute @@learn: ${err.message}`);
+    } catch (err: unknown) {
+      Logger.error(`Failed to execute @@learn: ${String(err)}`);
     }
   }
 
@@ -238,8 +238,8 @@ export async function executeDirectives(directives: ParsedDirectives): Promise<v
   if (directives.memorySwap) {
     try {
       await runtimeConfig.swapMemory(directives.memorySwap);
-    } catch (err: any) {
-      Logger.error(`Failed to swap memory to '${directives.memorySwap}': ${err.message}`);
+    } catch (err: unknown) {
+      Logger.error(`Failed to swap memory to '${directives.memorySwap}': ${String(err)}`);
     }
   }
 

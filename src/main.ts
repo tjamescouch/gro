@@ -404,7 +404,7 @@ function loadConfig(): GroConfig {
       }
     }
     else if (arg === "--set-key") { flags.setKey = args[++i]; }
-    else if (arg === "-V" || arg === "--version") { console.log(`gro ${VERSION}`); process.exit(0); }
+    else if (arg === "-V" || arg === "--version") { Logger.info(`gro ${VERSION}`); process.exit(0); }
     else if (arg === "-h" || arg === "--help") { usage(); process.exit(0); }
     // --- graceful degradation for unsupported claude flags ---
     else if (UNSUPPORTED_VALUE_FLAGS.has(arg)) {
@@ -530,7 +530,7 @@ function resolveApiKey(provider: string): string {
 }
 
 function usage() {
-  console.log(`gro ${VERSION} — provider-agnostic LLM runtime
+  Logger.info(`gro ${VERSION} — provider-agnostic LLM runtime
 
 usage:
   gro [options] "prompt"
@@ -588,7 +588,7 @@ async function runSetKey(provider: string): Promise<void> {
     process.stdout.write(`Keychain already has a key for ${provider} (${current.slice(0, 8)}…). Overwrite? [y/N] `);
     const answer = await readLine();
     if (!answer.toLowerCase().startsWith("y")) {
-      console.log("Aborted.");
+      Logger.info("Aborted.");
       return;
     }
   }

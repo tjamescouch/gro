@@ -49,13 +49,38 @@ gro -i -c
 
 Provider is auto-inferred from model name — `-m claude-sonnet-4-5` uses Anthropic, `-m gpt-4.1` uses OpenAI.
 
-| Provider | Example Models | Env var |
-|----------|---------------|---------|
-| **Anthropic** (default) | `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-opus-4-5` | `ANTHROPIC_API_KEY` |
-| **OpenAI** | `gpt-4.1`, `gpt-4.1-mini`, `o3`, `o4-mini` | `OPENAI_API_KEY` |
-| **Google** | `gemini-2.5-flash`, `gemini-2.5-pro` | `GOOGLE_API_KEY` |
-| **xAI** | `grok-4`, `grok-4.1-fast` | `XAI_API_KEY` |
-| **Local** | `llama3`, `mistral`, `qwen` | *(Ollama / LM Studio)* |
+| Provider | Example Models | Env var | Required? |
+|----------|---------------|---------|-----------|
+| **Anthropic** (default) | `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-opus-4-5` | `ANTHROPIC_API_KEY` | Yes (default provider) |
+| **OpenAI** | `gpt-4.1`, `gpt-4.1-mini`, `o3`, `o4-mini` | `OPENAI_API_KEY` | Only if using OpenAI models |
+| **Google** | `gemini-2.5-flash`, `gemini-2.5-pro` | `GOOGLE_API_KEY` | Only if using Gemini models |
+| **xAI** | `grok-4`, `grok-4.1-fast` | `XAI_API_KEY` | Only if using Grok models |
+| **Groq** | `llama-3.3-70b-versatile` | `GROQ_API_KEY` | Only if using Groq-hosted models |
+| **Local** | `llama3`, `mistral`, `qwen` | — | No key needed (Ollama / LM Studio) |
+
+### Setting API Keys
+
+**macOS** — store keys in Keychain (persistent, secure):
+
+```sh
+gro --set-key anthropic    # prompted for key, stored in macOS Keychain
+gro --set-key openai
+gro --set-key xai
+gro --set-key google
+gro --set-key groq
+```
+
+**Linux / CI** — use environment variables:
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
+export XAI_API_KEY=xai-...
+export GOOGLE_API_KEY=AIza...
+export GROQ_API_KEY=gsk_...
+```
+
+Key resolution order: macOS Keychain → environment variable. You only need to set keys for providers you use.
 
 ---
 

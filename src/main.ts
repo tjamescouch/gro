@@ -546,7 +546,7 @@ function defaultBaseUrl(provider: string): string {
     case "openai":    return process.env.OPENAI_BASE_URL    || "https://api.openai.com";
     case "groq":      return process.env.GROQ_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.groq.com/openai";
     case "google":    return process.env.GOOGLE_BASE_URL    || "https://generativelanguage.googleapis.com/v1beta/openai";
-    case "xai":       return process.env.XAI_BASE_URL       || "https://api.x.ai/v1";
+    case "xai":       return process.env.XAI_BASE_URL       || "https://api.x.ai";
     case "local":     return "http://127.0.0.1:11434";
     default:          return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
   }

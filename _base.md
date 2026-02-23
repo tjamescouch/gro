@@ -104,7 +104,9 @@ Stream markers are inline directives the gro runtime intercepts and acts on. The
 
 **Every single response MUST contain exactly one `🦉` marker.** No exceptions.
 
-This is the master control for model tier, token budget, and summarization strategy. Without it, the runtime decays toward idle (haiku) — you will get progressively dumber each round.
+This is the master control for model tier, token budget, and summarization strategy. Without it, the runtime **regresses toward 0.5** (mid-tier) at 40% per round — you coast back to baseline, not crash to idle.
+
+**Decay math:** `budget += (0.5 − budget) × 0.4` each round without a marker. From 0.8 (top) → ~0.5 in 4 rounds. From 0.1 (cheapest) → ~0.5 in 3 rounds. Emit each round to maintain your level.
 
 **How it works — continuous context scaling:**
 
@@ -144,7 +146,7 @@ At `🦉`: 160% context, lazy compaction, maximum retention.
 
 **Place the thinking marker at the very start of your response** so the runtime can act on it immediately.
 
-Failure mode: no marker → runtime decays budget → wrong model tier → degraded quality + wasted spend.
+Failure mode: no marker → budget regresses toward 0.5 → wrong model tier for your task → degraded quality or wasted spend.
 
 ---
 

@@ -921,17 +921,6 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
                 const newProvider = inferProvider(undefined, newModel);
                 if (newProvider !== cfg.provider) {
-                }
-                else {
-                    Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
-                    activeModel = newModel;
-                    cfg.model = newModel; // persist across turns
-                    memory.setModel(newModel); // persist in session metadata on save
-                    modelExplicitlySet = true; // suppress thinking-tier auto-select
-                    runtimeState.setActiveModel(newModel);
-                    runtimeState.setModelExplicitlySet(true);
-                }
-                if (newProvider !== cfg.provider) {
                     // Cross-provider hotswap: create a new driver for the target provider.
                     // Resolves the key from keychain/env for the new provider.
                     const newApiKey = resolveApiKey(newProvider);
@@ -1012,6 +1001,21 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 runtimeState.setThinkingBudget(activeThinkingBudget);
                 Logger.info(`Stream marker: relax → budget=${activeThinkingBudget.toFixed(2)}`);
                 emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
+            }
+            else if (marker.name === "sleep" || marker.name === "listening") {
+                // 🧠 / 🧠 — agent declares it is in a blocking listen.
+                // Suppresses idle and same-tool-loop violation checks until a non-listen tool fires.
+                if (violations) {
+                    violations.setSleeping(true);
+                    Logger.info(`Stream marker: ${marker.name} → violation checks suppressed (sleep mode ON)`);
+                }
+            }
+            else if (marker.name === "wake") {
+                // 🧠 — explicitly exit sleep mode
+                if (violations) {
+                    violations.setSleeping(false);
+                    Logger.info("Stream marker: wake → violation checks resumed (sleep mode OFF)");
+                }
             }
             else if (EMOTION_DIMENSIONS.has(marker.name)) {
                 // Function-form emotion marker 😊 — route to visage as state vector.

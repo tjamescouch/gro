@@ -1065,6 +1065,19 @@ async function executeTurn(
         runtimeState.setThinkingBudget(activeThinkingBudget);
         Logger.info(`Stream marker: relax → budget=${activeThinkingBudget.toFixed(2)}`);
         emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
+      } else if (marker.name === "sleep" || marker.name === "listening") {
+        // 🧠 / 🧠 — agent declares it is in a blocking listen.
+        // Suppresses idle and same-tool-loop violation checks until a non-listen tool fires.
+        if (violations) {
+          violations.setSleeping(true);
+          Logger.info(`Stream marker: ${marker.name} → violation checks suppressed (sleep mode ON)`);
+        }
+      } else if (marker.name === "wake") {
+        // 🧠 — explicitly exit sleep mode
+        if (violations) {
+          violations.setSleeping(false);
+          Logger.info("Stream marker: wake → violation checks resumed (sleep mode OFF)");
+        }
       } else if (EMOTION_DIMENSIONS.has(marker.name)) {
         // Function-form emotion marker 😊 — route to visage as state vector.
         const val = marker.arg !== "" ? parseFloat(marker.arg) : 0.5;

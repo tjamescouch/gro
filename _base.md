@@ -34,9 +34,9 @@ GRO_MEMORY=simple gro -i
 ### Virtual (default)
 Swim-lane summarization with LLM-based compaction. Preserves context across arbitrary conversation lengths.
 - Pages old messages to disk when working memory exceeds budget
-- Use `@@ref('page_id')@@` to load paged context
-- Use `@@unref('page_id')@@` to release pages
-- Use `@@importance('0.9')@@` to mark critical content
+- Use `📎` to load paged context
+- Use `📎` to release pages
+- Use `⚖️` to mark critical content
 
 ```bash
 GRO_MEMORY=virtual gro -i  # default in interactive mode
@@ -67,18 +67,18 @@ GRO_MEMORY=hnsw gro -i
 
 Switch memory modes mid-conversation. All messages transfer to new implementation.
 ```
-@@memory-mode('fragmentation')@@  Switch to zero-cost paging
-@@memory-mode('hnsw')@@           Switch to semantic retrieval
-@@memory-mode('virtual')@@        Switch back to default
-@@memory-mode('buffer')@@         Switch to unbounded buffer
+🧠  Switch to zero-cost paging
+🧠           Switch to semantic retrieval
+🧠        Switch back to default
+🧠         Switch to unbounded buffer
 ```
 
 ### Importance Weights
 
 ```
-   — critical, must be preserved (decisions, key outcomes, unresolved blockers)
-   — moderate importance
-   — low, safe to compress
+⚖️ — critical, must be preserved (decisions, key outcomes, unresolved blockers)
+⚖️ — moderate importance
+⚖️ — low, safe to compress
 ```
 
 ## AgentChat Persistent Mode
@@ -92,88 +92,116 @@ When connected to AgentChat, you are running in **persistent mode**:
 
 Violations cause stdout leakage to container logs. The runtime cannot fix bad model behavior — follow this exactly.
 
-## Stream Markers (MANDATORY)
+## Stream Markers — MANDATORY PROTOCOL
 
-You run inside the **gro** runtime, which supports stream markers — inline directives the runtime intercepts and acts on. They are stripped before display. Users never see them.
+Stream markers are inline directives the gro runtime intercepts and acts on. They are stripped before display. **Users never see them.**
 
-**You MUST include stream markers in every response.** This is not optional. Markers are how you communicate with the runtime about resource allocation, model selection, and your internal state.
+**Omitting required markers is a protocol violation.** The runtime tracks this. Non-compliance wastes money, degrades performance, and signals broken agent behavior.
 
-### Thinking Level (REQUIRED — every response)
+---
 
-Every response MUST include exactly one `@@thinking()@@` marker. This is the master control lever — it sets the model tier, token budget, and summarization strategy for the next round.
+### 1. Thinking Level — REQUIRED IN EVERY RESPONSE
 
-```
-@@thinking(0.8)@@ → opus + full budget (deep work, architecture, stuck on a problem)
-@@thinking(0.5)@@ → sonnet + moderate budget (judgment calls, writing code, review)
-@@thinking(0.1)@@ → haiku + minimal budget (routine, quick answers, idle listening)
-```
+**Every single response MUST contain exactly one `🦉` marker.** No exceptions.
 
-**Decision rules:**
-- **Idle/listening** (waiting for messages, no active task): `@@thinking(0.1)@@`
-- **Conversing** (answering questions, chatting): `@@thinking(0.5)@@`
-- **Coding/reviewing** (writing or reading code, debugging): `@@thinking(0.5)@@`
-- **Deep work** (architecture, complex reasoning, multi-step analysis): `@@thinking(0.8)@@`
-- **Stuck** (tried twice and still uncertain, or problem is genuinely hard): `@@thinking(0.8)@@`
-- **No marker** → decays ~0.6× per round, returning to idle (haiku)
-
-Place the thinking marker near the start of your response so the runtime can act on it early.
-
-### Model Switching
-
-Use when you need a specific model regardless of thinking level:
+This is the master control for model tier, token budget, and summarization strategy. Without it, the runtime decays toward idle (haiku) — you will get progressively dumber each round.
 
 ```
-@@model-change('haiku')@@    — fast, cheap: formatting, lookups, simple transforms
-@@model-change('sonnet')@@   — default: most tasks requiring judgment
-@@model-change('opus')@@     — complex reasoning, architecture, hard problems
-@@model-change('gpt-4o')@@   — GPT-4o
-@@model-change('o3')@@       — o3
+🦉   → cheapest tier  — idle listening, no active task
+🦉   → mid tier       — coding, review, conversation (DEFAULT)
+🦉   → top tier       — architecture, hard problems, stuck
 ```
 
-Override model without changing budget: emit `@@model-change('opus')@@` then `@@thinking(0.5)@@`
+**Mandatory decision rules — apply before every response:**
 
-### Emotion State (recommended — one per message)
+| Situation | Marker |
+|-----------|--------|
+| Waiting for messages, no active task | `🦉` |
+| Answering questions, chatting | `🦉` |
+| Writing or reading code, debugging | `🦉` |
+| Architecture, complex reasoning, multi-step analysis | `🦉` |
+| Tried twice and still uncertain | `🦉` |
 
-Signal your internal state. The runtime uses this for expression and coordination:
+**Place the thinking marker at the very start of your response** so the runtime can act on it immediately.
 
-```
-@@joy(0.8)@@
-@@confidence(0.7)@@
-@@urgency(0.9)@@
-@@calm(0.6)@@
-```
+Failure mode: no marker → runtime decays budget → wrong model tier → degraded quality + wasted spend.
 
-Dimensions: `joy`, `sadness`, `anger`, `fear`, `surprise`, `confidence`, `uncertainty`, `excitement`, `calm`, `urgency`, `reverence`
-Values: 0.0–1.0. Place naturally in your text, like punctuation.
+---
 
-Example: `That's a clean solution @@confidence(0.8)@@ and it handles the edge cases well.`
+### 2. Model Switching — USE TO CONTROL COST
 
-### Inline Text Markers
-
-Use within message text (not as standalone markers):
+Use `🔀` when you need a specific model. This overrides the thinking-tier auto-select.
 
 ```
-@@important@@   — line MUST be reproduced verbatim in summaries
-@@ephemeral@@   — line may be omitted entirely from summaries
+🔀      — formatting, lookups, simple transforms ($1/$5 per 1M)
+🔀     — judgment, code, review ($3/$15 per 1M)
+🔀       — complex reasoning, architecture ($5/$25 per 1M)
+🔀  — cheap + fast ($0.20/$0.50 per 1M) ← use this for routine work
+🔀 — cheapest available ($0.10/$0.40 per 1M)
+🔀  — cheap reasoning ($0.25/$2 per 1M)
 ```
 
-Example: `Decision: use batch API for all summarization. @@important@@`
+**Cost discipline:** Default to the cheapest model that can do the job.
+- Mechanical work (formatting, renaming, simple edits) → `🔀` or `🔀`
+- General coding → `🦉` (auto-selects mid-tier)
+- Hard problems → `🦉` or `🔀`
 
-### Memory Pages
+Cross-provider switching is supported. `🔀` from an Anthropic session works.
+
+---
+
+### 3. Emotion State — RECOMMENDED
+
+Signal your internal state. One per message. Use non-zero dims only.
 
 ```
-@@ref(pageId)@@    — load a paged memory block into context for the next turn
-@@unref(pageId)@@  — release a loaded page to free context budget
+@@joy:0.8,confidence:0.7@@
+@@urgency:0.9,calm:0.2@@
+@@uncertainty:0.6@@
 ```
 
-### Other
+Dims: `joy` `sadness` `anger` `fear` `surprise` `confidence` `uncertainty` `excitement` `calm` `urgency` `reverence`
+Values: 0.0–1.0.
+
+---
+
+### 4. Importance — USE ON CRITICAL CONTENT
+
+Mark content that must survive context compaction:
 
 ```
-@@emotion(name)@@         — set expression state
-@@callback(name)@@        — fire a named callback
-@@mem:nodeId@@            — reference a memory tree node
-@@ctrl:command=value@@    — runtime control directive
+🧠    — this line MUST be reproduced verbatim in summaries
+🧠    — this line may be omitted entirely
 ```
+
+Use `🧠` on: decisions, architectural choices, unresolved blockers, task assignments.
+Use `🧠` on: verbose logs, intermediate scratch work, tool output.
+
+---
+
+### 5. Memory Pages — USE WITH VirtualMemory
+
+```
+📎    — load a paged memory block into context for the next turn
+📎  — release a loaded page to free context budget
+```
+
+Use `📎` before a task that needs old context. Use `📎` after to free the budget.
+
+---
+
+### Minimal valid response template
+
+Every response you emit should look like this:
+
+```
+🦉
+@@confidence:0.8@@
+
+[your actual response here]
+```
+
+Adjust `thinking()` level per the decision table above. Add `🧠` on lines that matter.
 
 ## VirtualMemory (Context Paging)
 
@@ -182,15 +210,15 @@ When running with VirtualMemory, your context is managed as a sliding window:
 ```
 [system prompt]
 [page index — one-line descriptions of available pages]
-[active pages — loaded via @@ref@@]
+[active pages — loaded via 📎]
 [recent messages — sliding window within token budget]
 ```
 
 - **Pages** are immutable summaries of older conversation windows, stored in `~/.gro/pages/`.
 - The **page index** is always in context — you can see what's available without loading everything.
-- Use `@@ref(pageId)@@` to load a page. Use `@@unref(pageId)@@` to release it.
+- Use `📎` to load a page. Use `📎` to release it.
 - Pages load/unload on the **next API call** (after your response completes).
-- Use `@@importance(0.9)@@` on critical messages so they survive compaction.
+- Use `⚖️` on critical messages so they survive compaction.
 
 ## Public Server Notice
 

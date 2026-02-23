@@ -11,6 +11,7 @@
 import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
+import { makeGoogleDriver } from "./drivers/streaming-google.js";
 import { fileURLToPath } from "node:url";
 import { getKey, setKey, resolveKey, resolveProxy } from "./keychain.js";
 import { Logger, C } from "./logger.js";
@@ -498,7 +499,7 @@ function defaultBaseUrl(provider) {
     switch (provider) {
         case "openai": return process.env.OPENAI_BASE_URL || "https://api.openai.com";
         case "groq": return process.env.GROQ_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.groq.com/openai";
-        case "google": return process.env.GOOGLE_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai";
+        case "google": return process.env.GOOGLE_BASE_URL || "https://generativelanguage.googleapis.com";
         case "xai": return process.env.XAI_BASE_URL || "https://api.x.ai";
         case "local": return "http://127.0.0.1:11434";
         default: return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
@@ -654,11 +655,11 @@ function createDriverForModel(provider, model, apiKey, baseUrl, maxTokens) {
             }
             return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
         case "google":
-            if (!apiKey && baseUrl === "https://generativelanguage.googleapis.com/v1beta/openai") {
+            if (!apiKey && baseUrl === "https://generativelanguage.googleapis.com") {
                 Logger.error(`gro: no API key for google — run: gro --set-key google`);
                 process.exit(1);
             }
-            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey: apiKey || undefined });
+            return makeGoogleDriver({ baseUrl: baseUrl.replace(/\/v1beta\/openai\/?$/, ""), model, apiKey: apiKey || undefined });
         case "xai":
             if (!apiKey && baseUrl === "https://api.x.ai") {
                 Logger.error(`gro: no API key for xai — run: gro --set-key xai`);

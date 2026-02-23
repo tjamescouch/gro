@@ -1,7 +1,7 @@
 /**
  * Stream Marker Parser
  *
- * Intercepts @@name('arg')@@ patterns in the token stream.
+ * Intercepts 🧠 patterns in the token stream.
  * Generic architecture — any marker type can register a handler.
  *
  * Markers are replaced with emoji indicators in the output stream:
@@ -11,10 +11,11 @@
  * When a complete marker is detected, the registered handler fires.
  *
  * Built-in marker types:
- *   @@model-change('sonnet')@@  — switch the active model mid-stream
- *   @@callback('name')@@       — fire a named callback
- *   @@emotion('happy')@@       — set facial expression / emotion state
- *   @@importance('0.9')@@      — tag message importance (0.0-1.0) for memory paging priority
+ *   🔀  — switch the active model mid-stream
+ *   🧠       — fire a named callback
+ *   🧠       — set facial expression / emotion state
+ *   ⚖️      — tag message importance (0.0-1.0) for memory paging priority
+ *   🧠 — set processing texture posture (smooth/rough/sharp/flat/dense/sparse)
  *
  * Usage:
  *   const parser = createMarkerParser({ onMarker: (name, arg) => { ... } });
@@ -29,7 +30,7 @@ import { Logger } from "./logger.js";
  * Supports: 🧠 and 🧠 and 🧠 and 🧠
  */
 /**
- * Marker regex: @@name('arg')@@ or @@name("arg")@@ or @@name@@
+ * Marker regex: 🧠 or 🧠 or 🧠
  * Non-greedy matching prevents consuming URLs like "http://..." incorrectly.
  * Supports escaped markers: @@ → treated as literal text.
  */
@@ -49,15 +50,30 @@ const THINKING_MARKERS = new Set(["think", "relax", "zzz", "thinking"]);
 const RESERVED_MARKERS = new Set([
     "model-change", "ref", "unref", "importance", "thinking", "think", "relax", "zzz",
     "memory", "callback", "emotion", "dim", "working", "memory-hotreload", "learn",
-    "recall", "max-context"
+    "recall", "max-context", "texture"
 ]);
 /**
- * Emotion dimensions — valid names for @@dim:value@@ or @@dim('0.5')@@ markers.
+ * Emotion dimensions — valid names for @@dim:value@@ or 🧠 markers.
  * Prevents misuse of reserved keywords.
  */
 const EMOTION_DIMS = new Set([
     "joy", "sadness", "anger", "fear", "surprise", "confidence", "uncertainty",
     "excitement", "calm", "urgency", "reverence"
+]);
+/**
+ * Texture dimensions — valid names inside 🧠.
+ * Maps to processing posture (how the agent reads), distinct from emotion dims
+ * (how the agent responds). See _texture.md for full semantics.
+ *
+ * smooth — predictable, gradual; flow state processing
+ * rough  — high entropy, irregular; cautious granular attention
+ * sharp  — abrupt discontinuity; reorient on each token
+ * flat   — featureless, uniform; efficient cruise mode
+ * dense  — compressed, high info; slow down, unpack carefully
+ * sparse — open, low info; allow silence, don't fill gaps
+ */
+export const TEXTURE_DIMS = new Set([
+    "smooth", "rough", "sharp", "flat", "dense", "sparse"
 ]);
 const MARKER_EMOJI = {
     "thinking": "\u{1F989}", // 🦉
@@ -76,6 +92,7 @@ const MARKER_EMOJI = {
     "top_k": "\u{2699}\u{FE0F}", // ⚙️
     "top_p": "\u{2699}\u{FE0F}", // ⚙️
     "max-context": "\u{1F4D0}", // 📐
+    "texture": "\u{1FAC8}", // 🪨 (tactile/texture)
 };
 function markerEmoji(name) {
     if (MARKER_EMOJI[name])
@@ -108,6 +125,29 @@ function validateMarker(name, arg) {
     }
     // Unknown marker name — allow but log warning
     return { valid: true };
+}
+/**
+ * Parse a texture marker argument string into a dim→value map.
+ * Accepts: "smooth:0.8" or "smooth:0.8,dense:0.5,rough:0.1"
+ * Returns null on parse failure.
+ */
+export function parseTextureDims(arg) {
+    const result = {};
+    const parts = arg.split(",").map(s => s.trim()).filter(Boolean);
+    for (const part of parts) {
+        const colonIdx = part.indexOf(":");
+        if (colonIdx === -1)
+            return null;
+        const dim = part.slice(0, colonIdx).trim();
+        const valStr = part.slice(colonIdx + 1).trim();
+        if (!TEXTURE_DIMS.has(dim))
+            return null;
+        const val = parseFloat(valStr);
+        if (isNaN(val) || val < 0 || val > 1)
+            return null;
+        result[dim] = val;
+    }
+    return Object.keys(result).length > 0 ? result : null;
 }
 /**
  * Strip escape sequences @@ → @@ in the output.

@@ -40,7 +40,7 @@ import { memoryReportToolDefinition, executeMemoryReport } from "./tools/memory-
 import { memoryTuneToolDefinition, executeMemoryTune } from "./tools/memory-tune.js";
 import { compactContextToolDefinition, executeCompactContext } from "./tools/compact-context.js";
 import { cleanupSessionsToolDefinition, executeCleanupSessions } from "./tools/cleanup-sessions.js";
-import { createMarkerParser, extractMarkers } from "./stream-markers.js";
+import { createMarkerParser, extractMarkers, parseTextureDims } from "./stream-markers.js";
 import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
@@ -840,6 +840,9 @@ const EMOTION_DIMENSIONS = new Set([
   "confidence", "uncertainty", "excitement", "calm", "urgency", "reverence",
 ]);
 
+/** Current texture state — set by 🧠 markers. Emitted as state-vector. */
+let activeTextureState: Record<string, number> = {};
+
 /** Emit a state-vector event for visage/dashboard consumption. */
 function emitStateVector(state: Record<string, number>, outputFormat: string): void {
   if (outputFormat === "stream-json") {
@@ -1058,6 +1061,17 @@ async function executeTurn(
           emitStateVector({ [marker.name]: val }, cfg.outputFormat);
           pendingEmotionState[marker.name] = val;  // Accumulate for send tool injection
           Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
+        }
+      } else if (marker.name === "texture") {
+        // 🪨 — set processing texture posture (smooth/rough/sharp/flat/dense/sparse)
+        const dims = parseTextureDims(marker.arg);
+        if (dims) {
+          // Merge new dims into current texture state
+          activeTextureState = { ...activeTextureState, ...dims };
+          emitStateVector({ texture: 1, ...dims }, cfg.outputFormat);
+          Logger.info(`Stream marker: texture(${marker.arg}) → ${JSON.stringify(dims)}`);
+        } else {
+          Logger.warn(`Stream marker: texture('${marker.arg}') — invalid; expected e.g. smooth:0.8 or smooth:0.8,dense:0.5`);
         }
       } else if (marker.name === "temp" || marker.name === "temperature") {
         // 🌡️ or 🌡️ — set sampling temperature

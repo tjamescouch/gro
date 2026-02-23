@@ -94,19 +94,20 @@ export class HybridFragmentationMemory extends FragmentationMemory {
 
       const summarizerPrompt = `Summarize the following message fragments, preserving key information and decisions:\n\n${fragmentContent}\n\nProvide a concise summary.`;
 
-      const response = await this.summarizerDriver.chat({
-        messages: [{ role: "user", content: summarizerPrompt }],
-        model: this.summarizerModel || "claude-haiku-4-5",
-        temperature: 0.2,
-        maxTokens: 500,
-      });
+      const response = await this.summarizerDriver.chat(
+        [{ role: "user", from: "system", content: summarizerPrompt }],
+        {
+          model: this.summarizerModel || "claude-haiku-4-5",
+          temperature: 0.2,
+        },
+      );
 
-      const summaryText = response.choices[0]?.message?.content ?? "";
+      const summaryText = response.text ?? "";
 
-      // Augment page with summary
+      // Augment page with summary (store in content since ContextPage has no summary field)
       const hybridPage: ContextPage = {
         ...page,
-        summary: summaryText,
+        content: `${page.content}\n\n--- Summary ---\n${summaryText}`,
       };
 
       // Return hybrid summary referencing both fragments and summary

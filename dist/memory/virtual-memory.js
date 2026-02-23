@@ -20,7 +20,7 @@ function getSummarizerPromptBase() {
         }
         catch {
             // Fallback if file is missing
-            _summarizerPromptBase = "You are a precise summarizer. Output concise bullet points preserving facts, tasks, file paths, commands, and decisions. Messages marked @@important@@ MUST be reproduced verbatim. Messages marked @@ephemeral@@ can be omitted entirely.";
+            _summarizerPromptBase = "You are a precise summarizer. Output concise bullet points preserving facts, tasks, file paths, commands, and decisions. Messages marked 🧠 MUST be reproduced verbatim. Messages marked 🧠 can be omitted entirely.";
         }
     }
     return _summarizerPromptBase;
@@ -42,6 +42,7 @@ const DEFAULTS = {
     enableBatchSummarization: false,
     enablePhantomCompaction: process.env.GRO_PHANTOM_COMPACTION === "true",
     queuePath: join(process.env.HOME ?? "/tmp", ".gro", "summarization-queue.jsonl"),
+    sessionId: "",
 };
 // --- VirtualMemory ---
 /** Messages with importance >= this threshold are promoted to the keep set during paging */
@@ -85,8 +86,11 @@ export class VirtualMemory extends AgentMemory {
         this.baseHighRatio = null;
         this.baseMinRecentPerLane = null;
         this.forceCompactPending = false;
+        const pagesDir = config.sessionId
+            ? join(DEFAULTS.pagesDir, config.sessionId)
+            : (config.pagesDir ?? DEFAULTS.pagesDir);
         this.cfg = {
-            pagesDir: config.pagesDir ?? DEFAULTS.pagesDir,
+            pagesDir,
             pageSlotTokens: config.pageSlotTokens ?? DEFAULTS.pageSlotTokens,
             workingMemoryTokens: config.workingMemoryTokens ?? DEFAULTS.workingMemoryTokens,
             assistantWeight: config.assistantWeight ?? DEFAULTS.assistantWeight,
@@ -103,6 +107,7 @@ export class VirtualMemory extends AgentMemory {
             enableBatchSummarization: config.enableBatchSummarization ?? DEFAULTS.enableBatchSummarization,
             enablePhantomCompaction: config.enablePhantomCompaction ?? DEFAULTS.enablePhantomCompaction,
             queuePath: config.queuePath ?? DEFAULTS.queuePath,
+            sessionId: config.sessionId ?? DEFAULTS.sessionId,
         };
         mkdirSync(this.cfg.pagesDir, { recursive: true });
         // Initialize summarization queue if batch mode enabled
@@ -211,7 +216,7 @@ export class VirtualMemory extends AgentMemory {
         }
     }
     /**
-     * Hot-reload memory configuration from marker (e.g. @@working:8k,page:8k@@).
+     * Hot-reload memory configuration from marker (e.g. @@working:8k,page:12k@@).
      * Parses numeric k-suffix (e.g. "8k" → 8000) and applies to working/page token budgets.
      * Does NOT trigger compaction — preserves all loaded pages.
      */
@@ -473,15 +478,15 @@ export class VirtualMemory extends AgentMemory {
         const importantLines = [];
         const transcript = messages.map(m => {
             const raw = String(m.content ?? "");
-            // Hard-strip @@ephemeral@@ lines before summarization
+            // Hard-strip 🧠 lines before summarization
             const stripped = raw.split("\n")
-                .filter(line => !/@@ephemeral@@/i.test(line))
+                .filter(line => !/🧠/i.test(line))
                 .join("\n");
             const c = stripped.slice(0, 4000);
-            // Collect @@important@@ lines verbatim for the summarizer header
+            // Collect 🧠 lines verbatim for the summarizer header
             for (const line of raw.split("\n")) {
-                if (/@@important@@/i.test(line)) {
-                    importantLines.push(line.replace(/@@important@@/gi, "").trim());
+                if (/🧠/i.test(line)) {
+                    importantLines.push(line.replace(/🧠/gi, "").trim());
                 }
             }
             // Tag messages with importance field for the summarizer

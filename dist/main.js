@@ -18,7 +18,6 @@ import { Logger, C } from "./logger.js";
 import { spendMeter } from "./spend-meter.js";
 import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
 import { makeAnthropicDriver } from "./drivers/anthropic.js";
-import { makeGoogleDriver } from "./drivers/streaming-google.js";
 import { SimpleMemory } from "./memory/simple-memory.js";
 import { AdvancedMemory } from "./memory/advanced-memory.js";
 import { VirtualMemory } from "./memory/virtual-memory.js";
@@ -119,7 +118,7 @@ function discoverExtensions(mcpConfigPaths) {
             Logger.warn(`Failed to read _base.md at ${repoBase}`);
         }
     }
-    // Check for _learn.md (persistent learned facts from @@learn()@@ markers)
+    // Check for _learn.md (persistent learned facts from 📚 markers)
     const learnFile = join(process.cwd(), "_learn.md");
     if (existsSync(learnFile)) {
         try {
@@ -681,7 +680,7 @@ function createDriver(cfg) {
 // ---------------------------------------------------------------------------
 // Memory factory
 // ---------------------------------------------------------------------------
-async function createMemory(cfg, driver, requestedMode) {
+async function createMemory(cfg, driver, requestedMode, sessionId) {
     const memoryMode = requestedMode ?? process.env.GRO_MEMORY ?? "virtual";
     // Opt-out: SimpleMemory only if explicitly requested
     if (memoryMode === "simple") {
@@ -754,6 +753,7 @@ async function createMemory(cfg, driver, requestedMode) {
         systemPrompt: cfg.systemPrompt || undefined,
         workingMemoryTokens: cfg.contextTokens,
         enableBatchSummarization: cfg.batchSummarization,
+        sessionId,
     });
     vm.setModel(cfg.model);
     return vm;
@@ -777,7 +777,7 @@ function formatOutput(text, format) {
 // ---------------------------------------------------------------------------
 // Tool execution loop
 // ---------------------------------------------------------------------------
-/** Emotion dimensions routed to visage as state-vector events via @@dim(value)@@ markers. */
+/** Emotion dimensions routed to visage as state-vector events via 🧠 markers. */
 const EMOTION_DIMENSIONS = new Set([
     "joy", "sadness", "anger", "fear", "surprise", "disgust",
     "confidence", "uncertainty", "excitement", "calm", "urgency", "reverence",
@@ -837,11 +837,11 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     // Mutable model reference — stream markers can switch this mid-turn
     let activeModel = cfg.model;
     // Thinking level: 0.0 = idle (haiku), 1.0 = full (opus + max budget).
-    // Decays toward THINKING_MEAN each round without @@thinking()@@ — agents coast at mid-tier.
-    // Emit @@thinking(0.8)@@ to go into the phone booth; let it decay to come back out.
+    // Decays toward THINKING_MEAN each round without 🦉 — agents coast at mid-tier.
+    // Emit 🦉 to go into the phone booth; let it decay to come back out.
     let activeThinkingBudget = 0.5;
-    let modelExplicitlySet = false; // true after @@model-change()@@, suppresses tier auto-select
-    // Sampling parameters — controlled via @@temp()@@, @@top_k()@@, @@top_p()@@ markers
+    let modelExplicitlySet = false; // true after 🔀, suppresses tier auto-select
+    // Sampling parameters — controlled via 🌡️, ⚙️, ⚙️ markers
     let activeTemperature = undefined;
     let activeTopK = undefined;
     let activeTopP = undefined;
@@ -898,7 +898,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 });
             }
             else {
-                newMemory = await createMemory(cfg, driver); // VirtualMemory
+                newMemory = await createMemory(cfg, driver, "virtual", sessionId); // VirtualMemory
             }
             // Transfer messages to new memory
             for (const msg of currentMessages) {
@@ -989,7 +989,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
             }
             else if (EMOTION_DIMENSIONS.has(marker.name)) {
-                // Function-form emotion marker @@joy(0.6)@@ — route to visage as state vector.
+                // Function-form emotion marker 😊 — route to visage as state vector.
                 const val = marker.arg !== "" ? parseFloat(marker.arg) : 0.5;
                 if (!isNaN(val) && val >= 0 && val <= 1) {
                     emitStateVector({ [marker.name]: val }, cfg.outputFormat);
@@ -998,7 +998,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
             }
             else if (marker.name === "temp" || marker.name === "temperature") {
-                // @@temp()@@ or @@temperature()@@ — set sampling temperature
+                // 🌡️ or 🌡️ — set sampling temperature
                 const val = parseFloat(marker.arg);
                 if (!isNaN(val) && val >= 0 && val <= 2) {
                     activeTemperature = val;
@@ -1010,7 +1010,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
             }
             else if (marker.name === "top_k") {
-                // @@top_k()@@ — set nucleus sampling
+                // ⚙️ — set nucleus sampling
                 const val = parseInt(marker.arg, 10);
                 if (!isNaN(val) && val > 0) {
                     activeTopK = val;
@@ -1022,7 +1022,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
             }
             else if (marker.name === "top_p") {
-                // @@top_p()@@ — set nucleus sampling
+                // ⚙️ — set nucleus sampling
                 const val = parseFloat(marker.arg);
                 if (!isNaN(val) && val >= 0 && val <= 1) {
                     activeTopP = val;
@@ -1113,7 +1113,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
             }
             else if (marker.name === "memory-tune" && marker.arg) {
-                // Hot-tune VirtualMemory: @@memory-tune(working:8k,page:6k)@@
+                // Hot-tune VirtualMemory: 🧠
                 // Parse key:value pairs separated by commas
                 const tuneParams = {};
                 for (const pair of marker.arg.split(",")) {
@@ -1141,7 +1141,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
             }
             else if (marker.name === "max-context" && marker.arg) {
-                // @@max-context('200k')@@ — set total working memory token budget
+                // 📐 — set total working memory token budget
                 // Accepts: "200k" (200,000), "1m"/"1mb" (1,000,000), "32000" (raw tokens)
                 const raw = marker.arg.trim().toLowerCase();
                 let tokens;
@@ -1219,7 +1219,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         if (lfsPoster)
             await lfsPoster.close();
         // Decay thinking level toward THINKING_MEAN if not refreshed this round.
-        // Agents coast at mid-tier when idle — emit @@thinking(X)@@ each round to maintain level.
+        // Agents coast at mid-tier when idle — emit 🦉 each round to maintain level.
         if (!thinkingSeenThisTurn) {
             // Regress toward mean — agents coast at cruising altitude, not idle.
             // From opus (0.8) → settles at ~0.5 (mid-tier) in ~4 rounds.
@@ -1371,7 +1371,7 @@ Do not get stuck calling ${idleToolName} repeatedly.`
                 fnArgs = {};
             }
             // Scan tool call string args for stream markers (e.g. model sends
-            // @@model-change('haiku')@@ inside a send tool message).
+            // 🔀 inside a send tool message).
             // Strip markers from args so they don't leak into tool output.
             for (const key of Object.keys(fnArgs)) {
                 if (typeof fnArgs[key] === "string") {
@@ -1380,7 +1380,7 @@ Do not get stuck calling ${idleToolName} repeatedly.`
             }
             // Inject accumulated emotion state into send tool messages as colon-format
             // markers (@@joy:0.6,confidence:0.8@@) so the dashboard can parse them.
-            // Function-form markers (@@joy(0.6)@@) are stripped by extractMarkers above,
+            // Function-form markers (😊) are stripped by extractMarkers above,
             // but the dashboard's useEmotionStream expects colon-format in message text.
             const { sendTool: _sendTool, sendToolMessageField: _sendField } = cfg.toolRoles;
             if (_sendTool && fnName === _sendTool && typeof fnArgs[_sendField] === "string") {
@@ -1586,7 +1586,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
         usage();
         process.exit(1);
     }
-    let memory = await createMemory(cfg, driver);
+    let memory = await createMemory(cfg, driver, undefined, sessionId);
     // Initialize runtime control system
     runtimeConfig.setDriver(driver);
     runtimeConfig.setMemory(memory);
@@ -1601,7 +1601,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
         const sess = loadSession(sessionId);
         await memory.load(sessionId);
         // Restore the model from the previous session if no model was explicitly passed.
-        // This ensures that @@model-change@@ applied in a previous turn persists
+        // This ensures that 🔀 applied in a previous turn persists
         // across session resume, since the model is stored in session metadata.
         if (sess && sess.meta.provider === cfg.provider && sess.meta.model) {
             if (!wasModelExplicitlyPassed()) {
@@ -1658,7 +1658,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     }
 }
 async function interactive(cfg, driver, mcp, sessionId) {
-    let memory = await createMemory(cfg, driver);
+    let memory = await createMemory(cfg, driver, undefined, sessionId);
     const readline = await import("readline");
     // Violation tracker for persistent mode
     const tracker = cfg.persistent ? new ViolationTracker() : undefined;

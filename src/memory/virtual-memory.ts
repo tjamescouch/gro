@@ -118,6 +118,7 @@ const DEFAULTS = {
   enableBatchSummarization: false,
   enablePhantomCompaction: process.env.GRO_PHANTOM_COMPACTION === "true",
   queuePath: join(process.env.HOME ?? "/tmp", ".gro", "summarization-queue.jsonl"),
+  sessionId: "",
 };
 
 // --- VirtualMemory ---
@@ -186,6 +187,7 @@ export class VirtualMemory extends AgentMemory {
       enableBatchSummarization: config.enableBatchSummarization ?? DEFAULTS.enableBatchSummarization,
       enablePhantomCompaction: config.enablePhantomCompaction ?? DEFAULTS.enablePhantomCompaction,
       queuePath: config.queuePath ?? DEFAULTS.queuePath,
+      sessionId: config.sessionId ?? DEFAULTS.sessionId,
     };
     mkdirSync(this.cfg.pagesDir, { recursive: true });
     // Initialize summarization queue if batch mode enabled

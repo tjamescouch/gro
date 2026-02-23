@@ -836,6 +836,8 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle round
     // Mutable model reference — stream markers can switch this mid-turn
     let activeModel = cfg.model;
+    // Mutable driver reference — cross-provider hotswap replaces this mid-turn
+    let activeDriver = driver;
     // Thinking level: 0.0 = idle (haiku), 1.0 = full (opus + max budget).
     // Decays toward THINKING_MEAN each round without 🦉 — agents coast at mid-tier.
     // Emit 🦉 to go into the phone booth; let it decay to come back out.
@@ -919,7 +921,6 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
                 const newProvider = inferProvider(undefined, newModel);
                 if (newProvider !== cfg.provider) {
-                    Logger.error(`Stream marker: model-change '${marker.arg}' REJECTED — cross-provider swap (${cfg.provider} → ${newProvider}) is not supported. Stay on ${cfg.provider} models.`);
                 }
                 else {
                     Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
@@ -930,6 +931,30 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     runtimeState.setActiveModel(newModel);
                     runtimeState.setModelExplicitlySet(true);
                 }
+                if (newProvider !== cfg.provider) {
+                    // Cross-provider hotswap: create a new driver for the target provider.
+                    // Resolves the key from keychain/env for the new provider.
+                    const newApiKey = resolveApiKey(newProvider);
+                    const newBaseUrl = defaultBaseUrl(newProvider);
+                    try {
+                        const newDriver = createDriverForModel(newProvider, newModel, newApiKey, newBaseUrl, cfg.maxTokens);
+                        activeDriver = newDriver;
+                        cfg.provider = newProvider;
+                        cfg.apiKey = newApiKey;
+                        cfg.baseUrl = newBaseUrl;
+                        Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel} (cross-provider: now ${newProvider})`);
+                    }
+                    catch (err) {
+                        Logger.error(`Stream marker: model-change '${marker.arg}' FAILED — could not create ${newProvider} driver: ${err}`);
+                        return;
+                    }
+                }
+                activeModel = newModel;
+                cfg.model = newModel;
+                memory.setModel(newModel);
+                modelExplicitlySet = true;
+                runtimeState.setActiveModel(newModel);
+                runtimeState.setModelExplicitlySet(true);
             }
             else if (marker.name === "ref" && marker.arg) {
                 // VirtualMemory page ref — load a page into context for next turn
@@ -1196,7 +1221,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             onToken: rawOnToken,
             onMarker: handleMarker,
         });
-        const output = await driver.chat(memory.messages(), {
+        const output = await activeDriver.chat(memory.messages(), {
             model: activeModel,
             tools: tools.length > 0 ? tools : undefined,
             onToken: markerParser.onToken,
@@ -1531,7 +1556,7 @@ Do not get stuck calling ${idleToolName} repeatedly.`
     // give the model one final turn with no tools so it can produce a closing response.
     if (!brokeCleanly && tools.length > 0) {
         Logger.debug("Max tool rounds reached — final turn with no tools");
-        const finalOutput = await driver.chat(memory.messages(), {
+        const finalOutput = await activeDriver.chat(memory.messages(), {
             model: activeModel,
             temperature: activeTemperature,
             top_k: activeTopK,

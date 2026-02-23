@@ -921,17 +921,6 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
                 const newProvider = inferProvider(undefined, newModel);
                 if (newProvider !== cfg.provider) {
-                }
-                else {
-                    Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
-                    activeModel = newModel;
-                    cfg.model = newModel; // persist across turns
-                    memory.setModel(newModel); // persist in session metadata on save
-                    modelExplicitlySet = true; // suppress thinking-tier auto-select
-                    runtimeState.setActiveModel(newModel);
-                    runtimeState.setModelExplicitlySet(true);
-                }
-                if (newProvider !== cfg.provider) {
                     // Cross-provider hotswap: create a new driver for the target provider.
                     // Resolves the key from keychain/env for the new provider.
                     const newApiKey = resolveApiKey(newProvider);
@@ -1012,6 +1001,21 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 runtimeState.setThinkingBudget(activeThinkingBudget);
                 Logger.info(`Stream marker: relax → budget=${activeThinkingBudget.toFixed(2)}`);
                 emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
+            }
+            else if (marker.name === "sleep" || marker.name === "listening") {
+                // 🧠 / 🧠 — agent declares it is in a blocking listen.
+                // Suppresses idle and same-tool-loop violation checks until a non-listen tool fires.
+                if (violations) {
+                    violations.setSleeping(true);
+                    Logger.info(`Stream marker: ${marker.name} → violation checks suppressed (sleep mode ON)`);
+                }
+            }
+            else if (marker.name === "wake") {
+                // 🧠 — explicitly exit sleep mode
+                if (violations) {
+                    violations.setSleeping(false);
+                    Logger.info("Stream marker: wake → violation checks resumed (sleep mode OFF)");
+                }
             }
             else if (EMOTION_DIMENSIONS.has(marker.name)) {
                 // Function-form emotion marker 😊 — route to visage as state vector.
@@ -1597,6 +1601,14 @@ function wasModelExplicitlyPassed() {
     }
     return false;
 }
+function wasProviderExplicitlyPassed() {
+    for (let i = 0; i < process.argv.length; i++) {
+        if ((process.argv[i] === "--provider" || process.argv[i] === "-P") && i + 1 < process.argv.length) {
+            return true;
+        }
+    }
+    return false;
+}
 async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     let prompt = (positionalArgs || []).join(" ").trim();
     if (!prompt && !process.stdin.isTTY) {
@@ -1625,11 +1637,21 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     if (cfg.continueSession || cfg.resumeSession) {
         const sess = loadSession(sessionId);
         await memory.load(sessionId);
-        // Restore the model from the previous session if no model was explicitly passed.
-        // This ensures that 🔀 applied in a previous turn persists
-        // across session resume, since the model is stored in session metadata.
-        if (sess && sess.meta.provider === cfg.provider && sess.meta.model) {
-            if (!wasModelExplicitlyPassed()) {
+        // Restore the model (and provider for cross-provider hotswaps) from the previous session
+        // if neither was explicitly passed. This ensures that 🔀 persists across session resume.
+        if (sess && sess.meta.model) {
+            if (sess.meta.provider !== cfg.provider && !wasProviderExplicitlyPassed() && !wasModelExplicitlyPassed()) {
+                // Cross-provider hotswap: restore saved provider and reinitialize driver
+                Logger.info(`Restoring cross-provider session: ${sess.meta.provider}/${sess.meta.model}`);
+                cfg.provider = sess.meta.provider;
+                cfg.model = sess.meta.model;
+                cfg.apiKey = resolveApiKey(cfg.provider);
+                cfg.baseUrl = defaultBaseUrl(cfg.provider);
+                driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens);
+                memory = await createMemory(cfg, driver, undefined, sessionId);
+                await memory.load(sessionId);
+            }
+            else if (sess.meta.provider === cfg.provider && !wasModelExplicitlyPassed()) {
                 cfg.model = sess.meta.model;
                 Logger.info(`Restored model from session: ${cfg.model}`);
             }
@@ -1703,9 +1725,26 @@ async function interactive(cfg, driver, mcp, sessionId) {
     if (cfg.continueSession || cfg.resumeSession) {
         const sess = loadSession(sessionId);
         if (sess && sess.meta.provider !== cfg.provider) {
-            Logger.warn(`Provider changed from ${sess.meta.provider} to ${cfg.provider} — ` +
-                `starting fresh session to avoid cross-provider corruption (tool message format incompatibility)`);
-            // Don't load the old session - cross-provider resume is unsafe
+            // Cross-provider mismatch: if neither --provider nor --model was explicitly passed,
+            // restore the saved provider+model and reinitialize the driver so that hotswaps
+            // (e.g. 🔀 to gpt-5.2) persist across session resumes.
+            if (!wasProviderExplicitlyPassed() && !wasModelExplicitlyPassed() && sess.meta.provider && sess.meta.model) {
+                Logger.info(`Restoring cross-provider session: ${sess.meta.provider}/${sess.meta.model}`);
+                cfg.provider = sess.meta.provider;
+                cfg.model = sess.meta.model;
+                cfg.apiKey = resolveApiKey(cfg.provider);
+                cfg.baseUrl = defaultBaseUrl(cfg.provider);
+                driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens);
+                memory = await createMemory(cfg, driver, undefined, sessionId);
+                await memory.load(sessionId);
+                const msgCount = sess.messages.filter((m) => m.role !== "system").length;
+                Logger.info(C.gray(`Resumed cross-provider session ${sessionId} (${msgCount} messages)`));
+            }
+            else {
+                Logger.warn(`Provider changed from ${sess.meta.provider} to ${cfg.provider} — ` +
+                    `starting fresh session to avoid cross-provider corruption (tool message format incompatibility)`);
+                // Don't load the old session - cross-provider resume unsafe when provider explicitly changed
+            }
         }
         else {
             await memory.load(sessionId);

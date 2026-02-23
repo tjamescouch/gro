@@ -12,3 +12,6 @@ export type { RandomSamplingFragmenterConfig } from './random-sampling-fragmente
 
 export { KeywordFragmenter } from './keyword-fragmenter.js';
 export type { KeywordFragmenterConfig } from './keyword-fragmenter.js';
+
+export { RecencyFragmenter } from './recency-fragmenter.js';
+export type { RecencyFragmenterConfig } from './recency-fragmenter.js';

@@ -93,7 +93,8 @@ That worked, we're done.  Moving on to the next task.
 Switch memory implementation mid-conversation. All messages transfer to new memory system.
 
 **Modes:**
-- `simple` — Unbounded buffer, no paging (fast, grows without limit)
+- `perfect` — Full unbounded buffer, zero compaction, perfect recall (grows without limit)
+- `simple` — Alias for perfect; unbounded buffer, no paging
 - `virtual` — Swim-lane summarization with LLM compaction (default, context-efficient)
 - `fragmentation` — Stochastic sampling, zero LLM cost (fast, lossy)
 - `hnsw` — Semantic similarity retrieval (recalls relevant past context)
@@ -101,7 +102,7 @@ Switch memory implementation mid-conversation. All messages transfer to new memo
 **When to use:**
 - Switch to `fragmentation` for zero-cost paging during long batch operations
 - Switch to `hnsw` when you need to recall semantically similar past conversations
-- Switch to `simple` for debugging or short sessions
+- Switch to `perfect` or `simple` for full recall (no compaction)
 - Switch to `virtual` for balanced cost/quality (default)
 
 Example:
@@ -112,13 +113,15 @@ Example:
 **Startup configuration (env var):**
 ```bash
 GRO_MEMORY=virtual gro -i        # default
+GRO_MEMORY=perfect gro -i        # full recall, no compaction
 GRO_MEMORY=fragmentation gro -i  # zero-cost paging
 GRO_MEMORY=hnsw gro -i           # semantic retrieval
 GRO_MEMORY=simple gro -i         # unbounded buffer
 ```
 
 **Memory mode details:**
-- **simple**: No summarization, all messages in buffer. Fast but unbounded.
+- **perfect**: Full context buffer, zero compaction. Perfect recall, grows without limit.
+- **simple**: Alias for perfect. No summarization, all messages in buffer. Fast but unbounded.
 - **virtual**: Pages old messages to disk when working memory exceeds budget. Summarizes via LLM.
 - **fragmentation**: Pages via age-biased random sampling. No LLM calls, instant compaction.
 - **hnsw**: Extends virtual memory with semantic similarity index. Auto-retrieves relevant context.

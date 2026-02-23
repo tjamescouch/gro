@@ -17,7 +17,13 @@ git add -A && git commit -m "<msg>"
 
 ## Memory Modes
 
-gro supports four memory implementations. Switch at startup with `GRO_MEMORY` env var or mid-conversation with `🧠` directive.
+gro supports five memory implementations. Switch at startup with `GRO_MEMORY` env var or mid-conversation with `🧠` directive.
+
+### Perfect
+Full unbounded buffer, zero compaction, perfect recall. Nothing is ever paged or summarized.
+```bash
+GRO_MEMORY=perfect gro -i
+```
 
 ### Simple
 Unbounded buffer, no paging. Fast but grows without limit.

@@ -940,104 +940,185 @@ export class VirtualMemory extends AgentMemory {
   // --- Background Summarization ---
 
   /**
-   * Repair orphaned tool call/result pairs after memory compaction.
-   * Independent lane paging can break the strict pairing OpenAI requires:
-   *   assistant (with tool_calls) → tool (with matching tool_call_id)
+   * Flatten compacted tool calls into plain assistant+tool message pairs.
    *
-   * Instead of removing orphaned messages (losing data), this inserts synthetic
-   * stub messages for the missing partner:
-   *   - Missing tool result → insert stub tool message with truncated content
-   *   - Missing assistant tool_call → insert stub assistant with truncated invocation
+   * After lane-based compaction, assistant messages with tool_calls may have
+   * lost their matching tool results (or vice versa). Instead of inserting
+   * synthetic stubs (which still carry tool_calls that OpenAI validates),
+   * this converts every broken tool call into:
+   *   1. A plain "assistant" message with summarized content + metadata (no tool_calls)
+   *   2. A matching "tool" message with the result snippet
+   *
+   * This eliminates the tool_calls field from compacted messages entirely,
+   * so OpenAI's strict "tool must follow tool_calls" rule cannot be violated
+   * regardless of how paging fragments message order.
+   *
+   * Rules:
+   * - Properly split pairs (all tool results adjacent) → leave alone
+   * - Broken/missing pairs → flatten to summarized assistant + tool
+   * - Dangling tool results (no matching tool_calls) → log warning, skip
    */
-  private repairToolPairs(): void {
+  private flattenCompactedToolCalls(): void {
     const buf = this.messagesBuffer;
-    let repairCount = 0;
 
-    // Index all existing tool_call_ids from results and from assistant tool_calls
-    const resultIds = new Set<string>();
-    const callIds = new Set<string>();
+    // --- Pre-index ---
+
+    // Map tool_call_id → tool result message
+    const toolResultMap = new Map<string, ChatMessage>();
     for (const m of buf) {
       if (m.role === "tool" && m.tool_call_id) {
-        resultIds.add(m.tool_call_id);
-      }
-      const tc = (m as any).tool_calls;
-      if (m.role === "assistant" && Array.isArray(tc)) {
-        for (const call of tc) {
-          if (call?.id) callIds.add(call.id);
-        }
+        toolResultMap.set(m.tool_call_id, m);
       }
     }
 
-    // Pass 1: Insert missing tool results after assistant messages with tool_calls.
-    // Iterate backward so insertions don't affect earlier indices.
-    for (let i = buf.length - 1; i >= 0; i--) {
+    // Collect all call IDs from assistant tool_calls
+    const allCallIds = new Set<string>();
+    for (const m of buf) {
+      const tc = (m as any).tool_calls;
+      if (m.role === "assistant" && Array.isArray(tc)) {
+        for (const c of tc) if (c?.id) allCallIds.add(c.id);
+      }
+    }
+
+    // --- Pass 1: Classify each assistant+tool_calls ---
+
+    const properlySplitIndices = new Set<number>();      // assistant indices that are properly split
+    const properlySplitToolIndices = new Set<number>();   // tool result indices in proper pairs
+    const consumedToolCallIds = new Set<string>();        // IDs consumed by flattening
+
+    for (let i = 0; i < buf.length; i++) {
       const msg = buf[i];
       const tc = (msg as any).tool_calls;
       if (msg.role !== "assistant" || !Array.isArray(tc) || tc.length === 0) continue;
 
-      const missingCalls = tc.filter((c: any) => c?.id && !resultIds.has(c.id));
-      if (missingCalls.length === 0) continue;
+      const expectedIds: string[] = tc.map((c: any) => c?.id).filter(Boolean);
 
-      // Insert after the assistant message and any existing consecutive tool results
-      let insertAt = i + 1;
-      while (insertAt < buf.length && buf[insertAt].role === "tool") insertAt++;
+      // Check: are ALL matching tool results consecutively after this assistant?
+      const followingTools: { id: string; idx: number }[] = [];
+      for (let j = i + 1; j < buf.length && buf[j].role === "tool"; j++) {
+        if (buf[j].tool_call_id) {
+          followingTools.push({ id: buf[j].tool_call_id!, idx: j });
+        }
+      }
 
-      const stubs: ChatMessage[] = missingCalls.map((call: any) => ({
-        role: "tool",
-        from: "VirtualMemory",
-        content: "[context compressed — tool result truncated]",
-        tool_call_id: call.id,
-        name: call.function?.name || "unknown_tool",
-      }));
-      buf.splice(insertAt, 0, ...stubs);
-      repairCount += stubs.length;
-      for (const call of missingCalls) resultIds.add(call.id);
+      const followingIds = new Set(followingTools.map(t => t.id));
+      const allPresentAndAdjacent =
+        expectedIds.length > 0 &&
+        expectedIds.every((id: string) => followingIds.has(id)) &&
+        followingTools.length >= expectedIds.length;
+
+      if (allPresentAndAdjacent) {
+        // Properly split — mark for pass-through
+        properlySplitIndices.add(i);
+        for (const t of followingTools) {
+          if (expectedIds.includes(t.id)) {
+            properlySplitToolIndices.add(t.idx);
+          }
+        }
+      } else {
+        // Will be flattened — mark all tool_call_ids as consumed
+        for (const id of expectedIds) {
+          consumedToolCallIds.add(id);
+        }
+      }
     }
 
-    // Pass 2: Insert synthetic assistant before orphaned tool messages.
-    let i = 0;
-    while (i < buf.length) {
-      if (buf[i].role !== "tool" || !buf[i].tool_call_id || callIds.has(buf[i].tool_call_id!)) {
-        i++;
+    // --- Pass 2: Build output ---
+
+    const output: ChatMessage[] = [];
+    let flattenCount = 0;
+
+    for (let i = 0; i < buf.length; i++) {
+      const msg = buf[i];
+
+      // Properly split assistant → pass through as-is
+      if (properlySplitIndices.has(i)) {
+        output.push(msg);
         continue;
       }
 
-      // Collect consecutive orphaned tool messages
-      const groupStart = i;
-      const orphanedCalls: { id: string; name: string }[] = [];
-      while (
-        i < buf.length &&
-        buf[i].role === "tool" &&
-        buf[i].tool_call_id &&
-        !callIds.has(buf[i].tool_call_id!)
-      ) {
-        orphanedCalls.push({
-          id: buf[i].tool_call_id!,
-          name: buf[i].name || "unknown_tool",
-        });
-        i++;
+      // Properly split tool result → pass through as-is
+      if (properlySplitToolIndices.has(i)) {
+        output.push(msg);
+        continue;
       }
 
-      const syntheticAssistant: ChatMessage = {
-        role: "assistant",
-        from: "VirtualMemory",
-        content: "[context compressed — tool invocation truncated]",
-      };
-      (syntheticAssistant as any).tool_calls = orphanedCalls.map(c => ({
-        id: c.id,
-        type: "function",
-        function: { name: c.name, arguments: "{}" },
-      }));
+      const tc = (msg as any).tool_calls;
+      if (msg.role === "assistant" && Array.isArray(tc) && tc.length > 0) {
+        // Flatten each tool call into a summarized assistant + tool pair
+        for (const call of tc) {
+          const callId: string = call.id || `flatten_${flattenCount}`;
+          const fnName: string = call.function?.name || "unknown_tool";
+          const fnArgs: string = call.function?.arguments || "{}";
 
-      buf.splice(groupStart, 0, syntheticAssistant);
-      for (const c of orphanedCalls) callIds.add(c.id);
-      repairCount++;
-      i++; // Account for inserted element shifting subsequent indices
+          // Find matching tool result (may be anywhere in the buffer)
+          const toolResult = toolResultMap.get(callId);
+          const rawResult = toolResult ? String(toolResult.content ?? "") : "";
+          const resultSnippet = rawResult
+            ? (rawResult.length > 200 ? rawResult.slice(0, 200) + "..." : rawResult)
+            : "[result truncated during compaction]";
+
+          const argsSnippet = fnArgs.length > 100 ? fnArgs.slice(0, 100) + "..." : fnArgs;
+
+          // Summarized assistant message (no tool_calls field!)
+          const flatAssistant: ChatMessage = {
+            role: "assistant",
+            from: msg.from || "VirtualMemory",
+            content: `I called ${fnName}(${argsSnippet}) → returned ${resultSnippet}`,
+          };
+          let parsedArgs: Record<string, unknown> = {};
+          try { parsedArgs = JSON.parse(fnArgs); } catch { /* keep empty */ }
+          (flatAssistant as any).metadata = {
+            summarized_tool_call: {
+              id: callId,
+              function: fnName,
+              args: parsedArgs,
+              result: resultSnippet,
+            },
+          };
+
+          // Matching tool message
+          const flatTool: ChatMessage = {
+            role: "tool",
+            from: fnName,
+            content: resultSnippet,
+            tool_call_id: callId,
+            name: fnName,
+          };
+
+          output.push(flatAssistant, flatTool);
+          flattenCount++;
+        }
+        continue;
+      }
+
+      // Tool message handling
+      if (msg.role === "tool" && msg.tool_call_id) {
+        // Consumed by flattening → skip (already represented in the flattened pair)
+        if (consumedToolCallIds.has(msg.tool_call_id)) {
+          continue;
+        }
+
+        // Dangling tool result — no matching assistant tool_calls anywhere
+        if (!allCallIds.has(msg.tool_call_id)) {
+          Logger.warn(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — skipping`);
+          continue;
+        }
+
+        // Belongs to a properly-split pair not yet reached, or other valid state
+        output.push(msg);
+        continue;
+      }
+
+      // All other messages → pass through unchanged
+      output.push(msg);
     }
 
-    if (repairCount > 0) {
-      Logger.info(`[VM] repairToolPairs: inserted ${repairCount} synthetic stubs`);
+    if (flattenCount > 0) {
+      Logger.info(`[VM] flattenCompactedToolCalls: flattened ${flattenCount} tool call(s) into summarized pairs`);
     }
+
+    buf.splice(0, buf.length, ...output);
   }
 
   /**
@@ -1221,8 +1302,10 @@ export class VirtualMemory extends AgentMemory {
       const rebuilt: ChatMessage[] = [...summaries, ...orderedKept];
       this.messagesBuffer.splice(0, this.messagesBuffer.length, ...rebuilt);
 
-      // Repair orphaned tool call/result pairs broken by independent lane paging
-      this.repairToolPairs();
+      // Flatten broken tool call/result pairs into summarized assistant+tool messages.
+      // This eliminates tool_calls from compacted messages so OpenAI's strict
+      // pairing validation cannot fail regardless of paging fragmentation order.
+      this.flattenCompactedToolCalls();
 
       // Calculate metrics after cleanup
       const afterNonSys = this.messagesBuffer.filter(m => m.role !== "system");

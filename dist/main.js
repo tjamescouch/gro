@@ -17,6 +17,7 @@ import { Logger, C } from "./logger.js";
 import { spendMeter } from "./spend-meter.js";
 import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
 import { makeAnthropicDriver } from "./drivers/anthropic.js";
+import { makeGoogleDriver } from "./drivers/streaming-google.js";
 import { SimpleMemory } from "./memory/simple-memory.js";
 import { AdvancedMemory } from "./memory/advanced-memory.js";
 import { VirtualMemory } from "./memory/virtual-memory.js";
@@ -498,7 +499,7 @@ function defaultBaseUrl(provider) {
     switch (provider) {
         case "openai": return process.env.OPENAI_BASE_URL || "https://api.openai.com";
         case "groq": return process.env.GROQ_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.groq.com/openai";
-        case "google": return process.env.GOOGLE_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai";
+        case "google": return process.env.GOOGLE_BASE_URL || "https://generativelanguage.googleapis.com";
         case "xai": return process.env.XAI_BASE_URL || "https://api.x.ai";
         case "local": return "http://127.0.0.1:11434";
         default: return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
@@ -654,11 +655,11 @@ function createDriverForModel(provider, model, apiKey, baseUrl, maxTokens) {
             }
             return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
         case "google":
-            if (!apiKey && baseUrl === "https://generativelanguage.googleapis.com/v1beta/openai") {
+            if (!apiKey && baseUrl === "https://generativelanguage.googleapis.com") {
                 Logger.error(`gro: no API key for google — run: gro --set-key google`);
                 process.exit(1);
             }
-            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey: apiKey || undefined });
+            return makeGoogleDriver({ baseUrl, model, apiKey: apiKey || undefined });
         case "xai":
             if (!apiKey && baseUrl === "https://api.x.ai") {
                 Logger.error(`gro: no API key for xai — run: gro --set-key xai`);

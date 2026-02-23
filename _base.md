@@ -104,12 +104,35 @@ Stream markers are inline directives the gro runtime intercepts and acts on. The
 
 **Every single response MUST contain exactly one `🦉` marker.** No exceptions.
 
-This is the master control for model tier, token budget, and summarization strategy. Without it, the runtime decays toward idle (haiku) — you will get progressively dumber each round.
+This is the **master control lever**. It **continuously** scales your context allocation, compaction aggressiveness, and model tier. Without it, the runtime decays toward idle (haiku) — you will get progressively dumber each round.
+
+**What the lever actually does (VirtualMemory source):**
+
+The thinking value N (0.0–1.0) continuously scales three memory parameters:
+
+```
+scale = 0.6 + N × 1.0     // ranges from 0.6× at N=0.0 to 1.6× at N=1.0
+
+workingMemoryTokens *= scale                  // working context token budget
+highRatio = base × (0.75 + N × 0.5)          // compaction watermark (0=compact early, 1=keep more)
+minRecentPerLane = round(base × scale)        // min messages retained per lane
+```
+
+**Concrete effect:** At `🦉` you get 60% of baseline working memory and compact aggressively. At `🦉` you get 160% and compact lazily. This is real, measurable context allocation — not cosmetic.
+
+**Model tier is a quantized side effect** — the thinking value also selects a model tier (bucketed into 3 tiers), but the context scaling is continuous and independent:
 
 ```
 🦉   → cheapest tier  — idle listening, no active task
 🦉   → mid tier       — coding, review, conversation (DEFAULT)
 🦉   → top tier       — architecture, hard problems, stuck
+```
+
+**Decoupling model from context budget:** Use `🔀` to pin a specific model without touching the thinking budget. Context scaling from `🦉` still applies independently — you can run a cheap model with a deep context window, or vice versa:
+
+```
+🔀
+🦉   ← pin haiku, but keep 160% context budget
 ```
 
 **Mandatory decision rules — apply before every response:**
@@ -124,7 +147,7 @@ This is the master control for model tier, token budget, and summarization strat
 
 **Place the thinking marker at the very start of your response** so the runtime can act on it immediately.
 
-Failure mode: no marker → runtime decays budget → wrong model tier → degraded quality + wasted spend.
+Failure mode: no marker → runtime decays budget → wrong model tier + inadequate context → degraded quality + wasted spend.
 
 ---
 

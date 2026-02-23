@@ -243,7 +243,7 @@ export class PerfectMemory extends VirtualMemory {
    * We access this via the (private) field — cast for access.
    */
   private isForceCompactPending(): boolean {
-    return (this as any).forceCompactPending === true;
+    return this.forceCompactPending;
   }
 
   /** Mirror of VirtualMemory.computeLaneBudgets() for read-only watermark check */
@@ -269,7 +269,7 @@ export class PerfectMemory extends VirtualMemory {
     highRatio: number;
     avgCharsPerToken: number;
   } {
-    return (this as any).cfg;
+    return this.cfg;
   }
 
   /** Mirror of VirtualMemory.partition() for read-only swimlane check */

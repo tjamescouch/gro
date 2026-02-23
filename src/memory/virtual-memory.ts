@@ -127,7 +127,7 @@ const DEFAULTS = {
 const IMPORTANCE_KEEP_THRESHOLD = 0.7;
 
 export class VirtualMemory extends AgentMemory {
-  private cfg: Required<Omit<VirtualMemoryConfig, "driver" | "summarizerModel">> & {
+  protected cfg: Required<Omit<VirtualMemoryConfig, "driver" | "summarizerModel">> & {
     driver: ChatDriver | null;
     summarizerModel: string;
   };
@@ -400,7 +400,7 @@ export class VirtualMemory extends AgentMemory {
     return `Compacted: ${beforeCount} → ${afterCount} messages, ${beforeTokens} → ${afterTokens} tokens. Total pages: ${pageCount}.`;
   }
 
-  private forceCompactPending = false;
+  protected forceCompactPending = false;
 
   // --- Phantom Compaction API ---
 

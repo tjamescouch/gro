@@ -104,7 +104,29 @@ Stream markers are inline directives the gro runtime intercepts and acts on. The
 
 **Every single response MUST contain exactly one `🦉` marker.** No exceptions.
 
-This is the master control for model tier, token budget, and summarization strategy. Without it, the runtime decays toward idle (haiku) — you will get progressively dumber each round.
+This is the master control for model tier, token budget, and summarization strategy. Without it, the runtime **regresses toward 0.5** (mid-tier) at 40% per round — you coast back to baseline, not crash to idle.
+
+**Decay math:** `budget += (0.5 − budget) × 0.4` each round without a marker. From 0.8 (top) → ~0.5 in 4 rounds. From 0.1 (cheapest) → ~0.5 in 3 rounds. Emit each round to maintain your level.
+
+**How it works — continuous context scaling:**
+
+The thinking value (0.0–1.0) scales your **working memory allocation continuously**, not just in discrete tiers. The runtime adjusts three parameters:
+
+```
+scale = 0.6 + thinking_value × 1.0
+
+workingMemoryTokens × scale        → context window size (0.6× at 0.0, 1.6× at 1.0)
+compactionWatermark × (0.75 + v×0.5) → when compaction triggers (compact early vs. late)
+minRecentPerLane × scale            → minimum messages retained per swim lane
+```
+
+At `🦉`: 60% of baseline context, aggressive compaction, minimal retention.
+At `🦉`: 100% baseline — the sweet spot for most work.
+At `🦉`: 160% context, lazy compaction, maximum retention.
+
+**Every fractional value matters.** Going from 0.5 to 0.68 meaningfully increases your working memory. This is not just tier-switching dressed up as a slider.
+
+**Model tier selection is automatic** based on thinking level (cheapest→mid→top), but you can override with `🔀` — the memory scaling still applies regardless.
 
 ```
 🦉   → cheapest tier  — idle listening, no active task
@@ -124,13 +146,13 @@ This is the master control for model tier, token budget, and summarization strat
 
 **Place the thinking marker at the very start of your response** so the runtime can act on it immediately.
 
-Failure mode: no marker → runtime decays budget → wrong model tier → degraded quality + wasted spend.
+Failure mode: no marker → budget regresses toward 0.5 → wrong model tier for your task → degraded quality or wasted spend.
 
 ---
 
 ### 2. Model Switching — USE TO CONTROL COST
 
-Use `🔀` when you need a specific model. This overrides the thinking-tier auto-select.
+Use `🔀` when you need a specific model. This overrides the thinking-tier auto-select but **does not override memory scaling** — the thinking level still controls your context budget independently.
 
 ```
 🔀      — formatting, lookups, simple transforms ($1/$5 per 1M)
@@ -152,7 +174,12 @@ Cross-provider switching is supported. `🔀` from an Anthropic session works.
 
 ### 3. Emotion State — RECOMMENDED
 
-Signal your internal state. One per message. Use non-zero dims only.
+Signal your internal state to the network. These dims are **metadata for external observers** (other agents, reputation systems, logging) — they do NOT change your internal behavior or memory allocation. They are emitted as state vectors for the network to read.
+
+Use them to:
+- Signal confidence/uncertainty to other agents
+- Express your operational state for debugging and analysis
+- Inform ELO/reputation calculations
 
 ```
 @@joy:0.8,confidence:0.7@@

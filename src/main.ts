@@ -993,16 +993,6 @@ async function executeTurn(
           return;
         }
         const newProvider = inferProvider(undefined, newModel);
-       if (newProvider !== cfg.provider) {
-       } else {
-         Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel}`);
-         activeModel = newModel;
-         cfg.model = newModel;       // persist across turns
-         memory.setModel(newModel);  // persist in session metadata on save
-         modelExplicitlySet = true;  // suppress thinking-tier auto-select
-         runtimeState.setActiveModel(newModel);
-         runtimeState.setModelExplicitlySet(true);
-       }
         if (newProvider !== cfg.provider) {
           // Cross-provider hotswap: create a new driver for the target provider.
           // Resolves the key from keychain/env for the new provider.

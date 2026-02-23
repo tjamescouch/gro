@@ -18,6 +18,7 @@ import { Logger, C } from "./logger.js";
 import { spendMeter } from "./spend-meter.js";
 import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
 import { makeAnthropicDriver } from "./drivers/anthropic.js";
+import { makeGoogleDriver } from "./drivers/streaming-google.js";
 import { SimpleMemory } from "./memory/simple-memory.js";
 import { AdvancedMemory } from "./memory/advanced-memory.js";
 import { VirtualMemory } from "./memory/virtual-memory.js";

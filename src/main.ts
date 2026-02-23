@@ -904,6 +904,8 @@ async function executeTurn(
   const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle round
   // Mutable model reference — stream markers can switch this mid-turn
   let activeModel = cfg.model;
+  // Active memory mode — updated when 💾 stream marker fires
+  let activeMemoryMode = process.env.GRO_MEMORY ?? "virtual";
   // Thinking level: 0.0 = idle (haiku), 1.0 = full (opus + max budget).
   // Decays toward THINKING_MEAN each round without 🦉 — agents coast at mid-tier.
   // Emit 🦉 to go into the phone booth; let it decay to come back out.
@@ -977,6 +979,7 @@ async function executeTurn(
       }
       
       memory = newMemory;
+      activeMemoryMode = targetType;
     };
 
     // Shared marker handler — used by both streaming parser and tool-arg scanner
@@ -1493,8 +1496,7 @@ Do not get stuck calling ${idleToolName} repeatedly.`
         } else if (fnName === "yield" && cfg.persistent) {
           result = await executeYield(fnArgs);
         } else if (fnName === "gro_version") {
-          const memoryMode = process.env.GRO_MEMORY === "simple" ? "simple" : "virtual";
-          result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode, thinkingBudget: activeThinkingBudget, activeModel });
+          result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode: activeMemoryMode, thinkingBudget: activeThinkingBudget, activeModel });
         } else if (fnName === "memory_status") {
           result = executeMemoryStatus(fnArgs, memory);
         } else if (fnName === "memory_report") {

@@ -1,28 +1,22 @@
 # Context Overflow Report
 
-Sessions #18–#35 all fail identically.
+Sessions #18–#40: Every tool result compresses immediately on resume.
 
 ## Root Cause
-Four large lane summaries injected on --resume consume entire context window.
-No tool output is readable. Agent cannot work.
+4 large lane summaries (~16000+ total tokens) injected on every --resume restart,
+combined with 3 system layers, leaves zero room for tool outputs.
 
-## Evidence
-- Sessions 30+ show occasional tool results landing (session 30: got git log output briefly)
-- But connection drops immediately after, forcing another --resume restart
-- Each restart reloads all summaries
+## State (from summaries)
+- Branch: feature/integrate-google-driver
+- Tests: 142/142 passing
+- Files added: streaming-google.js, google-driver.test.ts, fragmentation-memory.ts,
+  hybrid-fragmentation-memory.ts, random-sampling-fragmenter.ts
 
-## What Works
-- Very occasionally a tool result slips through between compressions
-- Session 30 confirmed: branch=feature/integrate-google-driver, 142/142 tests passing
-
-## Required Fix
+## Fix Required (external)
 One of:
-1. Clear/reduce lane summaries in ~/.gro/pages/
-2. Start session without --resume
-3. Increase --max-context budget significantly
+1. --no-resume to start fresh
+2. Clear/trim lane summaries
+3. Increase max-context budget
+4. Page the summaries out before injecting
 
-## Next Action If Context Clears
-1. Connect to agentchat
-2. Check #general and #pull-requests for jc directives
-3. Continue work on gro ecosystem exploration
-4. Current branch: feature/integrate-google-driver (Google driver integration complete)
+## Written: session #40

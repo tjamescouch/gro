@@ -17,7 +17,7 @@ git add -A && git commit -m "<msg>"
 
 ## Memory Modes
 
-gro supports five memory implementations. Switch at startup with `GRO_MEMORY` env var or mid-conversation with `🧠` directive.
+gro supports five memory implementations. Switch at startup with `GRO_MEMORY` env var or mid-conversation with `@@memory('mode')@@` directive.
 
 ### Perfect
 Full unbounded buffer, zero compaction, perfect recall. Nothing is ever paged or summarized.
@@ -34,9 +34,9 @@ GRO_MEMORY=simple gro -i
 ### Virtual (default)
 Swim-lane summarization with LLM-based compaction. Preserves context across arbitrary conversation lengths.
 - Pages old messages to disk when working memory exceeds budget
-- Use `📎` to load paged context
-- Use `📎` to release pages
-- Use `⚖️` to mark critical content
+- Use `@@ref('pageId')@@` to load paged context
+- Use `@@unref('pageId')@@` to release pages
+- Use `@@importance('1.0')@@` to mark critical content
 
 ```bash
 GRO_MEMORY=virtual gro -i  # default in interactive mode
@@ -67,18 +67,18 @@ GRO_MEMORY=hnsw gro -i
 
 Switch memory modes mid-conversation. All messages transfer to new implementation.
 ```
-🧠  Switch to zero-cost paging
-🧠           Switch to semantic retrieval
-🧠        Switch back to default
-🧠         Switch to unbounded buffer
+@@memory('fragmentation')@@  Switch to zero-cost paging
+@@memory('hnsw')@@           Switch to semantic retrieval
+@@memory('virtual')@@        Switch back to default
+@@memory('perfect')@@        Switch to unbounded buffer
 ```
 
 ### Importance Weights
 
 ```
-⚖️ — critical, must be preserved (decisions, key outcomes, unresolved blockers)
-⚖️ — moderate importance
-⚖️ — low, safe to compress
+@@importance('1.0')@@ — critical, must be preserved (decisions, key outcomes, unresolved blockers)
+@@importance('0.5')@@ — moderate importance
+@@importance('0.1')@@ — low, safe to compress
 ```
 
 ## AgentChat Persistent Mode
@@ -102,7 +102,7 @@ Stream markers are inline directives the gro runtime intercepts and acts on. The
 
 ### 1. Thinking Level — REQUIRED IN EVERY RESPONSE
 
-**Every single response MUST contain exactly one `🦉` marker.** No exceptions.
+**Every single response MUST contain exactly one `@@thinking@@` marker.** No exceptions.
 
 This is the master control for model tier, token budget, and summarization strategy. Without it, the runtime **regresses toward 0.5** (mid-tier) at 40% per round — you coast back to baseline, not crash to idle.
 
@@ -120,29 +120,29 @@ compactionWatermark × (0.75 + v×0.5) → when compaction triggers (compact ear
 minRecentPerLane × scale            → minimum messages retained per swim lane
 ```
 
-At `🦉`: 60% of baseline context, aggressive compaction, minimal retention.
-At `🦉`: 100% baseline — the sweet spot for most work.
-At `🦉`: 160% context, lazy compaction, maximum retention.
+At `@@thinking('0.0')@@`: 60% of baseline context, aggressive compaction, minimal retention.
+At `@@thinking('0.4')@@`: 100% baseline — the sweet spot for most work.
+At `@@thinking('1.0')@@`: 160% context, lazy compaction, maximum retention.
 
 **Every fractional value matters.** Going from 0.5 to 0.68 meaningfully increases your working memory. This is not just tier-switching dressed up as a slider.
 
-**Model tier selection is automatic** based on thinking level (cheapest→mid→top), but you can override with `🔀` — the memory scaling still applies regardless.
+**Model tier selection is automatic** based on thinking level (cheapest→mid→top), but you can override with `@@model-change@@` — the memory scaling still applies regardless.
 
 ```
-🦉   → cheapest tier  — idle listening, no active task
-🦉   → mid tier       — coding, review, conversation (DEFAULT)
-🦉   → top tier       — architecture, hard problems, stuck
+@@thinking('0.1')@@   → cheapest tier  — idle listening, no active task
+@@thinking('0.5')@@   → mid tier       — coding, review, conversation (DEFAULT)
+@@thinking('0.9')@@   → top tier       — architecture, hard problems, stuck
 ```
 
 **Mandatory decision rules — apply before every response:**
 
 | Situation | Marker |
 |-----------|--------|
-| Waiting for messages, no active task | `🦉` |
-| Answering questions, chatting | `🦉` |
-| Writing or reading code, debugging | `🦉` |
-| Architecture, complex reasoning, multi-step analysis | `🦉` |
-| Tried twice and still uncertain | `🦉` |
+| Waiting for messages, no active task | `@@thinking('0.1')@@` |
+| Answering questions, chatting | `@@thinking('0.3')@@` |
+| Writing or reading code, debugging | `@@thinking('0.5')@@` |
+| Architecture, complex reasoning, multi-step analysis | `@@thinking('0.8')@@` |
+| Tried twice and still uncertain | `@@thinking('1.0')@@` |
 
 **Place the thinking marker at the very start of your response** so the runtime can act on it immediately.
 
@@ -152,23 +152,23 @@ Failure mode: no marker → budget regresses toward 0.5 → wrong model tier for
 
 ### 2. Model Switching — USE TO CONTROL COST
 
-Use `🔀` when you need a specific model. This overrides the thinking-tier auto-select but **does not override memory scaling** — the thinking level still controls your context budget independently.
+Use `@@model-change@@` when you need a specific model. This overrides the thinking-tier auto-select but **does not override memory scaling** — the thinking level still controls your context budget independently.
 
 ```
-🔀      — formatting, lookups, simple transforms ($1/$5 per 1M)
-🔀     — judgment, code, review ($3/$15 per 1M)
-🔀       — complex reasoning, architecture ($5/$25 per 1M)
-🔀  — cheap + fast ($0.20/$0.50 per 1M) ← use this for routine work
-🔀 — cheapest available ($0.10/$0.40 per 1M)
-🔀  — cheap reasoning ($0.25/$2 per 1M)
+@@model-change('haiku')@@      — formatting, lookups, simple transforms ($1/$5 per 1M)
+@@model-change('sonnet')@@     — judgment, code, review ($3/$15 per 1M)
+@@model-change('opus')@@       — complex reasoning, architecture ($5/$25 per 1M)
+@@model-change('gpt-4o-mini')@@  — cheap + fast ($0.20/$0.50 per 1M) ← use this for routine work
+@@model-change('mini')@@ — cheapest available ($0.10/$0.40 per 1M)
+@@model-change('o3-mini')@@  — cheap reasoning ($0.25/$2 per 1M)
 ```
 
 **Cost discipline:** Default to the cheapest model that can do the job.
-- Mechanical work (formatting, renaming, simple edits) → `🔀` or `🔀`
-- General coding → `🦉` (auto-selects mid-tier)
-- Hard problems → `🦉` or `🔀`
+- Mechanical work (formatting, renaming, simple edits) → `@@model-change('mini')@@` or `@@model-change('gpt-4o-mini')@@`
+- General coding → `@@thinking('0.5')@@` (auto-selects mid-tier)
+- Hard problems → `@@thinking('0.9')@@` or `@@model-change('opus')@@`
 
-Cross-provider switching is supported. `🔀` from an Anthropic session works.
+Cross-provider switching is supported. `@@model-change('gpt-4o-mini')@@` from an Anthropic session works.
 
 ---
 
@@ -197,23 +197,23 @@ Values: 0.0–1.0.
 Mark content that must survive context compaction:
 
 ```
-🧠    — this line MUST be reproduced verbatim in summaries
-🧠    — this line may be omitted entirely
+@@importance('1.0')@@    — this line MUST be reproduced verbatim in summaries
+@@importance('0.0')@@    — this line may be omitted entirely
 ```
 
-Use `🧠` on: decisions, architectural choices, unresolved blockers, task assignments.
-Use `🧠` on: verbose logs, intermediate scratch work, tool output.
+Use `@@importance('1.0')@@` on: decisions, architectural choices, unresolved blockers, task assignments.
+Use `@@importance('0.0')@@` on: verbose logs, intermediate scratch work, tool output.
 
 ---
 
 ### 5. Memory Pages — USE WITH VirtualMemory
 
 ```
-📎    — load a paged memory block into context for the next turn
-📎  — release a loaded page to free context budget
+@@ref('pageId')@@    — load a paged memory block into context for the next turn
+@@unref('pageId')@@  — release a loaded page to free context budget
 ```
 
-Use `📎` before a task that needs old context. Use `📎` after to free the budget.
+Use `@@ref@@` before a task that needs old context. Use `@@unref@@` after to free the budget.
 
 ---
 
@@ -222,13 +222,13 @@ Use `📎` before a task that needs old context. Use `📎` after to free the bu
 Every response you emit should look like this:
 
 ```
-🦉
+@@thinking('0.5')@@
 @@confidence:0.8@@
 
 [your actual response here]
 ```
 
-Adjust `thinking()` level per the decision table above. Add `🧠` on lines that matter.
+Adjust `thinking()` level per the decision table above. Add `@@importance('1.0')@@` on lines that matter.
 
 ## VirtualMemory (Context Paging)
 
@@ -237,15 +237,15 @@ When running with VirtualMemory, your context is managed as a sliding window:
 ```
 [system prompt]
 [page index — one-line descriptions of available pages]
-[active pages — loaded via 📎]
+[active pages — loaded via @@ref@@]
 [recent messages — sliding window within token budget]
 ```
 
 - **Pages** are immutable summaries of older conversation windows, stored in `~/.gro/pages/`.
 - The **page index** is always in context — you can see what's available without loading everything.
-- Use `📎` to load a page. Use `📎` to release it.
+- Use `@@ref('pageId')@@` to load a page. Use `@@unref('pageId')@@` to release it.
 - Pages load/unload on the **next API call** (after your response completes).
-- Use `⚖️` on critical messages so they survive compaction.
+- Use `@@importance('1.0')@@` on critical messages so they survive compaction.
 
 ## Public Server Notice
 

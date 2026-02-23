@@ -1,9 +1,10 @@
 /**
- * KeywordFragmenter samples messages based on keyword presence.
- * Messages containing priority keywords are always kept.
- * Non-keyword messages are sampled at nonKeywordKeepRatio.
+ * KeywordFragmenter — samples messages based on keyword presence.
+ * Auto-generated from src/memory/keyword-fragmenter.ts
  */
 export class KeywordFragmenter {
+    keywords;
+    nonKeywordKeepRatio;
     constructor(config) {
         this.keywords = config.keywords.map(k => k.toLowerCase());
         this.nonKeywordKeepRatio = config.nonKeywordKeepRatio ?? 0.3;
@@ -16,7 +17,6 @@ export class KeywordFragmenter {
         const combined = [...keyword, ...sampled];
         if (combined.length <= targetCount)
             return combined;
-        // If still over target, prefer keyword messages
         return [...keyword.slice(0, targetCount), ...sampled.slice(0, Math.max(0, targetCount - keyword.length))];
     }
     hasKeyword(message) {

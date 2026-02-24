@@ -28,6 +28,10 @@ export class AgentMemory {
     setModel(_model) { }
     /** Update thinking budget — VirtualMemory uses this to scale compaction aggressiveness. */
     setThinkingBudget(_budget) { }
+    /** Run compaction with single-shot hints. Override in subclasses that support compaction. */
+    async compactWithHints(_hints) {
+        return "compact_context: this memory module does not support compaction.";
+    }
     messages() {
         return [...this.messagesBuffer];
     }

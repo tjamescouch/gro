@@ -1921,6 +1921,23 @@ async function main() {
         process.exit(0);
     }
     const cfg = loadConfig();
+    // When LFS is enabled, inject avatar gesture instructions into the system prompt
+    // so the model knows to call discover_avatar and emit @@[clip:weight]@@ markers.
+    if (cfg.lfs) {
+        const lfsPrompt = [
+            "\n## Avatar Embodiment",
+            "You are embodied in an avatar displayed alongside your text.",
+            "On your FIRST turn, call `discover_avatar` to learn available animations.",
+            "Then, throughout your responses, emit gesture markers inline:",
+            "```",
+            "@@[clip name:weight, clip name:weight]@@",
+            "```",
+            "Place gestures naturally — at emotional beats, emphasis points, or transitions.",
+            "Example: `@@[face excited:1.0,full cheerful:0.8]@@` before an enthusiastic sentence.",
+            "Use varied gestures; don't repeat the same one. Match gesture to tone.",
+        ].join("\n");
+        cfg.systemPrompt = (cfg.systemPrompt || "") + lfsPrompt;
+    }
     if (cfg.verbose) {
         process.env.GRO_LOG_LEVEL = "debug";
     }

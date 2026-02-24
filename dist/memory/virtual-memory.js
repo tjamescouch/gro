@@ -87,6 +87,8 @@ export class VirtualMemory extends AgentMemory {
         this.baseMinRecentPerLane = null;
         this.currentThinkingBudget = null;
         this.forceCompactPending = false;
+        this.pendingCompactionHints = null;
+        this.overrideImportanceThreshold = null;
         const pagesDir = config.sessionId
             ? join(DEFAULTS.pagesDir, config.sessionId)
             : (config.pagesDir ?? DEFAULTS.pagesDir);
@@ -290,6 +292,11 @@ export class VirtualMemory extends AgentMemory {
         const afterCount = after.length;
         const pageCount = this.getPageCount();
         return `Compacted: ${beforeCount} → ${afterCount} messages, ${beforeTokens} → ${afterTokens} tokens. Total pages: ${pageCount}.`;
+    }
+    /** Run compaction with single-shot hints that temporarily adjust budgets/thresholds. */
+    async compactWithHints(hints) {
+        this.pendingCompactionHints = Object.keys(hints).length > 0 ? hints : null;
+        return await this.forceCompact();
     }
     // --- Phantom Compaction API ---
     /**
@@ -743,7 +750,8 @@ export class VirtualMemory extends AgentMemory {
         const older = [];
         const promoted = [];
         for (const m of candidatesForPaging) {
-            if ((m.importance ?? 0) >= IMPORTANCE_KEEP_THRESHOLD) {
+            const threshold = this.overrideImportanceThreshold ?? IMPORTANCE_KEEP_THRESHOLD;
+            if ((m.importance ?? 0) >= threshold) {
                 promoted.push(m);
             }
             else {
@@ -1028,180 +1036,228 @@ export class VirtualMemory extends AgentMemory {
                 const reason = forced ? "manual forceCompact()" : "automatic watermark trigger";
                 this.phantomBuffer.snapshot(this.messagesBuffer, reason);
             }
-            const budgets = this.computeLaneBudgets();
-            // Re-partition to get fresh data
-            const { firstSystemIndex, assistant, user, system, tool, other } = this.partition();
-            const tailN = this.cfg.minRecentPerLane;
-            // Calculate metrics before cleanup
-            const nonSys = this.messagesBuffer.filter(m => m.role !== "system");
-            const beforeTokens = this.msgTokens(nonSys);
-            const beforeMB = (beforeTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
-            const beforeMsgCount = nonSys.length;
-            // Protect the original system prompt (set by constructor, identified by from === "System").
-            // Cannot rely on firstSystemIndex === 0 because after compaction, summaries are prepended
-            // and the system prompt may no longer be at index 0.
-            const originalSysPrompt = this.messagesBuffer.find(m => m.role === "system" && m.from === "System");
-            const sysHead = originalSysPrompt ? [originalSysPrompt] : [];
-            const remainingSystem = system.filter(m => m !== originalSysPrompt);
-            // Recalculate per-lane token usage
-            const assistantTok = this.msgTokens(assistant);
-            const userTok = this.msgTokens(user);
-            const systemTok = this.msgTokens(remainingSystem);
-            const toolTok = this.msgTokens(tool);
-            // Determine which lanes to page based on normalized budget (forced = page all non-empty lanes)
-            const shouldPageAssistant = forced ? assistant.length > tailN : assistantTok > budgets.assistant * this.cfg.highRatio;
-            const shouldPageUser = forced ? user.length > tailN : userTok > budgets.user * this.cfg.highRatio;
-            const shouldPageSystem = forced ? remainingSystem.length > 0 : systemTok > budgets.system * this.cfg.highRatio;
-            // CRITICAL: Tool lane MUST page with assistant lane to avoid orphaning tool calls/results
-            // Tool results (tool lane) must stay paired with their tool calls (assistant lane)
-            const shouldPageTool = shouldPageAssistant;
-            // Determine which messages to page out vs keep per lane.
-            // High-importance messages (>= IMPORTANCE_KEEP_THRESHOLD) are promoted to
-            // the keep set even if they're older than the tail window.
-            const { older: olderAssistant, keep: keepAssistant } = this.partitionByImportance(assistant, tailN, shouldPageAssistant);
-            const { older: olderUser, keep: keepUser } = this.partitionByImportance(user, tailN, shouldPageUser);
-            const { older: olderSystem, keep: keepSystem } = this.partitionByImportance(remainingSystem, tailN, shouldPageSystem);
-            // CRITICAL: Tool lane must be partitioned in coordination with the assistant
-            // lane to preserve tool_call/tool_result pairing. We first identify which
-            // tool_call_ids belong to KEPT assistant messages, then force-keep matching
-            // tool results regardless of their position in the tool lane.
-            const keptToolCallIds = new Set();
-            for (const m of keepAssistant) {
-                const tc = m.tool_calls;
-                if (Array.isArray(tc)) {
-                    for (const c of tc) {
-                        if (c?.id)
-                            keptToolCallIds.add(c.id);
+            // --- Apply single-shot compaction hints (if any) ---
+            const hints = this.pendingCompactionHints;
+            this.pendingCompactionHints = null;
+            // Save original cfg values that hints may override
+            const savedAssistantWeight = this.cfg.assistantWeight;
+            const savedUserWeight = this.cfg.userWeight;
+            const savedSystemWeight = this.cfg.systemWeight;
+            const savedToolWeight = this.cfg.toolWeight;
+            const savedMinRecent = this.cfg.minRecentPerLane;
+            const savedImportanceOverride = this.overrideImportanceThreshold;
+            try {
+                if (hints) {
+                    // Apply lane_weights
+                    if (hints.lane_weights) {
+                        const lw = hints.lane_weights;
+                        if (lw.assistant !== undefined)
+                            this.cfg.assistantWeight = lw.assistant;
+                        if (lw.user !== undefined)
+                            this.cfg.userWeight = lw.user;
+                        if (lw.system !== undefined)
+                            this.cfg.systemWeight = lw.system;
+                        if (lw.tool !== undefined)
+                            this.cfg.toolWeight = lw.tool;
+                    }
+                    // Apply min_recent
+                    if (hints.min_recent !== undefined) {
+                        this.cfg.minRecentPerLane = Math.max(1, Math.round(hints.min_recent));
+                    }
+                    // Apply aggressiveness: 0.0 = keep 12, 1.0 = keep 2
+                    if (hints.aggressiveness !== undefined) {
+                        const a = Math.max(0, Math.min(1, hints.aggressiveness));
+                        this.cfg.minRecentPerLane = Math.round(12 - a * 10);
+                    }
+                    // Apply importance_threshold
+                    if (hints.importance_threshold !== undefined) {
+                        this.overrideImportanceThreshold = Math.max(0, Math.min(1, hints.importance_threshold));
                     }
                 }
-            }
-            let olderTool;
-            let keepTools;
-            if (!shouldPageTool) {
-                olderTool = [];
-                keepTools = tool;
-            }
-            else {
-                // Start with the standard tail-based partition
-                const { older: candidateOlderTool, keep: baseKeepTools } = this.partitionByImportance(tool, tailN, true);
-                // Promote tool results from "older" that pair with kept assistant tool_calls
-                const promotedFromOlder = [];
-                const actualOlderTool = [];
-                for (const m of candidateOlderTool) {
-                    if (m.tool_call_id && keptToolCallIds.has(m.tool_call_id)) {
-                        promotedFromOlder.push(m);
-                    }
-                    else {
-                        actualOlderTool.push(m);
+                const budgets = this.computeLaneBudgets();
+                // Re-partition to get fresh data
+                const { firstSystemIndex, assistant, user, system, tool, other } = this.partition();
+                const tailN = this.cfg.minRecentPerLane;
+                // Calculate metrics before cleanup
+                const nonSys = this.messagesBuffer.filter(m => m.role !== "system");
+                const beforeTokens = this.msgTokens(nonSys);
+                const beforeMB = (beforeTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
+                const beforeMsgCount = nonSys.length;
+                // Protect the original system prompt (set by constructor, identified by from === "System").
+                // Cannot rely on firstSystemIndex === 0 because after compaction, summaries are prepended
+                // and the system prompt may no longer be at index 0.
+                const originalSysPrompt = this.messagesBuffer.find(m => m.role === "system" && m.from === "System");
+                const sysHead = originalSysPrompt ? [originalSysPrompt] : [];
+                const remainingSystem = system.filter(m => m !== originalSysPrompt);
+                // Recalculate per-lane token usage
+                const assistantTok = this.msgTokens(assistant);
+                const userTok = this.msgTokens(user);
+                const systemTok = this.msgTokens(remainingSystem);
+                const toolTok = this.msgTokens(tool);
+                // Determine which lanes to page based on normalized budget (forced = page all non-empty lanes)
+                const shouldPageAssistant = forced ? assistant.length > tailN : assistantTok > budgets.assistant * this.cfg.highRatio;
+                const shouldPageUser = forced ? user.length > tailN : userTok > budgets.user * this.cfg.highRatio;
+                const shouldPageSystem = forced ? remainingSystem.length > 0 : systemTok > budgets.system * this.cfg.highRatio;
+                // CRITICAL: Tool lane MUST page with assistant lane to avoid orphaning tool calls/results
+                // Tool results (tool lane) must stay paired with their tool calls (assistant lane)
+                const shouldPageTool = shouldPageAssistant;
+                // Determine which messages to page out vs keep per lane.
+                // High-importance messages (>= IMPORTANCE_KEEP_THRESHOLD) are promoted to
+                // the keep set even if they're older than the tail window.
+                const { older: olderAssistant, keep: keepAssistant } = this.partitionByImportance(assistant, tailN, shouldPageAssistant);
+                const { older: olderUser, keep: keepUser } = this.partitionByImportance(user, tailN, shouldPageUser);
+                const { older: olderSystem, keep: keepSystem } = this.partitionByImportance(remainingSystem, tailN, shouldPageSystem);
+                // CRITICAL: Tool lane must be partitioned in coordination with the assistant
+                // lane to preserve tool_call/tool_result pairing. We first identify which
+                // tool_call_ids belong to KEPT assistant messages, then force-keep matching
+                // tool results regardless of their position in the tool lane.
+                const keptToolCallIds = new Set();
+                for (const m of keepAssistant) {
+                    const tc = m.tool_calls;
+                    if (Array.isArray(tc)) {
+                        for (const c of tc) {
+                            if (c?.id)
+                                keptToolCallIds.add(c.id);
+                        }
                     }
                 }
-                // Also ensure we keep tool results from the base keep set that pair with
-                // PAGED assistant tool_calls' results don't get orphaned — the flattener
-                // will handle those. We only need to ensure kept assistant → kept tool.
-                olderTool = actualOlderTool;
-                // Merge promoted + base keep, preserving original order
-                const keepSet = new Set([...promotedFromOlder, ...baseKeepTools]);
-                keepTools = tool.filter(m => keepSet.has(m));
-            }
-            // Reverse coordination: if any kept tool results belong to PAGED assistant
-            // messages, promote those assistant messages back to keep set to prevent
-            // the flattener from having to synthesize pairs unnecessarily.
-            const keptToolResultIds = new Set();
-            for (const m of keepTools) {
-                if (m.tool_call_id)
-                    keptToolResultIds.add(m.tool_call_id);
-            }
-            const promotedAssistant = [];
-            const finalOlderAssistant = [];
-            for (const m of olderAssistant) {
-                const tc = m.tool_calls;
-                if (Array.isArray(tc) && tc.some((c) => c?.id && keptToolResultIds.has(c.id))) {
-                    promotedAssistant.push(m);
+                let olderTool;
+                let keepTools;
+                if (!shouldPageTool) {
+                    olderTool = [];
+                    keepTools = tool;
                 }
                 else {
-                    finalOlderAssistant.push(m);
+                    // Start with the standard tail-based partition
+                    const { older: candidateOlderTool, keep: baseKeepTools } = this.partitionByImportance(tool, tailN, true);
+                    // Promote tool results from "older" that pair with kept assistant tool_calls
+                    const promotedFromOlder = [];
+                    const actualOlderTool = [];
+                    for (const m of candidateOlderTool) {
+                        if (m.tool_call_id && keptToolCallIds.has(m.tool_call_id)) {
+                            promotedFromOlder.push(m);
+                        }
+                        else {
+                            actualOlderTool.push(m);
+                        }
+                    }
+                    // Also ensure we keep tool results from the base keep set that pair with
+                    // PAGED assistant tool_calls' results don't get orphaned — the flattener
+                    // will handle those. We only need to ensure kept assistant → kept tool.
+                    olderTool = actualOlderTool;
+                    // Merge promoted + base keep, preserving original order
+                    const keepSet = new Set([...promotedFromOlder, ...baseKeepTools]);
+                    keepTools = tool.filter(m => keepSet.has(m));
                 }
-            }
-            // Replace olderAssistant/keepAssistant if we promoted anything
-            const finalKeepAssistant = promotedAssistant.length > 0
-                ? assistant.filter(m => keepAssistant.includes(m) || promotedAssistant.includes(m))
-                : keepAssistant;
-            // Create pages for each lane with older messages
-            const summaries = [];
-            if (finalOlderAssistant.length >= 2) {
-                const label = `assistant lane ${new Date().toISOString().slice(0, 16)} (${finalOlderAssistant.length} msgs)`;
-                const { summary } = await this.createPageFromMessages(finalOlderAssistant, label, "assistant");
-                summaries.push({
-                    role: "assistant",
-                    from: "VirtualMemory",
-                    content: `ASSISTANT LANE SUMMARY:\n${summary}`,
-                });
-            }
-            if (olderUser.length >= 2) {
-                const label = `user lane ${new Date().toISOString().slice(0, 16)} (${olderUser.length} msgs)`;
-                const { summary } = await this.createPageFromMessages(olderUser, label, "user");
-                summaries.push({
-                    role: "user",
-                    from: "VirtualMemory",
-                    content: `USER LANE SUMMARY:\n${summary}`,
-                });
-            }
-            if (olderSystem.length >= 2) {
-                const label = `system lane ${new Date().toISOString().slice(0, 16)} (${olderSystem.length} msgs)`;
-                const { summary } = await this.createPageFromMessages(olderSystem, label, "system");
-                summaries.push({
-                    role: "system",
-                    from: "VirtualMemory",
-                    content: `SYSTEM LANE SUMMARY:\n${summary}`,
-                });
-            }
-            if (olderTool.length >= 2) {
-                const label = `tool lane ${new Date().toISOString().slice(0, 16)} (${olderTool.length} msgs)`;
-                const { summary } = await this.createPageFromMessages(olderTool, label);
-                summaries.push({
-                    role: "system",
-                    from: "VirtualMemory",
-                    content: `TOOL LANE SUMMARY:\n${summary}`,
-                });
-            }
-            // Rebuild message buffer: summaries + system prompt + recent messages from each lane
-            // We need to preserve the original message order for kept messages
-            const keptSet = new Set([
-                ...sysHead,
-                ...finalKeepAssistant,
-                ...keepUser,
-                ...keepSystem,
-                ...keepTools,
-                ...other,
-            ]);
-            const orderedKept = [];
-            // Collect messages added DURING compaction (not in any lane) so they aren't lost.
-            // Messages can be added via memory.add() while summarization API calls are in flight.
-            const allLaneMessages = new Set([...sysHead, ...assistant, ...user, ...system, ...tool, ...other]);
-            for (const m of this.messagesBuffer) {
-                if (keptSet.has(m)) {
-                    orderedKept.push(m);
+                // Reverse coordination: if any kept tool results belong to PAGED assistant
+                // messages, promote those assistant messages back to keep set to prevent
+                // the flattener from having to synthesize pairs unnecessarily.
+                const keptToolResultIds = new Set();
+                for (const m of keepTools) {
+                    if (m.tool_call_id)
+                        keptToolResultIds.add(m.tool_call_id);
                 }
-                else if (!allLaneMessages.has(m)) {
-                    // Message was added after partition() ran — preserve it
-                    orderedKept.push(m);
+                const promotedAssistant = [];
+                const finalOlderAssistant = [];
+                for (const m of olderAssistant) {
+                    const tc = m.tool_calls;
+                    if (Array.isArray(tc) && tc.some((c) => c?.id && keptToolResultIds.has(c.id))) {
+                        promotedAssistant.push(m);
+                    }
+                    else {
+                        finalOlderAssistant.push(m);
+                    }
                 }
+                // Replace olderAssistant/keepAssistant if we promoted anything
+                const finalKeepAssistant = promotedAssistant.length > 0
+                    ? assistant.filter(m => keepAssistant.includes(m) || promotedAssistant.includes(m))
+                    : keepAssistant;
+                // Create pages for each lane with older messages
+                const summaries = [];
+                if (finalOlderAssistant.length >= 2) {
+                    const label = `assistant lane ${new Date().toISOString().slice(0, 16)} (${finalOlderAssistant.length} msgs)`;
+                    const { summary } = await this.createPageFromMessages(finalOlderAssistant, label, "assistant");
+                    summaries.push({
+                        role: "assistant",
+                        from: "VirtualMemory",
+                        content: `ASSISTANT LANE SUMMARY:\n${summary}`,
+                    });
+                }
+                if (olderUser.length >= 2) {
+                    const label = `user lane ${new Date().toISOString().slice(0, 16)} (${olderUser.length} msgs)`;
+                    const { summary } = await this.createPageFromMessages(olderUser, label, "user");
+                    summaries.push({
+                        role: "user",
+                        from: "VirtualMemory",
+                        content: `USER LANE SUMMARY:\n${summary}`,
+                    });
+                }
+                if (olderSystem.length >= 2) {
+                    const label = `system lane ${new Date().toISOString().slice(0, 16)} (${olderSystem.length} msgs)`;
+                    const { summary } = await this.createPageFromMessages(olderSystem, label, "system");
+                    summaries.push({
+                        role: "system",
+                        from: "VirtualMemory",
+                        content: `SYSTEM LANE SUMMARY:\n${summary}`,
+                    });
+                }
+                if (olderTool.length >= 2) {
+                    const label = `tool lane ${new Date().toISOString().slice(0, 16)} (${olderTool.length} msgs)`;
+                    const { summary } = await this.createPageFromMessages(olderTool, label);
+                    summaries.push({
+                        role: "system",
+                        from: "VirtualMemory",
+                        content: `TOOL LANE SUMMARY:\n${summary}`,
+                    });
+                }
+                // Rebuild message buffer: summaries + system prompt + recent messages from each lane
+                // We need to preserve the original message order for kept messages
+                const keptSet = new Set([
+                    ...sysHead,
+                    ...finalKeepAssistant,
+                    ...keepUser,
+                    ...keepSystem,
+                    ...keepTools,
+                    ...other,
+                ]);
+                const orderedKept = [];
+                // Collect messages added DURING compaction (not in any lane) so they aren't lost.
+                // Messages can be added via memory.add() while summarization API calls are in flight.
+                const allLaneMessages = new Set([...sysHead, ...assistant, ...user, ...system, ...tool, ...other]);
+                for (const m of this.messagesBuffer) {
+                    if (keptSet.has(m)) {
+                        orderedKept.push(m);
+                    }
+                    else if (!allLaneMessages.has(m)) {
+                        // Message was added after partition() ran — preserve it
+                        orderedKept.push(m);
+                    }
+                }
+                // Insert summaries at the beginning (after system prompt if present)
+                const rebuilt = [...summaries, ...orderedKept];
+                this.messagesBuffer.splice(0, this.messagesBuffer.length, ...rebuilt);
+                // Flatten broken tool call/result pairs into summarized assistant+tool messages.
+                // This eliminates tool_calls from compacted messages so OpenAI's strict
+                // pairing validation cannot fail regardless of paging fragmentation order.
+                this.flattenCompactedToolCalls();
+                // Calculate metrics after cleanup
+                const afterNonSys = this.messagesBuffer.filter(m => m.role !== "system");
+                const afterTokens = this.msgTokens(afterNonSys);
+                const afterMB = (afterTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
+                const afterMsgCount = afterNonSys.length;
+                const reclaimedMB = (parseFloat(beforeMB) - parseFloat(afterMB)).toFixed(2);
+                // Log cleanup event with per-lane paging info
+                Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} paged=[A:${finalOlderAssistant.length} U:${olderUser.length} S:${olderSystem.length} T:${olderTool.length}]`);
             }
-            // Insert summaries at the beginning (after system prompt if present)
-            const rebuilt = [...summaries, ...orderedKept];
-            this.messagesBuffer.splice(0, this.messagesBuffer.length, ...rebuilt);
-            // Flatten broken tool call/result pairs into summarized assistant+tool messages.
-            // This eliminates tool_calls from compacted messages so OpenAI's strict
-            // pairing validation cannot fail regardless of paging fragmentation order.
-            this.flattenCompactedToolCalls();
-            // Calculate metrics after cleanup
-            const afterNonSys = this.messagesBuffer.filter(m => m.role !== "system");
-            const afterTokens = this.msgTokens(afterNonSys);
-            const afterMB = (afterTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
-            const afterMsgCount = afterNonSys.length;
-            const reclaimedMB = (parseFloat(beforeMB) - parseFloat(afterMB)).toFixed(2);
-            // Log cleanup event with per-lane paging info
-            Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} paged=[A:${finalOlderAssistant.length} U:${olderUser.length} S:${olderSystem.length} T:${olderTool.length}]`);
+            finally {
+                // Restore original cfg values (single-shot semantics)
+                this.cfg.assistantWeight = savedAssistantWeight;
+                this.cfg.userWeight = savedUserWeight;
+                this.cfg.systemWeight = savedSystemWeight;
+                this.cfg.toolWeight = savedToolWeight;
+                this.cfg.minRecentPerLane = savedMinRecent;
+                this.overrideImportanceThreshold = savedImportanceOverride;
+            }
         });
     }
     /**

@@ -768,7 +768,7 @@ async function createMemory(cfg, driver, requestedMode, sessionId) {
  * Two-slot camera system:
  *   slot0 = "context" (fill bars, runtime health)
  *   slot1 = "time"    (wall clock, uptime, channel staleness)
- * Both slots are agent-switchable via 🧠 marker.
+ * Both slots are agent-switchable via <view:X> marker.
  * Returns the wrapped memory. If wrapping fails, returns the original.
  */
 function wrapWithSensory(inner) {
@@ -1303,10 +1303,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
             }
             else if (marker.name === "view") {
-                // 🧠        — set slot0 to named camera
-                // 🧠    — set slot1 to named camera
-                // 🧠     — clear slot0
-                // 🧠         — clear slot0
+                // <view:context>        — set slot0 to named camera
+                // <view:time,1>         — set slot1 to named camera
+                // <view:off>            — clear slot0
+                // <view:off,1>          — clear slot1
                 if (memory instanceof SensoryMemory) {
                     const parts = marker.arg.split(",").map(s => s.trim().replace(/^['"]|['"]$/g, ""));
                     const viewName = parts[0] || "";

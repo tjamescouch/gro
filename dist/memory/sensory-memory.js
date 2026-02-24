@@ -6,8 +6,8 @@
  * Zero changes to existing memory modules — works with all memory types.
  *
  * Two-slot camera system: slot0 and slot1 are both agent-switchable via the
- * 🧠 stream marker. Default: slot0="context", slot1="time".
- * Use 🧠 to set slot0, 🧠 to set slot1.
+ * stream marker. Default: slot0="context", slot1="time".
+ * Use <view:X> to set slot0, <view:X,1> to set slot1.
  *
  * Usage:
  *   const inner = new VirtualMemory({ ... });

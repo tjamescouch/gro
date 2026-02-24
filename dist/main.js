@@ -24,6 +24,7 @@ import { VirtualMemory } from "./memory/virtual-memory.js";
 import { FragmentationMemory } from "./memory/fragmentation-memory.js";
 import { McpManager } from "./mcp/index.js";
 import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
+import { TaskSource } from "./memory/task-source.js";
 // Register all memory types in the registry (side-effect import)
 import "./memory/register-memory-types.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
@@ -794,6 +795,16 @@ function wrapWithSensory(inner) {
             content: "",
             enabled: true,
             source: temporal,
+        });
+        // Task camera — disabled by default, agent enables via view('tasks')
+        const taskSrc = new TaskSource();
+        sensory.addChannel({
+            name: "tasks",
+            maxTokens: 150,
+            updateMode: "every_turn",
+            content: "",
+            enabled: false,
+            source: taskSrc,
         });
         // Configure default camera slots
         sensory.setSlot(0, "context");

@@ -1161,6 +1161,45 @@ export class VirtualMemory extends AgentMemory {
     getActivePageIds() { return Array.from(this.activePageIds); }
     getPageCount() { return this.pages.size; }
     hasPage(id) { return this.pages.has(id); }
+    getStats() {
+        // Partition messages by role for lane stats
+        const laneCounts = {};
+        let pinnedCount = 0;
+        for (const m of this.messagesBuffer) {
+            if (m.role === "system" && m === this.messagesBuffer[0])
+                continue; // skip system prompt
+            const role = m.role;
+            if (!laneCounts[role])
+                laneCounts[role] = { count: 0, chars: 0 };
+            laneCounts[role].count++;
+            laneCounts[role].chars += String(m.content ?? "").length + 32;
+            if ((m.importance ?? 0) >= 0.7)
+                pinnedCount++;
+        }
+        const lanes = Object.entries(laneCounts).map(([role, data]) => ({
+            role,
+            tokens: Math.ceil(data.chars / this.cfg.avgCharsPerToken),
+            count: data.count,
+        }));
+        const wmUsed = this.msgTokens(this.messagesBuffer.filter(m => m.role !== "system" || m !== this.messagesBuffer[0]));
+        return {
+            type: "virtual",
+            totalMessages: this.messagesBuffer.length,
+            totalTokensEstimate: this.msgTokens(this.messagesBuffer),
+            bufferMessages: this.messagesBuffer.length,
+            workingMemoryBudget: this.cfg.workingMemoryTokens,
+            workingMemoryUsed: wmUsed,
+            pageSlotBudget: this.cfg.pageSlotTokens,
+            pagesAvailable: this.pages.size,
+            pagesLoaded: this.activePageIds.size,
+            highRatio: this.cfg.highRatio,
+            compactionActive: false, // runOnce handles this internally
+            thinkingBudget: this.baseWorkingMemoryTokens !== null ? (this.cfg.workingMemoryTokens / (this.baseWorkingMemoryTokens || 1)) - 0.6 : null,
+            lanes,
+            pinnedMessages: pinnedCount,
+            model: this.model,
+        };
+    }
     /**
      * Start the batch worker subprocess.
      */

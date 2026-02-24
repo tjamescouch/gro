@@ -27,6 +27,8 @@ import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./se
 // Register all memory types in the registry (side-effect import)
 import "./memory/register-memory-types.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
+import { SensoryMemory } from "./memory/sensory-memory.js";
+import { ContextMapSource } from "./memory/context-map-source.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
@@ -758,6 +760,37 @@ async function createMemory(cfg, driver, requestedMode, sessionId) {
     vm.setModel(cfg.model);
     return vm;
 }
+/**
+ * Wrap an AgentMemory with SensoryMemory decorator + ContextMapSource.
+ * Returns the wrapped memory. If wrapping fails, returns the original.
+ */
+function wrapWithSensory(inner) {
+    try {
+        const sensory = new SensoryMemory(inner, { totalBudget: 500 });
+        const contextMap = new ContextMapSource(inner, {
+            barWidth: 32,
+            showLanes: true,
+            showPages: true,
+        });
+        sensory.addChannel({
+            name: "context",
+            maxTokens: 300,
+            updateMode: "every_turn",
+            content: "",
+            enabled: true,
+            source: contextMap,
+        });
+        return sensory;
+    }
+    catch (err) {
+        Logger.warn(`Failed to initialize sensory memory: ${err}`);
+        return inner;
+    }
+}
+/** Unwrap SensoryMemory decorator to get the underlying memory for duck-typed method calls. */
+function unwrapMemory(mem) {
+    return mem instanceof SensoryMemory ? mem.getInner() : mem;
+}
 // ---------------------------------------------------------------------------
 // Output formatting
 // ---------------------------------------------------------------------------
@@ -872,8 +905,11 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 return;
             }
             Logger.info(`Stream marker: memory('${targetType}') — swapping memory implementation`);
+            // Determine the actual inner memory (unwrap sensory decorator if present)
+            const isSensory = memory instanceof SensoryMemory;
+            const innerMemory = isSensory ? memory.getInner() : memory;
             // Extract current messages to transfer to new memory
-            const currentMessages = memory.messages();
+            const currentMessages = innerMemory.messages();
             // Create new memory instance based on type
             let newMemory;
             if (targetType === "simple") {
@@ -906,7 +942,16 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             for (const msg of currentMessages) {
                 await newMemory.add(msg);
             }
-            memory = newMemory;
+            // Preserve sensory wrapper if present
+            if (isSensory) {
+                const sensory = memory;
+                sensory.setInner(newMemory);
+                // Update ContextMapSource reference to point to new inner memory
+                // (channels retain their source references — the source holds the memory ref)
+            }
+            else {
+                memory = newMemory;
+            }
         };
         // Shared marker handler — used by both streaming parser and tool-arg scanner
         const handleMarker = (marker) => {
@@ -947,15 +992,17 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             }
             else if (marker.name === "ref" && marker.arg) {
                 // VirtualMemory page ref — load a page into context for next turn
-                if ("ref" in memory && typeof memory.ref === "function") {
-                    memory.ref(marker.arg);
+                const inner = unwrapMemory(memory);
+                if ("ref" in inner && typeof inner.ref === "function") {
+                    inner.ref(marker.arg);
                     Logger.info(`Stream marker: ref('${marker.arg}') — page will load next turn`);
                 }
             }
             else if (marker.name === "unref" && marker.arg) {
                 // VirtualMemory page unref — release a page from context
-                if ("unref" in memory && typeof memory.unref === "function") {
-                    memory.unref(marker.arg);
+                const inner = unwrapMemory(memory);
+                if ("unref" in inner && typeof inner.unref === "function") {
+                    inner.unref(marker.arg);
                     Logger.info(`Stream marker: unref('${marker.arg}') — page released`);
                 }
             }
@@ -1098,8 +1145,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     }
                 }
                 // Apply to memory if VirtualMemory
-                if ("hotReloadConfig" in memory && typeof memory.hotReloadConfig === "function") {
-                    const result = memory.hotReloadConfig(config);
+                const innerHR = unwrapMemory(memory);
+                if ("hotReloadConfig" in innerHR && typeof innerHR.hotReloadConfig === "function") {
+                    const result = innerHR.hotReloadConfig(config);
                     Logger.info(`Stream marker: memory hotreload — ${result}`);
                 }
             }
@@ -1111,7 +1159,8 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     appendFileSync(learnFile, line, "utf-8");
                     Logger.info(`Stream marker: learn('${marker.arg}') → saved to _learn.md`);
                     // Hot-patch: inject into current session's system message
-                    const sysMsg = memory.messagesBuffer?.[0];
+                    const innerLearn = unwrapMemory(memory);
+                    const sysMsg = innerLearn.messagesBuffer?.[0];
                     if (sysMsg && sysMsg.role === "system") {
                         sysMsg.content += `\n\n<!-- LEARNED -->\n${line}`;
                     }
@@ -1126,9 +1175,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             }
             else if (marker.name === "recall") {
                 // PerfectMemory fork recall — load fork content into page slot
-                if ("recallFork" in memory && typeof memory.recallFork === "function") {
+                const innerRecall = unwrapMemory(memory);
+                if ("recallFork" in innerRecall && typeof innerRecall.recallFork === "function") {
                     const forkId = marker.arg || undefined;
-                    void memory.recallFork(forkId).then((pageId) => {
+                    void innerRecall.recallFork(forkId).then((pageId) => {
                         if (pageId) {
                             Logger.info(`Stream marker: recall('${marker.arg || "latest"}') — loaded as page ${pageId}`);
                         }
@@ -1161,8 +1211,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     }
                 }
                 // Apply to memory controller if it supports hot-tuning
-                if (Object.keys(tuneParams).length > 0 && "tune" in memory && typeof memory.tune === "function") {
-                    memory.tune(tuneParams);
+                const innerTune = unwrapMemory(memory);
+                if (Object.keys(tuneParams).length > 0 && "tune" in innerTune && typeof innerTune.tune === "function") {
+                    innerTune.tune(tuneParams);
                     Logger.info(`Stream marker: memory-tune(${marker.arg})`);
                 }
                 else {
@@ -1192,12 +1243,13 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 tokens = Math.round(tokens);
                 if (!isNaN(tokens) && tokens >= 1024) {
                     // Apply via hotReloadConfig (VirtualMemory) or tune (general)
-                    if ("hotReloadConfig" in memory && typeof memory.hotReloadConfig === "function") {
-                        const result = memory.hotReloadConfig({ workingMemoryTokens: tokens });
+                    const innerMC = unwrapMemory(memory);
+                    if ("hotReloadConfig" in innerMC && typeof innerMC.hotReloadConfig === "function") {
+                        const result = innerMC.hotReloadConfig({ workingMemoryTokens: tokens });
                         Logger.info(`Stream marker: max-context('${marker.arg}') → ${tokens} tokens — ${result}`);
                     }
-                    else if ("tune" in memory && typeof memory.tune === "function") {
-                        memory.tune({ working: tokens });
+                    else if ("tune" in innerMC && typeof innerMC.tune === "function") {
+                        innerMC.tune({ working: tokens });
                         Logger.info(`Stream marker: max-context('${marker.arg}') → ${tokens} tokens`);
                     }
                     else {
@@ -1206,6 +1258,13 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
                 else {
                     Logger.warn(`Stream marker: max-context('${marker.arg}') — invalid size (min 1024 tokens, got ${tokens})`);
+                }
+            }
+            else if (marker.name === "sense") {
+                if (memory instanceof SensoryMemory) {
+                    const parts = marker.arg.split(",").map(s => s.trim());
+                    memory.onSenseMarker(parts[0] || "", parts[1] || "");
+                    Logger.info(`Stream marker: sense('${parts[0]}','${parts[1] || ""}')`);
                 }
             }
         };
@@ -1220,6 +1279,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         }
         // Sync thinking budget to memory — scales compaction aggressiveness
         memory.setThinkingBudget(activeThinkingBudget);
+        // Poll sensory sources (renders fresh context map)
+        if (memory instanceof SensoryMemory) {
+            await memory.pollSources();
+        }
         // Create a fresh marker parser per round so partial state doesn't leak
         const markerParser = createMarkerParser({
             onToken: rawOnToken,
@@ -1469,16 +1532,16 @@ Do not get stuck calling ${idleToolName} repeatedly.`
                     result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode, thinkingBudget: activeThinkingBudget, activeModel });
                 }
                 else if (fnName === "memory_status") {
-                    result = executeMemoryStatus(fnArgs, memory);
+                    result = executeMemoryStatus(fnArgs, unwrapMemory(memory));
                 }
                 else if (fnName === "memory_report") {
-                    result = executeMemoryReport(fnArgs, memory);
+                    result = executeMemoryReport(fnArgs, unwrapMemory(memory));
                 }
                 else if (fnName === "memory_tune") {
-                    result = await executeMemoryTune(fnArgs, { memoryConfig: memory });
+                    result = await executeMemoryTune(fnArgs, { memoryConfig: unwrapMemory(memory) });
                 }
                 else if (fnName === "compact_context") {
-                    result = await executeCompactContext(fnArgs, memory);
+                    result = await executeCompactContext(fnArgs, unwrapMemory(memory));
                 }
                 else if (fnName === "cleanup_sessions") {
                     result = await executeCleanupSessions(fnArgs);
@@ -1623,7 +1686,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
         usage();
         process.exit(1);
     }
-    let memory = await createMemory(cfg, driver, undefined, sessionId);
+    let memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
     // Initialize runtime control system
     runtimeConfig.setDriver(driver);
     runtimeConfig.setMemory(memory);
@@ -1648,7 +1711,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
                 cfg.apiKey = resolveApiKey(cfg.provider);
                 cfg.baseUrl = defaultBaseUrl(cfg.provider);
                 driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens);
-                memory = await createMemory(cfg, driver, undefined, sessionId);
+                memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
                 await memory.load(sessionId);
             }
             else if (sess.meta.provider === cfg.provider && !wasModelExplicitlyPassed()) {
@@ -1705,7 +1768,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     }
 }
 async function interactive(cfg, driver, mcp, sessionId) {
-    let memory = await createMemory(cfg, driver, undefined, sessionId);
+    let memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
     const readline = await import("readline");
     // Violation tracker for persistent mode
     const tracker = cfg.persistent ? new ViolationTracker() : undefined;
@@ -1735,7 +1798,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
                 cfg.apiKey = resolveApiKey(cfg.provider);
                 cfg.baseUrl = defaultBaseUrl(cfg.provider);
                 driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens);
-                memory = await createMemory(cfg, driver, undefined, sessionId);
+                memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
                 await memory.load(sessionId);
                 const msgCount = sess.messages.filter((m) => m.role !== "system").length;
                 Logger.info(C.gray(`Resumed cross-provider session ${sessionId} (${msgCount} messages)`));

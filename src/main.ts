@@ -31,6 +31,8 @@ import { groError, asError, isGroError, errorLogFields } from "./errors.js";
 import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/types.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
+import { SensoryMemory } from "./memory/sensory-memory.js";
+import { ContextMapSource } from "./memory/context-map-source.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
@@ -812,6 +814,38 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
   return vm;
 }
 
+/**
+ * Wrap an AgentMemory with SensoryMemory decorator + ContextMapSource.
+ * Returns the wrapped memory. If wrapping fails, returns the original.
+ */
+function wrapWithSensory(inner: AgentMemory): AgentMemory {
+  try {
+    const sensory = new SensoryMemory(inner, { totalBudget: 500 });
+    const contextMap = new ContextMapSource(inner, {
+      barWidth: 32,
+      showLanes: true,
+      showPages: true,
+    });
+    sensory.addChannel({
+      name: "context",
+      maxTokens: 300,
+      updateMode: "every_turn",
+      content: "",
+      enabled: true,
+      source: contextMap,
+    });
+    return sensory;
+  } catch (err) {
+    Logger.warn(`Failed to initialize sensory memory: ${err}`);
+    return inner;
+  }
+}
+
+/** Unwrap SensoryMemory decorator to get the underlying memory for duck-typed method calls. */
+function unwrapMemory(mem: AgentMemory): AgentMemory {
+  return mem instanceof SensoryMemory ? (mem as SensoryMemory).getInner() : mem;
+}
+
 // ---------------------------------------------------------------------------
 // Output formatting
 // ---------------------------------------------------------------------------
@@ -946,8 +980,12 @@ async function executeTurn(
 
       Logger.info(`Stream marker: memory('${targetType}') — swapping memory implementation`);
 
+      // Determine the actual inner memory (unwrap sensory decorator if present)
+      const isSensory = memory instanceof SensoryMemory;
+      const innerMemory = isSensory ? (memory as SensoryMemory).getInner() : memory;
+
       // Extract current messages to transfer to new memory
-      const currentMessages = memory.messages();
+      const currentMessages = innerMemory.messages();
 
       // Create new memory instance based on type
       let newMemory: AgentMemory;
@@ -972,13 +1010,21 @@ async function executeTurn(
       } else {
         newMemory = await createMemory(cfg, driver, "virtual", sessionId); // VirtualMemory
       }
-      
+
       // Transfer messages to new memory
       for (const msg of currentMessages) {
         await newMemory.add(msg);
       }
-      
-      memory = newMemory;
+
+      // Preserve sensory wrapper if present
+      if (isSensory) {
+        const sensory = memory as SensoryMemory;
+        sensory.setInner(newMemory);
+        // Update ContextMapSource reference to point to new inner memory
+        // (channels retain their source references — the source holds the memory ref)
+      } else {
+        memory = newMemory;
+      }
     };
 
     // Shared marker handler — used by both streaming parser and tool-arg scanner
@@ -1018,14 +1064,16 @@ async function executeTurn(
         runtimeState.setModelExplicitlySet(true);
       } else if (marker.name === "ref" && marker.arg) {
         // VirtualMemory page ref — load a page into context for next turn
-        if ("ref" in memory && typeof (memory as any).ref === "function") {
-          (memory as any).ref(marker.arg);
+        const inner = unwrapMemory(memory);
+        if ("ref" in inner && typeof (inner as any).ref === "function") {
+          (inner as any).ref(marker.arg);
           Logger.info(`Stream marker: ref('${marker.arg}') — page will load next turn`);
         }
       } else if (marker.name === "unref" && marker.arg) {
         // VirtualMemory page unref — release a page from context
-        if ("unref" in memory && typeof (memory as any).unref === "function") {
-          (memory as any).unref(marker.arg);
+        const inner = unwrapMemory(memory);
+        if ("unref" in inner && typeof (inner as any).unref === "function") {
+          (inner as any).unref(marker.arg);
           Logger.info(`Stream marker: unref('${marker.arg}') — page released`);
         }
       } else if (marker.name === "importance" && marker.arg) {
@@ -1152,8 +1200,9 @@ async function executeTurn(
         }
         
         // Apply to memory if VirtualMemory
-        if ("hotReloadConfig" in memory && typeof (memory as any).hotReloadConfig === "function") {
-          const result = (memory as any).hotReloadConfig(config);
+        const innerHR = unwrapMemory(memory);
+        if ("hotReloadConfig" in innerHR && typeof (innerHR as any).hotReloadConfig === "function") {
+          const result = (innerHR as any).hotReloadConfig(config);
           Logger.info(`Stream marker: memory hotreload — ${result}`);
         }
       } else if (marker.name === "learn" && marker.arg) {
@@ -1164,7 +1213,8 @@ async function executeTurn(
           appendFileSync(learnFile, line, "utf-8");
           Logger.info(`Stream marker: learn('${marker.arg}') → saved to _learn.md`);
           // Hot-patch: inject into current session's system message
-          const sysMsg = (memory as any).messagesBuffer?.[0];
+          const innerLearn = unwrapMemory(memory);
+          const sysMsg = (innerLearn as any).messagesBuffer?.[0];
           if (sysMsg && sysMsg.role === "system") {
             sysMsg.content += `\n\n<!-- LEARNED -->\n${line}`;
           }
@@ -1176,9 +1226,10 @@ async function executeTurn(
         Logger.info(`Stream marker: memory('${marker.arg}') triggered`);
       } else if (marker.name === "recall") {
         // PerfectMemory fork recall — load fork content into page slot
-        if ("recallFork" in memory && typeof (memory as any).recallFork === "function") {
+        const innerRecall = unwrapMemory(memory);
+        if ("recallFork" in innerRecall && typeof (innerRecall as any).recallFork === "function") {
           const forkId = marker.arg || undefined;
-          void (memory as any).recallFork(forkId).then((pageId: string | null) => {
+          void (innerRecall as any).recallFork(forkId).then((pageId: string | null) => {
             if (pageId) {
               Logger.info(`Stream marker: recall('${marker.arg || "latest"}') — loaded as page ${pageId}`);
             } else {
@@ -1207,8 +1258,9 @@ async function executeTurn(
          }
        }
        // Apply to memory controller if it supports hot-tuning
-       if (Object.keys(tuneParams).length > 0 && "tune" in memory && typeof (memory as any).tune === "function") {
-         (memory as any).tune(tuneParams);
+       const innerTune = unwrapMemory(memory);
+       if (Object.keys(tuneParams).length > 0 && "tune" in innerTune && typeof (innerTune as any).tune === "function") {
+         (innerTune as any).tune(tuneParams);
          Logger.info(`Stream marker: memory-tune(${marker.arg})`);
        } else {
          Logger.warn(`Stream marker: memory-tune — memory controller doesn't support hot-tuning`);
@@ -1232,17 +1284,24 @@ async function executeTurn(
        tokens = Math.round(tokens);
        if (!isNaN(tokens) && tokens >= 1024) {
          // Apply via hotReloadConfig (VirtualMemory) or tune (general)
-         if ("hotReloadConfig" in memory && typeof (memory as any).hotReloadConfig === "function") {
-           const result = (memory as any).hotReloadConfig({ workingMemoryTokens: tokens });
+         const innerMC = unwrapMemory(memory);
+         if ("hotReloadConfig" in innerMC && typeof (innerMC as any).hotReloadConfig === "function") {
+           const result = (innerMC as any).hotReloadConfig({ workingMemoryTokens: tokens });
            Logger.info(`Stream marker: max-context('${marker.arg}') → ${tokens} tokens — ${result}`);
-         } else if ("tune" in memory && typeof (memory as any).tune === "function") {
-           (memory as any).tune({ working: tokens });
+         } else if ("tune" in innerMC && typeof (innerMC as any).tune === "function") {
+           (innerMC as any).tune({ working: tokens });
            Logger.info(`Stream marker: max-context('${marker.arg}') → ${tokens} tokens`);
          } else {
            Logger.warn(`Stream marker: max-context — memory controller doesn't support resizing`);
          }
        } else {
          Logger.warn(`Stream marker: max-context('${marker.arg}') — invalid size (min 1024 tokens, got ${tokens})`);
+       }
+     } else if (marker.name === "sense") {
+       if (memory instanceof SensoryMemory) {
+         const parts = marker.arg.split(",").map(s => s.trim());
+         memory.onSenseMarker(parts[0] || "", parts[1] || "");
+         Logger.info(`Stream marker: sense('${parts[0]}','${parts[1] || ""}')`);
        }
      }
     };
@@ -1259,6 +1318,11 @@ async function executeTurn(
 
     // Sync thinking budget to memory — scales compaction aggressiveness
     memory.setThinkingBudget(activeThinkingBudget);
+
+    // Poll sensory sources (renders fresh context map)
+    if (memory instanceof SensoryMemory) {
+      await memory.pollSources();
+    }
 
     // Create a fresh marker parser per round so partial state doesn't leak
     const markerParser = createMarkerParser({
@@ -1523,13 +1587,13 @@ Do not get stuck calling ${idleToolName} repeatedly.`
           const memoryMode = process.env.GRO_MEMORY === "simple" ? "simple" : "virtual";
           result = executeGroVersion({ provider: cfg.provider, model: cfg.model, persistent: cfg.persistent, memoryMode, thinkingBudget: activeThinkingBudget, activeModel });
         } else if (fnName === "memory_status") {
-          result = executeMemoryStatus(fnArgs, memory);
+          result = executeMemoryStatus(fnArgs, unwrapMemory(memory));
         } else if (fnName === "memory_report") {
-          result = executeMemoryReport(fnArgs, memory);
+          result = executeMemoryReport(fnArgs, unwrapMemory(memory));
         } else if (fnName === "memory_tune") {
-          result = await executeMemoryTune(fnArgs, { memoryConfig: memory });
+          result = await executeMemoryTune(fnArgs, { memoryConfig: unwrapMemory(memory) });
         } else if (fnName === "compact_context") {
-          result = await executeCompactContext(fnArgs, memory);
+          result = await executeCompactContext(fnArgs, unwrapMemory(memory));
         } else if (fnName === "cleanup_sessions") {
           result = await executeCleanupSessions(fnArgs);
         } else if (fnName === "Read") {
@@ -1686,7 +1750,7 @@ async function singleShot(
     process.exit(1);
   }
 
-  let memory = await createMemory(cfg, driver, undefined, sessionId);
+  let memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
 
   // Initialize runtime control system
   runtimeConfig.setDriver(driver);
@@ -1714,7 +1778,7 @@ async function singleShot(
         cfg.apiKey = resolveApiKey(cfg.provider);
         cfg.baseUrl = defaultBaseUrl(cfg.provider);
         driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens);
-        memory = await createMemory(cfg, driver, undefined, sessionId);
+        memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
         await memory.load(sessionId);
       } else if (sess.meta.provider === cfg.provider && !wasModelExplicitlyPassed()) {
         cfg.model = sess.meta.model;
@@ -1780,7 +1844,7 @@ async function interactive(
   mcp: McpManager,
   sessionId: string,
 ): Promise<void> {
-  let memory = await createMemory(cfg, driver, undefined, sessionId);
+  let memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
   const readline = await import("readline");
 
   // Violation tracker for persistent mode
@@ -1814,7 +1878,7 @@ async function interactive(
         cfg.apiKey = resolveApiKey(cfg.provider);
         cfg.baseUrl = defaultBaseUrl(cfg.provider);
         driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens);
-        memory = await createMemory(cfg, driver, undefined, sessionId);
+        memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
         await memory.load(sessionId);
         const msgCount = sess.messages.filter((m: any) => m.role !== "system").length;
         Logger.info(C.gray(`Resumed cross-provider session ${sessionId} (${msgCount} messages)`));

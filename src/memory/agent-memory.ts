@@ -1,5 +1,29 @@
 import type { ChatMessage } from "../drivers/types.js";
 
+// --- Memory Stats Interfaces ---
+
+export interface MemoryStats {
+  type: string;
+  totalMessages: number;
+  totalTokensEstimate: number;
+  bufferMessages: number;
+}
+
+export interface VirtualMemoryStats extends MemoryStats {
+  type: "virtual" | "fragmentation" | "hnsw" | "perfect";
+  workingMemoryBudget: number;
+  workingMemoryUsed: number;
+  pageSlotBudget: number;
+  pagesAvailable: number;
+  pagesLoaded: number;
+  highRatio: number;
+  compactionActive: boolean;
+  thinkingBudget: number | null;
+  lanes: { role: string; tokens: number; count: number }[];
+  pinnedMessages: number;
+  model: string | null;
+}
+
 /**
  * Base class for agent memory with background summarization support.
  * Subclasses call `runOnce` to serialize/queue summarization so callers never block.
@@ -42,6 +66,21 @@ export abstract class AgentMemory {
 
   messages(): ChatMessage[] {
     return [...this.messagesBuffer];
+  }
+
+  /** Return standardized stats about current memory state. Override in subclasses for richer data. */
+  getStats(): MemoryStats {
+    const avgCharsPerToken = 2.8;
+    let totalChars = 0;
+    for (const m of this.messagesBuffer) {
+      totalChars += String(m.content ?? "").length + 32;
+    }
+    return {
+      type: "base",
+      totalMessages: this.messagesBuffer.length,
+      totalTokensEstimate: Math.ceil(totalChars / avgCharsPerToken),
+      bufferMessages: this.messagesBuffer.length,
+    };
   }
 
   protected nonSystemCount(): number {

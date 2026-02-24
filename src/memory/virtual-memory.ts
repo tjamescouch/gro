@@ -1,5 +1,5 @@
 import type { ChatDriver, ChatMessage } from "../drivers/types.js";
-import { AgentMemory } from "./agent-memory.js";
+import { AgentMemory, type VirtualMemoryStats } from "./agent-memory.js";
 import { saveSession, loadSession, ensureGroDir } from "../session.js";
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -1382,6 +1382,46 @@ export class VirtualMemory extends AgentMemory {
   getActivePageIds(): string[] { return Array.from(this.activePageIds); }
   getPageCount(): number { return this.pages.size; }
   hasPage(id: string): boolean { return this.pages.has(id); }
+
+  override getStats(): VirtualMemoryStats {
+    // Partition messages by role for lane stats
+    const laneCounts: Record<string, { count: number; chars: number }> = {};
+    let pinnedCount = 0;
+    for (const m of this.messagesBuffer) {
+      if (m.role === "system" && m === this.messagesBuffer[0]) continue; // skip system prompt
+      const role = m.role;
+      if (!laneCounts[role]) laneCounts[role] = { count: 0, chars: 0 };
+      laneCounts[role].count++;
+      laneCounts[role].chars += String(m.content ?? "").length + 32;
+      if ((m.importance ?? 0) >= 0.7) pinnedCount++;
+    }
+
+    const lanes = Object.entries(laneCounts).map(([role, data]) => ({
+      role,
+      tokens: Math.ceil(data.chars / this.cfg.avgCharsPerToken),
+      count: data.count,
+    }));
+
+    const wmUsed = this.msgTokens(this.messagesBuffer.filter(m => m.role !== "system" || m !== this.messagesBuffer[0]));
+
+    return {
+      type: "virtual",
+      totalMessages: this.messagesBuffer.length,
+      totalTokensEstimate: this.msgTokens(this.messagesBuffer),
+      bufferMessages: this.messagesBuffer.length,
+      workingMemoryBudget: this.cfg.workingMemoryTokens,
+      workingMemoryUsed: wmUsed,
+      pageSlotBudget: this.cfg.pageSlotTokens,
+      pagesAvailable: this.pages.size,
+      pagesLoaded: this.activePageIds.size,
+      highRatio: this.cfg.highRatio,
+      compactionActive: false, // runOnce handles this internally
+      thinkingBudget: this.baseWorkingMemoryTokens !== null ? (this.cfg.workingMemoryTokens / (this.baseWorkingMemoryTokens || 1)) - 0.6 : null,
+      lanes,
+      pinnedMessages: pinnedCount,
+      model: this.model,
+    };
+  }
 
   /**
    * Start the batch worker subprocess.

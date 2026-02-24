@@ -29,6 +29,20 @@ export class AgentMemory {
     messages() {
         return [...this.messagesBuffer];
     }
+    /** Return standardized stats about current memory state. Override in subclasses for richer data. */
+    getStats() {
+        const avgCharsPerToken = 2.8;
+        let totalChars = 0;
+        for (const m of this.messagesBuffer) {
+            totalChars += String(m.content ?? "").length + 32;
+        }
+        return {
+            type: "base",
+            totalMessages: this.messagesBuffer.length,
+            totalTokensEstimate: Math.ceil(totalChars / avgCharsPerToken),
+            bufferMessages: this.messagesBuffer.length,
+        };
+    }
     nonSystemCount() {
         if (this.messagesBuffer.length === 0)
             return 0;

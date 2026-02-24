@@ -349,12 +349,16 @@ describe("ContextMapSource", () => {
     const output = await source.poll();
 
     assert.ok(output);
+    // Spatial basic: used row + free row + stats line
+    assert.ok(output!.includes("used"));
+    assert.ok(output!.includes("free"));
+    assert.ok(/[▒░]/.test(output!));
     assert.ok(output!.includes("simple"));
     assert.ok(output!.includes("msgs"));
     assert.ok(output!.includes("tok"));
   });
 
-  test("renders virtual stats with bar chart", async () => {
+  test("renders virtual stats with spatial 2D rows", async () => {
     // Create a mock that returns VirtualMemoryStats
     const inner = new SimpleMemory();
     // Override getStats to simulate VirtualMemory
@@ -386,17 +390,21 @@ describe("ContextMapSource", () => {
     const output = await source.poll();
 
     assert.ok(output);
-    // Should contain bar chart characters
+    // Spatial rows: each region gets its own row with fill chars
     assert.ok(/[█▓▒░]/.test(output!));
-    // Should contain token stats
-    assert.ok(output!.includes("K"));
-    assert.ok(output!.includes("tok"));
-    // Should contain lane breakdown
-    assert.ok(output!.includes("ass:"));
-    assert.ok(output!.includes("use:"));
-    // Should contain page stats
+    // Should have sys row (█), page row (▓), lane rows (▒), free row (░)
+    assert.ok(output!.includes("█"), "should have sys row with █");
+    assert.ok(output!.includes("▓"), "should have page row with ▓");
+    assert.ok(output!.includes("▒"), "should have lane rows with ▒");
+    // Should contain lane labels
+    assert.ok(output!.includes(" ast "), "should have assistant lane row");
+    assert.ok(output!.includes(" usr "), "should have user lane row");
+    assert.ok(output!.includes("tool "), "should have tool lane row");
+    // Should contain free row
+    assert.ok(output!.includes("free"), "should have free row");
+    // Should contain stats line
+    assert.ok(output!.includes("K/"), "should have used/budget stats");
     assert.ok(output!.includes("pg:2/5"));
-    // Should contain model
     assert.ok(output!.includes("sonnet"));
   });
 
@@ -436,6 +444,72 @@ describe("ContextMapSource", () => {
     assert.ok(estimatedTokens < 300, `Render too long: ~${Math.round(estimatedTokens)} tokens (${output!.length} chars)`);
   });
 
+  test("LOW indicator when free < 20%", async () => {
+    const inner = new SimpleMemory();
+    (inner as any).getStats = () => ({
+      type: "virtual",
+      totalMessages: 50,
+      totalTokensEstimate: 18000,
+      bufferMessages: 50,
+      systemTokens: 2000,
+      workingMemoryBudget: 12000,
+      workingMemoryUsed: 11000,
+      pageSlotBudget: 8000,
+      pageSlotUsed: 6000,
+      pagesAvailable: 5,
+      pagesLoaded: 3,
+      highRatio: 0.75,
+      compactionActive: false,
+      thinkingBudget: 0.5,
+      lanes: [
+        { role: "assistant", tokens: 6000, count: 20 },
+        { role: "user", tokens: 5000, count: 15 },
+      ],
+      pinnedMessages: 0,
+      model: "sonnet",
+    });
+
+    const source = new ContextMapSource(inner, { barWidth: 32 });
+    const output = await source.poll();
+
+    assert.ok(output);
+    // free = 20000 - 2000 - 6000 - 11000 = 1000, freePct = 1000/20000 = 5% → LOW
+    assert.ok(output!.includes("← LOW"), "should show LOW indicator when free < 20%");
+  });
+
+  test("no LOW indicator when free is abundant", async () => {
+    const inner = new SimpleMemory();
+    (inner as any).getStats = () => ({
+      type: "virtual",
+      totalMessages: 10,
+      totalTokensEstimate: 3000,
+      bufferMessages: 10,
+      systemTokens: 500,
+      workingMemoryBudget: 8000,
+      workingMemoryUsed: 2000,
+      pageSlotBudget: 6000,
+      pageSlotUsed: 0,
+      pagesAvailable: 2,
+      pagesLoaded: 0,
+      highRatio: 0.75,
+      compactionActive: false,
+      thinkingBudget: null,
+      lanes: [
+        { role: "assistant", tokens: 1000, count: 5 },
+        { role: "user", tokens: 1000, count: 5 },
+      ],
+      pinnedMessages: 0,
+      model: "haiku",
+    });
+
+    const source = new ContextMapSource(inner, { barWidth: 32 });
+    const output = await source.poll();
+
+    assert.ok(output);
+    // free = 14000 - 500 - 0 - 2000 = 11500, freePct = 82% → no LOW
+    assert.ok(!output!.includes("← LOW"), "should not show LOW when free > 20%");
+  });
+
   test("graceful degradation for basic memory types", async () => {
     const inner = new SimpleMemory();
     await inner.add(msg("user", "hello"));
@@ -446,6 +520,7 @@ describe("ContextMapSource", () => {
     // Should render without error
     assert.ok(output);
     assert.ok(output!.includes("simple"));
+    assert.ok(output!.includes("used"));
   });
 
   test("setMemory updates the memory reference", async () => {
@@ -465,7 +540,7 @@ describe("ContextMapSource", () => {
     assert.ok(output!.includes("2 msgs"));
   });
 
-  test("showLanes=false omits lane breakdown", async () => {
+  test("showLanes=false omits individual lane rows", async () => {
     const inner = new SimpleMemory();
     (inner as any).getStats = () => ({
       type: "virtual",
@@ -494,7 +569,47 @@ describe("ContextMapSource", () => {
     const output = await source.poll();
 
     assert.ok(output);
-    assert.ok(!output!.includes("wm: ass:"));
+    // Should NOT contain lane row labels
+    assert.ok(!output!.includes(" ast "), "should not show ast lane row");
+    assert.ok(!output!.includes(" usr "), "should not show usr lane row");
+    // Should still contain sys, free, and stats
+    assert.ok(output!.includes(" sys ") || output!.includes("█"), "should still show sys row");
+    assert.ok(output!.includes("free"), "should still show free row");
+    assert.ok(output!.includes("pg:"), "should still show stats line");
+  });
+
+  test("LOW indicator when compaction is active", async () => {
+    const inner = new SimpleMemory();
+    (inner as any).getStats = () => ({
+      type: "virtual",
+      totalMessages: 30,
+      totalTokensEstimate: 10000,
+      bufferMessages: 30,
+      systemTokens: 1000,
+      workingMemoryBudget: 16000,
+      workingMemoryUsed: 5000,
+      pageSlotBudget: 8000,
+      pageSlotUsed: 2000,
+      pagesAvailable: 5,
+      pagesLoaded: 2,
+      highRatio: 0.75,
+      compactionActive: true,
+      thinkingBudget: 0.5,
+      lanes: [
+        { role: "assistant", tokens: 3000, count: 15 },
+        { role: "user", tokens: 2000, count: 10 },
+      ],
+      pinnedMessages: 0,
+      model: "sonnet",
+    });
+
+    const source = new ContextMapSource(inner, { barWidth: 32 });
+    const output = await source.poll();
+
+    assert.ok(output);
+    // free = 24000 - 1000 - 2000 - 5000 = 16000, freePct = 66% > 20%
+    // But compactionActive is true → should still show LOW
+    assert.ok(output!.includes("← LOW"), "should show LOW when compaction is active");
   });
 });
 

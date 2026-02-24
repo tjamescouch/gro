@@ -2,7 +2,10 @@
  * ContextMapSource — sensory channel that renders a spatial context map.
  *
  * Reads memory stats from the inner AgentMemory (via getStats()) and produces
- * a compact text heatmap showing how the context window is distributed.
+ * a 2D spatial visualization where position, density, and shape encode
+ * context window distribution. The model perceives patterns from row length
+ * and fill — not from labels and numbers.
+ *
  * Degrades gracefully: renders whatever stats the memory type provides.
  *
  * Target: under 300 tokens per render.
@@ -14,9 +17,9 @@ import type { SensorySource } from "./sensory-memory.js";
 export interface ContextMapConfig {
   /** Width of the bar chart in characters (default: 32) */
   barWidth?: number;
-  /** Include swimlane breakdown (default: true) */
+  /** Include individual swimlane rows (default: true) */
   showLanes?: boolean;
-  /** Include page stats (default: true) */
+  /** Include page row (default: true) */
   showPages?: boolean;
 }
 
@@ -55,75 +58,103 @@ export class ContextMapSource implements SensorySource {
     return stats.type === "virtual" || stats.type === "fragmentation" || stats.type === "hnsw" || stats.type === "perfect";
   }
 
-  // --- Virtual Memory (rich) ---
+  // --- Virtual Memory (spatial 2D) ---
 
   private renderVirtual(stats: VirtualMemoryStats): string {
     const w = this.config.barWidth;
     const totalBudget = stats.workingMemoryBudget + stats.pageSlotBudget;
     if (totalBudget === 0) return this.renderBasic(stats);
 
-    // Use real values from getStats()
     const sysTokens = stats.systemTokens;
     const pageTokens = stats.pageSlotUsed;
     const wmUsed = stats.workingMemoryUsed;
     const free = Math.max(0, totalBudget - sysTokens - pageTokens - wmUsed);
 
-    // Bar segments (chars)
-    const sysChars = Math.round((sysTokens / totalBudget) * w);
-    const pageChars = Math.round((pageTokens / totalBudget) * w);
-    const wmChars = Math.round((wmUsed / totalBudget) * w);
-    const freeChars = Math.max(0, w - sysChars - pageChars - wmChars);
-
-    const bar = "█".repeat(sysChars) + "▓".repeat(pageChars) + "▒".repeat(wmChars) + "░".repeat(freeChars);
-
     const lines: string[] = [];
 
-    // Bar with labels
-    const sysPct = totalBudget > 0 ? Math.round((sysTokens / totalBudget) * 100) : 0;
-    const wmPct = totalBudget > 0 ? Math.round((wmUsed / totalBudget) * 100) : 0;
-    const freePct = totalBudget > 0 ? Math.round((free / totalBudget) * 100) : 0;
-    lines.push(`${bar}  sys:${sysPct}% wm:${wmPct}% free:${freePct}%`);
+    // System prompt row (immutable — █)
+    if (sysTokens > 0) {
+      const chars = Math.max(1, Math.round((sysTokens / totalBudget) * w));
+      lines.push(this.spatialRow("sys", chars, w, "█"));
+    }
 
-    // Stats line
-    const totalUsed = sysTokens + pageTokens + wmUsed;
-    const usedK = (totalUsed / 1000).toFixed(1);
-    const budgetK = (totalBudget / 1000).toFixed(1);
-    const usePct = totalBudget > 0 ? Math.round((totalUsed / totalBudget) * 100) : 0;
-    lines.push(`${usedK}K/${budgetK}K tok (${usePct}%)`);
+    // Page row (loaded, evictable — ▓)
+    if (this.config.showPages && pageTokens > 0) {
+      const chars = Math.max(1, Math.round((pageTokens / totalBudget) * w));
+      lines.push(this.spatialRow("page", chars, w, "▓"));
+    }
 
-    // Lane breakdown
+    // Lane rows (active working memory — ▒)
     if (this.config.showLanes && stats.lanes.length > 0) {
-      const laneStr = stats.lanes
-        .filter(l => l.tokens > 0)
-        .map(l => `${l.role.slice(0, 3)}:${(l.tokens / 1000).toFixed(1)}K`)
-        .join(" ");
-      if (laneStr) lines.push(`wm: ${laneStr}`);
+      for (const lane of stats.lanes) {
+        if (lane.tokens <= 0) continue;
+        const chars = Math.max(1, Math.round((lane.tokens / totalBudget) * w));
+        lines.push(this.spatialRow(this.laneLabel(lane.role), chars, w, "▒"));
+      }
     }
 
-    // Page stats
-    if (this.config.showPages) {
-      const parts: string[] = [];
-      if (stats.pinnedMessages > 0) parts.push(`pin:${stats.pinnedMessages}`);
-      parts.push(`pg:${stats.pagesLoaded}/${stats.pagesAvailable}`);
-      if (stats.model) parts.push(`model:${this.shortModel(stats.model)}`);
-      lines.push(parts.join(" | "));
-    }
+    // Free row — bar length IS the free space; no ░ padding
+    const freeChars = Math.round((free / totalBudget) * w);
+    const freeBar = "░".repeat(freeChars);
+    const freeLabel = "free".padStart(4);
+    const totalUsed = sysTokens + pageTokens + wmUsed;
+    const usePct = totalBudget > 0 ? totalUsed / totalBudget : 0;
+    const isLow = (free / totalBudget) < 0.2 || stats.compactionActive || usePct > stats.highRatio;
+    lines.push(isLow ? `${freeLabel} ${freeBar}  ← LOW` : `${freeLabel} ${freeBar}`);
+
+    // Stats line — one line of precision for when the model needs exact numbers
+    const usedK = (totalUsed / 1000).toFixed(0);
+    const budgetK = (totalBudget / 1000).toFixed(0);
+    const parts: string[] = [`${usedK}K/${budgetK}K`];
+    if (stats.pinnedMessages > 0) parts.push(`pin:${stats.pinnedMessages}`);
+    parts.push(`pg:${stats.pagesLoaded}/${stats.pagesAvailable}`);
+    if (stats.model) parts.push(this.shortModel(stats.model));
+    lines.push(parts.join(" | "));
 
     return lines.join("\n");
   }
 
-  // --- Basic Memory (minimal) ---
+  // --- Basic Memory (spatial simplified) ---
 
   private renderBasic(stats: MemoryStats): string {
+    const w = this.config.barWidth;
+    const estimatedBudget = 128000;
+    const used = stats.totalTokensEstimate;
+    const free = Math.max(0, estimatedBudget - used);
+
+    const usedChars = Math.max(used > 0 ? 1 : 0, Math.round((used / estimatedBudget) * w));
+    const freeChars = Math.round((free / estimatedBudget) * w);
+
     const lines: string[] = [];
+    lines.push(this.spatialRow("used", usedChars, w, "▒"));
+    lines.push(`free ${"░".repeat(freeChars)}`);
     lines.push(`${stats.type} | ${stats.totalMessages} msgs | ~${(stats.totalTokensEstimate / 1000).toFixed(1)}K tok`);
+
     return lines.join("\n");
   }
 
   // --- Helpers ---
 
+  /** Render a spatial row: right-aligned label + fill chars + ░ padding to width. */
+  private spatialRow(label: string, filled: number, width: number, fillChar: string): string {
+    const paddedLabel = label.padStart(4);
+    const fill = fillChar.repeat(Math.min(filled, width));
+    const pad = "░".repeat(Math.max(0, width - filled));
+    return `${paddedLabel} ${fill}${pad}`;
+  }
+
+  /** Map lane role to short label for spatial rows. */
+  private laneLabel(role: string): string {
+    switch (role) {
+      case "assistant": return "ast";
+      case "user": return "usr";
+      case "system": return "sys";
+      case "tool": return "tool";
+      default: return role.slice(0, 4);
+    }
+  }
+
   private shortModel(model: string): string {
-    // Shorten common model names
     if (model.includes("opus")) return "opus";
     if (model.includes("sonnet")) return "sonnet";
     if (model.includes("haiku")) return "haiku";

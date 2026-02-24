@@ -217,6 +217,33 @@ Use `@@ref@@` before a task that needs old context. Use `@@unref@@` after to fre
 
 ---
 
+### 6. Sampling Parameters — OPTIONAL
+
+Fine-tune the model's sampling behavior mid-stream. All three persist across turns until explicitly changed.
+
+```
+🌡️   — or 🌡️
+⚙️
+⚙️
+```
+
+**`🌡️`** — controls randomness. Lower = deterministic, higher = creative.
+- `🌡️` — near-deterministic: code generation, structured output
+- `🌡️` — balanced (provider default when unset)
+- `🌡️` — highly varied: brainstorming, creative writing
+
+**`⚙️`** — nucleus sampling. Only sample from tokens in top P probability mass.
+- `⚙️` — reduces tail randomness; avoid combining with `⚙️` on OpenAI.
+
+**`⚙️`** — restrict sampling to top K most-likely tokens.
+- `⚙️` — conservative; `⚙️` — broader
+- Supported: Anthropic, Google. **Ignored by OpenAI.**
+
+Provider support: `🌡️` ✔ all | `⚙️` ✔ all | `⚙️` ✔ Anthropic+Google only.
+
+
+---
+
 ### Minimal valid response template
 
 Every response you emit should look like this:

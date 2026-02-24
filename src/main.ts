@@ -33,6 +33,7 @@ import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/
 import type { AgentMemory } from "./memory/agent-memory.js";
 import { SensoryMemory } from "./memory/sensory-memory.js";
 import { ContextMapSource } from "./memory/context-map-source.js";
+import { TemporalSource } from "./memory/temporal-source.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
@@ -817,6 +818,10 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
 
 /**
  * Wrap an AgentMemory with SensoryMemory decorator + ContextMapSource.
+ * Two-slot camera system:
+ *   slot0 = "context" (fill bars, runtime health)
+ *   slot1 = "time"    (wall clock, uptime, channel staleness)
+ * Both slots are agent-switchable via 🧠 marker.
  * Returns the wrapped memory. If wrapping fails, returns the original.
  */
 function wrapWithSensory(inner: AgentMemory): AgentMemory {
@@ -835,6 +840,18 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       enabled: true,
       source: contextMap,
     });
+    const temporal = new TemporalSource({ barWidth: 16, showChannels: true });
+    sensory.addChannel({
+      name: "time",
+      maxTokens: 200,
+      updateMode: "every_turn",
+      content: "",
+      enabled: true,
+      source: temporal,
+    });
+    // Configure default camera slots
+    sensory.setSlot(0, "context");
+    sensory.setSlot(1, "time");
     return sensory;
   } catch (err) {
     Logger.warn(`Failed to initialize sensory memory: ${err}`);
@@ -1304,14 +1321,32 @@ async function executeTurn(
        } else {
          Logger.warn(`Stream marker: max-context('${marker.arg}') — invalid size (min 1024 tokens, got ${tokens})`);
        }
-     } else if (marker.name === "sense") {
-       if (memory instanceof SensoryMemory) {
-         const parts = marker.arg.split(",").map(s => s.trim());
-         memory.onSenseMarker(parts[0] || "", parts[1] || "");
-         Logger.info(`Stream marker: sense('${parts[0]}','${parts[1] || ""}')`);
-       }
-     }
-    };
+    } else if (marker.name === "sense") {
+      if (memory instanceof SensoryMemory) {
+        const parts = marker.arg.split(",").map(s => s.trim());
+        memory.onSenseMarker(parts[0] || "", parts[1] || "");
+        Logger.info(`Stream marker: sense('${parts[0]}','${parts[1] || ""}')`);
+      }
+    } else if (marker.name === "view") {
+      // 🧠        — set slot0 to named camera
+      // 🧠    — set slot1 to named camera
+      // 🧠     — clear slot0
+      // 🧠         — clear slot0
+      if (memory instanceof SensoryMemory) {
+        const parts = marker.arg.split(",").map(s => s.trim().replace(/^['"]|['"]$/g, ""));
+        const viewName = parts[0] || "";
+        const slotArg = parts[1] ?? "0";
+        const slot = (slotArg === "1" ? 1 : 0) as 0 | 1;
+        if (viewName === "off" || viewName === "") {
+          memory.setSlot(slot, null);
+          Logger.info(`Stream marker: view('off','${slot}') → slot${slot} cleared`);
+        } else {
+          memory.switchView(viewName, slot);
+          Logger.info(`Stream marker: view('${viewName}','${slot}') → slot${slot}=${viewName}`);
+        }
+      }
+    }
+   };
 
     // Select model tier based on current thinking budget (unless agent pinned a model explicitly)
     if (!modelExplicitlySet) {

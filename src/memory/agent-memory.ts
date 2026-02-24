@@ -11,9 +11,11 @@ export interface MemoryStats {
 
 export interface VirtualMemoryStats extends MemoryStats {
   type: "virtual" | "fragmentation" | "hnsw" | "perfect";
+  systemTokens: number;
   workingMemoryBudget: number;
   workingMemoryUsed: number;
   pageSlotBudget: number;
+  pageSlotUsed: number;
   pagesAvailable: number;
   pagesLoaded: number;
   highRatio: number;
@@ -33,6 +35,9 @@ export abstract class AgentMemory {
 
   private summarizing = false;
   private pending = false;
+
+  /** Whether a background summarization/compaction is currently running. */
+  protected get isSummarizing(): boolean { return this.summarizing; }
 
   constructor(systemPrompt?: string) {
     if (systemPrompt && systemPrompt.trim().length > 0) {

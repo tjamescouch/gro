@@ -255,15 +255,67 @@ describe("SensoryMemory", () => {
       enabled: true,
     });
 
-    // Disable specific channel
-    sensory.onSenseMarker("off", "ctx");
+    // Disable specific channel: channel first, action second
+    sensory.onSenseMarker("ctx", "off");
     let msgs = sensory.messages();
     assert.ok(!msgs.some(m => m.content?.includes("SENSORY BUFFER")));
 
-    // Re-enable
-    sensory.onSenseMarker("on", "ctx");
+    // Re-enable: channel first, action second
+    sensory.onSenseMarker("ctx", "on");
     msgs = sensory.messages();
     assert.ok(msgs.some(m => m.content?.includes("context data")));
+  });
+
+  test("onSenseMarker disables all when no channel specified", async () => {
+    const inner = new SimpleMemory();
+    const sensory = new SensoryMemory(inner);
+
+    sensory.addChannel({ name: "a", maxTokens: 200, updateMode: "manual", content: "aaa", enabled: true });
+    sensory.addChannel({ name: "b", maxTokens: 200, updateMode: "manual", content: "bbb", enabled: true });
+
+    // Disable all: action only, no channel
+    sensory.onSenseMarker("off", "");
+    let msgs = sensory.messages();
+    assert.ok(!msgs.some(m => m.content?.includes("SENSORY BUFFER")));
+
+    // Re-enable all
+    sensory.onSenseMarker("on", "");
+    msgs = sensory.messages();
+    assert.ok(msgs.some(m => m.content?.includes("aaa")));
+    assert.ok(msgs.some(m => m.content?.includes("bbb")));
+  });
+
+  test("setInner updates ContextMapSource memory reference", async () => {
+    const inner1 = new SimpleMemory();
+    await inner1.add(msg("user", "one"));
+
+    const sensory = new SensoryMemory(inner1, { totalBudget: 500 });
+    const ctxMap = new ContextMapSource(inner1);
+    sensory.addChannel({
+      name: "context",
+      maxTokens: 300,
+      updateMode: "every_turn",
+      content: "",
+      enabled: true,
+      source: ctxMap,
+    });
+
+    await sensory.pollSources();
+    let msgs = sensory.messages();
+    let buf = msgs.find(m => m.content?.includes("SENSORY BUFFER"));
+    assert.ok(buf!.content.includes("1 msgs"));
+
+    // Swap inner — setInner should call setMemory on the ContextMapSource
+    const inner2 = new SimpleMemory();
+    await inner2.add(msg("user", "a"));
+    await inner2.add(msg("user", "b"));
+    await inner2.add(msg("user", "c"));
+    sensory.setInner(inner2);
+
+    await sensory.pollSources();
+    msgs = sensory.messages();
+    buf = msgs.find(m => m.content?.includes("SENSORY BUFFER"));
+    assert.ok(buf!.content.includes("3 msgs"));
   });
 
   test("getStats delegates to inner", () => {
@@ -311,9 +363,11 @@ describe("ContextMapSource", () => {
       totalMessages: 20,
       totalTokensEstimate: 5000,
       bufferMessages: 20,
+      systemTokens: 500,
       workingMemoryBudget: 8000,
       workingMemoryUsed: 4000,
       pageSlotBudget: 6000,
+      pageSlotUsed: 2400,
       pagesAvailable: 5,
       pagesLoaded: 2,
       highRatio: 0.75,
@@ -353,9 +407,11 @@ describe("ContextMapSource", () => {
       totalMessages: 100,
       totalTokensEstimate: 25000,
       bufferMessages: 100,
+      systemTokens: 2800,
       workingMemoryBudget: 32000,
       workingMemoryUsed: 25000,
       pageSlotBudget: 16000,
+      pageSlotUsed: 4800,
       pagesAvailable: 14,
       pagesLoaded: 3,
       highRatio: 0.75,
@@ -416,9 +472,11 @@ describe("ContextMapSource", () => {
       totalMessages: 10,
       totalTokensEstimate: 3000,
       bufferMessages: 10,
+      systemTokens: 200,
       workingMemoryBudget: 8000,
       workingMemoryUsed: 3000,
       pageSlotBudget: 4000,
+      pageSlotUsed: 1200,
       pagesAvailable: 2,
       pagesLoaded: 1,
       highRatio: 0.75,

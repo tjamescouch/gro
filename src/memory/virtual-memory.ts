@@ -222,8 +222,10 @@ export class VirtualMemory extends AgentMemory {
   private baseWorkingMemoryTokens: number | null = null;
   private baseHighRatio: number | null = null;
   private baseMinRecentPerLane: number | null = null;
+  private currentThinkingBudget: number | null = null;
 
   override setThinkingBudget(budget: number): void {
+    this.currentThinkingBudget = budget;
     // Capture baselines on first call
     if (this.baseWorkingMemoryTokens === null) {
       this.baseWorkingMemoryTokens = this.cfg.workingMemoryTokens;
@@ -1384,11 +1386,16 @@ export class VirtualMemory extends AgentMemory {
   hasPage(id: string): boolean { return this.pages.has(id); }
 
   override getStats(): VirtualMemoryStats {
-    // Partition messages by role for lane stats
+    // System prompt tokens (first message if system role)
+    const sysMsg = this.messagesBuffer.length > 0 && this.messagesBuffer[0].role === "system"
+      ? this.messagesBuffer[0] : null;
+    const systemTokens = sysMsg ? this.msgTokens([sysMsg]) : 0;
+
+    // Partition non-system messages by role for lane stats
     const laneCounts: Record<string, { count: number; chars: number }> = {};
     let pinnedCount = 0;
     for (const m of this.messagesBuffer) {
-      if (m.role === "system" && m === this.messagesBuffer[0]) continue; // skip system prompt
+      if (m === sysMsg) continue; // skip system prompt
       const role = m.role;
       if (!laneCounts[role]) laneCounts[role] = { count: 0, chars: 0 };
       laneCounts[role].count++;
@@ -1402,21 +1409,30 @@ export class VirtualMemory extends AgentMemory {
       count: data.count,
     }));
 
-    const wmUsed = this.msgTokens(this.messagesBuffer.filter(m => m.role !== "system" || m !== this.messagesBuffer[0]));
+    const wmUsed = this.msgTokens(this.messagesBuffer.filter(m => m !== sysMsg));
+
+    // Compute actual page slot usage from loaded page metadata
+    let pageSlotUsed = 0;
+    for (const id of this.activePageIds) {
+      const page = this.pages.get(id);
+      if (page) pageSlotUsed += page.tokens;
+    }
 
     return {
       type: "virtual",
       totalMessages: this.messagesBuffer.length,
       totalTokensEstimate: this.msgTokens(this.messagesBuffer),
       bufferMessages: this.messagesBuffer.length,
+      systemTokens,
       workingMemoryBudget: this.cfg.workingMemoryTokens,
       workingMemoryUsed: wmUsed,
       pageSlotBudget: this.cfg.pageSlotTokens,
+      pageSlotUsed,
       pagesAvailable: this.pages.size,
       pagesLoaded: this.activePageIds.size,
       highRatio: this.cfg.highRatio,
-      compactionActive: false, // runOnce handles this internally
-      thinkingBudget: this.baseWorkingMemoryTokens !== null ? (this.cfg.workingMemoryTokens / (this.baseWorkingMemoryTokens || 1)) - 0.6 : null,
+      compactionActive: this.isSummarizing,
+      thinkingBudget: this.currentThinkingBudget,
       lanes,
       pinnedMessages: pinnedCount,
       model: this.model,

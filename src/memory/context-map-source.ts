@@ -62,9 +62,9 @@ export class ContextMapSource implements SensorySource {
     const totalBudget = stats.workingMemoryBudget + stats.pageSlotBudget;
     if (totalBudget === 0) return this.renderBasic(stats);
 
-    // Compute proportions
-    const sysTokens = this.estimateSystemTokens(stats);
-    const pageTokens = this.estimatePageTokens(stats);
+    // Use real values from getStats()
+    const sysTokens = stats.systemTokens;
+    const pageTokens = stats.pageSlotUsed;
     const wmUsed = stats.workingMemoryUsed;
     const free = Math.max(0, totalBudget - sysTokens - pageTokens - wmUsed);
 
@@ -121,23 +121,6 @@ export class ContextMapSource implements SensorySource {
   }
 
   // --- Helpers ---
-
-  private estimateSystemTokens(stats: VirtualMemoryStats): number {
-    // System prompt is typically the first message, estimate from total - wm
-    // Use a rough estimate: 5-10% of total budget is common for system prompts
-    const totalTokens = stats.totalTokensEstimate;
-    const wmUsed = stats.workingMemoryUsed;
-    return Math.max(0, totalTokens - wmUsed);
-  }
-
-  private estimatePageTokens(stats: VirtualMemoryStats): number {
-    // Loaded pages consume a fraction of the page slot budget
-    if (stats.pagesAvailable === 0) return 0;
-    // Rough estimate: loaded pages fill proportionally
-    return stats.pagesLoaded > 0
-      ? Math.round(stats.pageSlotBudget * (stats.pagesLoaded / Math.max(stats.pagesAvailable, 1)))
-      : 0;
-  }
 
   private shortModel(model: string): string {
     // Shorten common model names

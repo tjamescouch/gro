@@ -1333,13 +1333,18 @@ async function executeTurn(
 
     // Create a fresh marker parser per round so partial state doesn't leak
     const markerParser = createMarkerParser({
-      onToken: rawOnToken,
+      onToken: (t: string) => {
+        rawOnToken(t);
+        if (lfsPoster) lfsPoster.postText(t);
+      },
       onMarker: handleMarker,
       onAvatarMarker: lfsPoster ? (clips) => {
         Logger.info(`Avatar marker → ${JSON.stringify(clips)}`);
         lfsPoster!.postAnimation(clips);
       } : undefined,
     });
+
+    if (lfsPoster) lfsPoster.postTextControl("start");
 
     const output: ChatOutput = await activeDriver.chat(memory.messages(), {
       model: activeModel,
@@ -1362,7 +1367,10 @@ async function executeTurn(
     markerParser.flush();
 
     // Flush remaining LFS signals
-    if (lfsPoster) await lfsPoster.close();
+    if (lfsPoster) {
+      lfsPoster.postTextControl("end");
+      await lfsPoster.close();
+    }
 
     // Decay thinking level toward THINKING_MEAN if not refreshed this round.
     // Agents coast at mid-tier when idle — emit 🦉 each round to maintain level.

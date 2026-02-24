@@ -64,6 +64,16 @@ export class LfsPoster {
     });
   }
 
+  /** Send a text chunk to the viewer. */
+  postText(chunk: string): void {
+    this.post({ type: "text", chunk } as any);
+  }
+
+  /** Send a text_control signal to mark response boundaries. */
+  postTextControl(action: "start" | "end"): void {
+    this.post({ type: "text_control", action } as any);
+  }
+
   /** Flush remaining signals. Call at end of response. */
   async close(): Promise<void> {
     if (this.flushTimer) {

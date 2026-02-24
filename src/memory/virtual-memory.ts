@@ -198,12 +198,12 @@ export class VirtualMemory extends AgentMemory {
     // Initialize phantom buffer if enabled
     if (this.cfg.enablePhantomCompaction) {
       this.phantomBuffer = new PhantomBuffer({ avgCharsPerToken: this.cfg.avgCharsPerToken });
-    
+    }
+
     // Initialize metrics collector
     const sessionId = process.env.GRO_SESSION_ID || `session-${Date.now()}`;
     const metricsPath = join(this.cfg.pagesDir, "memory-metrics.json");
     this.metricsCollector = new MemoryMetricsCollector(sessionId, metricsPath);
-    }
   }
 
   override setModel(model: string): void {
@@ -1073,10 +1073,10 @@ export class VirtualMemory extends AgentMemory {
           const toolResult = toolResultMap.get(callId);
           const rawResult = toolResult ? String(toolResult.content ?? "") : "";
           const resultSnippet = rawResult
-            ? (rawResult.length > 200 ? rawResult.slice(0, 200) + "..." : rawResult)
+            ? (rawResult.length > 2000 ? rawResult.slice(0, 2000) + "..." : rawResult)
             : "[result truncated during compaction]";
 
-          const argsSnippet = fnArgs.length > 100 ? fnArgs.slice(0, 100) + "..." : fnArgs;
+          const argsSnippet = fnArgs.length > 200 ? fnArgs.slice(0, 200) + "..." : fnArgs;
 
           // Summarized assistant message (no tool_calls field!)
           const flatAssistant: ChatMessage = {
@@ -1125,7 +1125,7 @@ export class VirtualMemory extends AgentMemory {
           const fnName = msg.name || "unknown_tool";
           const callId = msg.tool_call_id;
           const resultSnippet = typeof msg.content === "string"
-            ? (msg.content.length > 200 ? msg.content.slice(0, 200) + "…" : msg.content)
+            ? (msg.content.length > 2000 ? msg.content.slice(0, 2000) + "…" : msg.content)
             : "[result]";
           const syntheticAssistant: ChatMessage = Object.assign(
             { role: "assistant", content: "", from: "" } as ChatMessage,
@@ -1270,15 +1270,79 @@ export class VirtualMemory extends AgentMemory {
         this.partitionByImportance(user, tailN, shouldPageUser);
       const { older: olderSystem, keep: keepSystem } =
         this.partitionByImportance(remainingSystem, tailN, shouldPageSystem);
-      const { older: olderTool, keep: keepTools } =
-        this.partitionByImportance(tool, tailN, shouldPageTool);
+
+      // CRITICAL: Tool lane must be partitioned in coordination with the assistant
+      // lane to preserve tool_call/tool_result pairing. We first identify which
+      // tool_call_ids belong to KEPT assistant messages, then force-keep matching
+      // tool results regardless of their position in the tool lane.
+      const keptToolCallIds = new Set<string>();
+      for (const m of keepAssistant) {
+        const tc = (m as any).tool_calls;
+        if (Array.isArray(tc)) {
+          for (const c of tc) {
+            if (c?.id) keptToolCallIds.add(c.id);
+          }
+        }
+      }
+
+      let olderTool: ChatMessage[];
+      let keepTools: ChatMessage[];
+      if (!shouldPageTool) {
+        olderTool = [];
+        keepTools = tool;
+      } else {
+        // Start with the standard tail-based partition
+        const { older: candidateOlderTool, keep: baseKeepTools } =
+          this.partitionByImportance(tool, tailN, true);
+
+        // Promote tool results from "older" that pair with kept assistant tool_calls
+        const promotedFromOlder: ChatMessage[] = [];
+        const actualOlderTool: ChatMessage[] = [];
+        for (const m of candidateOlderTool) {
+          if (m.tool_call_id && keptToolCallIds.has(m.tool_call_id)) {
+            promotedFromOlder.push(m);
+          } else {
+            actualOlderTool.push(m);
+          }
+        }
+
+        // Also ensure we keep tool results from the base keep set that pair with
+        // PAGED assistant tool_calls' results don't get orphaned — the flattener
+        // will handle those. We only need to ensure kept assistant → kept tool.
+        olderTool = actualOlderTool;
+        // Merge promoted + base keep, preserving original order
+        const keepSet = new Set([...promotedFromOlder, ...baseKeepTools]);
+        keepTools = tool.filter(m => keepSet.has(m));
+      }
+
+      // Reverse coordination: if any kept tool results belong to PAGED assistant
+      // messages, promote those assistant messages back to keep set to prevent
+      // the flattener from having to synthesize pairs unnecessarily.
+      const keptToolResultIds = new Set<string>();
+      for (const m of keepTools) {
+        if (m.tool_call_id) keptToolResultIds.add(m.tool_call_id);
+      }
+      const promotedAssistant: ChatMessage[] = [];
+      const finalOlderAssistant: ChatMessage[] = [];
+      for (const m of olderAssistant) {
+        const tc = (m as any).tool_calls;
+        if (Array.isArray(tc) && tc.some((c: any) => c?.id && keptToolResultIds.has(c.id))) {
+          promotedAssistant.push(m);
+        } else {
+          finalOlderAssistant.push(m);
+        }
+      }
+      // Replace olderAssistant/keepAssistant if we promoted anything
+      const finalKeepAssistant = promotedAssistant.length > 0
+        ? assistant.filter(m => keepAssistant.includes(m) || promotedAssistant.includes(m))
+        : keepAssistant;
 
       // Create pages for each lane with older messages
       const summaries: ChatMessage[] = [];
 
-      if (olderAssistant.length >= 2) {
-        const label = `assistant lane ${new Date().toISOString().slice(0, 16)} (${olderAssistant.length} msgs)`;
-        const { summary } = await this.createPageFromMessages(olderAssistant, label, "assistant");
+      if (finalOlderAssistant.length >= 2) {
+        const label = `assistant lane ${new Date().toISOString().slice(0, 16)} (${finalOlderAssistant.length} msgs)`;
+        const { summary } = await this.createPageFromMessages(finalOlderAssistant, label, "assistant");
         summaries.push({
           role: "assistant",
           from: "VirtualMemory",
@@ -1320,7 +1384,7 @@ export class VirtualMemory extends AgentMemory {
       // We need to preserve the original message order for kept messages
       const keptSet = new Set([
         ...sysHead,
-        ...keepAssistant,
+        ...finalKeepAssistant,
         ...keepUser,
         ...keepSystem,
         ...keepTools,
@@ -1357,7 +1421,7 @@ export class VirtualMemory extends AgentMemory {
       const reclaimedMB = (parseFloat(beforeMB) - parseFloat(afterMB)).toFixed(2);
 
       // Log cleanup event with per-lane paging info
-      Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} paged=[A:${olderAssistant.length} U:${olderUser.length} S:${olderSystem.length} T:${olderTool.length}]`);
+      Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} paged=[A:${finalOlderAssistant.length} U:${olderUser.length} S:${olderSystem.length} T:${olderTool.length}]`);
     });
   }
 

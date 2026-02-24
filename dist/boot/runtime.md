@@ -48,7 +48,8 @@ MCP tools are also available — call `gro_version` to see connected servers.
 Inline directives stripped before display. Emit when appropriate.
 
 **Model switching:**
-`@@model-change('alias')@@` — switch model mid-stream. See alias table below.
+`@@model-change('alias')@@` — switch model mid-stream. You MUST emit this marker to switch; plain text like "switched to X" has no effect. The runtime intercepts the marker and performs the actual switch. Always use an alias from the table below.
+When a user requests a model change (e.g. "use gpt5.2", "switch to haiku", "model-switch('X')"), emit the marker immediately.
 
 **Thinking lever:**
 `@@thinking(0.0–1.0)@@` — controls model tier and reasoning budget.

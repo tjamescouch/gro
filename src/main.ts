@@ -1331,20 +1331,27 @@ async function executeTurn(
       await memory.pollSources();
     }
 
+    // Narration accumulator — collects segments split on avatar markers
+    const narrationSegments: { text: string; clips?: Record<string, number> }[] = [];
+    let narrationBuffer = "";
+    let narrationClips: Record<string, number> | undefined = undefined;
+
     // Create a fresh marker parser per round so partial state doesn't leak
     const markerParser = createMarkerParser({
       onToken: (t: string) => {
         rawOnToken(t);
-        if (lfsPoster) lfsPoster.postText(t);
+        if (lfsPoster) narrationBuffer += t;
       },
       onMarker: handleMarker,
       onAvatarMarker: lfsPoster ? (clips) => {
         Logger.info(`Avatar marker → ${JSON.stringify(clips)}`);
-        lfsPoster!.postAnimation(clips);
+        if (narrationBuffer.trim()) {
+          narrationSegments.push({ text: narrationBuffer, clips: narrationClips });
+          narrationBuffer = "";
+        }
+        narrationClips = clips;
       } : undefined,
     });
-
-    if (lfsPoster) lfsPoster.postTextControl("start");
 
     const output: ChatOutput = await activeDriver.chat(memory.messages(), {
       model: activeModel,
@@ -1366,9 +1373,14 @@ async function executeTurn(
     // Flush any remaining buffered tokens from the marker parser
     markerParser.flush();
 
-    // Flush remaining LFS signals
+    // Send accumulated narration segments and flush LFS
     if (lfsPoster) {
-      lfsPoster.postTextControl("end");
+      if (narrationBuffer.trim()) {
+        narrationSegments.push({ text: narrationBuffer, clips: narrationClips });
+      }
+      if (narrationSegments.length > 0) {
+        lfsPoster.postNarration(narrationSegments);
+      }
       await lfsPoster.close();
     }
 

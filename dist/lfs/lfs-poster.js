@@ -56,13 +56,9 @@ export class LfsPoster {
             Logger.debug("LFS animate post failed (server may be offline)");
         });
     }
-    /** Send a text chunk to the viewer. */
-    postText(chunk) {
-        this.post({ type: "text", chunk });
-    }
-    /** Send a text_control signal to mark response boundaries. */
-    postTextControl(action) {
-        this.post({ type: "text_control", action });
+    /** Send narration segments to the viewer for paced playback. */
+    postNarration(segments) {
+        this.post({ type: "narration", segments });
     }
     /** Flush remaining signals. Call at end of response. */
     async close() {

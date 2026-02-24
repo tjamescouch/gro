@@ -64,14 +64,9 @@ export class LfsPoster {
     });
   }
 
-  /** Send a text chunk to the viewer. */
-  postText(chunk: string): void {
-    this.post({ type: "text", chunk } as any);
-  }
-
-  /** Send a text_control signal to mark response boundaries. */
-  postTextControl(action: "start" | "end"): void {
-    this.post({ type: "text_control", action } as any);
+  /** Send narration segments to the viewer for paced playback. */
+  postNarration(segments: { text: string; clips?: Record<string, number> }[]): void {
+    this.post({ type: "narration", segments } as any);
   }
 
   /** Flush remaining signals. Call at end of response. */

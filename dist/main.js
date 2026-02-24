@@ -1290,21 +1290,27 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         if (memory instanceof SensoryMemory) {
             await memory.pollSources();
         }
+        // Narration accumulator — collects segments split on avatar markers
+        const narrationSegments = [];
+        let narrationBuffer = "";
+        let narrationClips = undefined;
         // Create a fresh marker parser per round so partial state doesn't leak
         const markerParser = createMarkerParser({
             onToken: (t) => {
                 rawOnToken(t);
                 if (lfsPoster)
-                    lfsPoster.postText(t);
+                    narrationBuffer += t;
             },
             onMarker: handleMarker,
             onAvatarMarker: lfsPoster ? (clips) => {
                 Logger.info(`Avatar marker → ${JSON.stringify(clips)}`);
-                lfsPoster.postAnimation(clips);
+                if (narrationBuffer.trim()) {
+                    narrationSegments.push({ text: narrationBuffer, clips: narrationClips });
+                    narrationBuffer = "";
+                }
+                narrationClips = clips;
             } : undefined,
         });
-        if (lfsPoster)
-            lfsPoster.postTextControl("start");
         const output = await activeDriver.chat(memory.messages(), {
             model: activeModel,
             tools: tools.length > 0 ? tools : undefined,
@@ -1324,9 +1330,14 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         });
         // Flush any remaining buffered tokens from the marker parser
         markerParser.flush();
-        // Flush remaining LFS signals
+        // Send accumulated narration segments and flush LFS
         if (lfsPoster) {
-            lfsPoster.postTextControl("end");
+            if (narrationBuffer.trim()) {
+                narrationSegments.push({ text: narrationBuffer, clips: narrationClips });
+            }
+            if (narrationSegments.length > 0) {
+                lfsPoster.postNarration(narrationSegments);
+            }
             await lfsPoster.close();
         }
         // Decay thinking level toward THINKING_MEAN if not refreshed this round.

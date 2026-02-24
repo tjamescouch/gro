@@ -84,6 +84,25 @@ function summarizeCapabilities(raw: Capabilities): string {
   lines.push(`- Bones: ${raw.bones?.length ?? 0}`);
   lines.push(`- Meshes: ${raw.meshes?.length ?? 0}`);
 
+  // Control instructions — teach the model how to animate
+  lines.push(`\n## Control`);
+  lines.push(`Embed avatar commands inline in your text using markers:`);
+  lines.push("```");
+  lines.push("@@[clip name:weight, clip name:weight]@@");
+  lines.push("```");
+  lines.push(`- Clip names match the animation names above (spaces ok)`);
+  lines.push(`- Weight is 0.0–1.0 (default 1.0 if omitted)`);
+  lines.push(`- Multiple clips can fire together for layered expressions`);
+
+  // Build examples from actual active animations
+  const activeAnims = (raw.animations ?? []).filter((a) => a.active);
+  const faceAnim = activeAnims.find((a) => a.name.includes("face") && !a.name.includes("default"));
+  const bodyAnim = activeAnims.find((a) => a.name.includes("full"));
+  const mouthAnim = activeAnims.find((a) => a.name.includes("mouth") && a.name.includes("smile"));
+  if (faceAnim && bodyAnim) {
+    lines.push(`\nExample: \`@@[${faceAnim.name}:1.0,${bodyAnim.name}:0.8${mouthAnim ? `,${mouthAnim.name}:1.0` : ""}]@@\``);
+  }
+
   return lines.join("\n");
 }
 

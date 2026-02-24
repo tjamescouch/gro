@@ -1294,6 +1294,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         const markerParser = createMarkerParser({
             onToken: rawOnToken,
             onMarker: handleMarker,
+            onAvatarMarker: lfsPoster ? (clips) => {
+                Logger.info(`Avatar marker → ${JSON.stringify(clips)}`);
+                lfsPoster.postAnimation(clips);
+            } : undefined,
         });
         const output = await activeDriver.chat(memory.messages(), {
             model: activeModel,

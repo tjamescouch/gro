@@ -16,6 +16,9 @@
  *   @@emotion('happy')@@       — set facial expression / emotion state
  *   @@importance('0.9')@@      — tag message importance (0.0-1.0) for memory paging priority
  *
+ * Avatar markers (@@[...]@@):
+ *   @@[face excited:1.0,full cheerful:0.8]@@  — animate avatar clips with weights
+ *
  * Usage:
  *   const parser = createMarkerParser({ onMarker: (name, arg) => { ... } });
  *   // Wrap your onToken callback:
@@ -39,9 +42,14 @@ export interface MarkerHandler {
   (marker: StreamMarker): void;
 }
 
+/** Parsed avatar animation command: clip name → weight (0.0–1.0). */
+export type AvatarMarkerHandler = (clips: Record<string, number>) => void;
+
 export interface MarkerParserOptions {
   /** Called when a complete marker is detected */
   onMarker: MarkerHandler;
+  /** Called when an avatar marker @@[clip:weight,...]@@ is detected */
+  onAvatarMarker?: AvatarMarkerHandler;
   /** Original onToken callback to forward clean (marker-stripped) text to */
   onToken?: (s: string) => void;
 }
@@ -64,6 +72,12 @@ const ESCAPED_MARKER_RE = /\@@/g;
 
 /** Partial marker detection — we might be mid-stream in a marker */
 const PARTIAL_MARKER_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*)?$/;
+
+/** Avatar marker: @@[clip name:weight, ...]@@ */
+const AVATAR_MARKER_RE = /@@\[([^\]@]+)\]@@/g;
+/** Partial avatar marker detection for streaming */
+const PARTIAL_AVATAR_RE = /@@\[[^\]@]*$/;
+const AVATAR_EMOJI = "\u{1F3AD}";  // 🎭
 
 /** Thinking-related marker names get 💡, everything else gets 🧠 */
 const THINKING_MARKERS = new Set(["think", "relax", "zzz", "thinking"]);
@@ -161,22 +175,53 @@ function unescapeMarkers(text: string): string {
   return text.replace(/\@@/g, "@@");
 }
 
-export function extractMarkers(text: string, onMarker: MarkerHandler): string {
+/**
+ * Parse avatar marker contents "clip name:0.8, other clip:1.0" into Record<string, number>.
+ * Each entry is "name:weight" where weight defaults to 1.0 if omitted.
+ */
+function parseAvatarClips(contents: string): Record<string, number> {
+  const clips: Record<string, number> = {};
+  for (const part of contents.split(",")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const colonIdx = trimmed.lastIndexOf(":");
+    if (colonIdx > 0) {
+      const name = trimmed.slice(0, colonIdx).trim();
+      const weight = parseFloat(trimmed.slice(colonIdx + 1));
+      clips[name] = isNaN(weight) ? 1.0 : Math.max(0, Math.min(1, weight));
+    } else {
+      clips[trimmed] = 1.0;
+    }
+  }
+  return clips;
+}
+
+export function extractMarkers(text: string, onMarker: MarkerHandler, onAvatarMarker?: AvatarMarkerHandler): string {
+  // First pass: strip avatar markers @@[...]@@ before standard marker processing
+  let preprocessed = text;
+  if (onAvatarMarker) {
+    preprocessed = text.replace(new RegExp(AVATAR_MARKER_RE.source, "g"), (_full, contents: string) => {
+      const clips = parseAvatarClips(contents);
+      try { onAvatarMarker(clips); } catch (e) { Logger.warn(`Avatar marker handler error: ${e}`); }
+      return AVATAR_EMOJI;
+    });
+  }
+
   let cleaned = "";
   let lastIndex = 0;
   const regex = new RegExp(MARKER_RE.source, "g");
   let match: RegExpExecArray | null;
 
-  while ((match = regex.exec(text)) !== null) {
+  while ((match = regex.exec(preprocessed)) !== null) {
     // Check for escaped marker — if @@ precedes, skip it
-    if (match.index > 0 && text[match.index - 1] === '\\') {
+    if (match.index > 0 && preprocessed[match.index - 1] === '\\') {
       // This is an escaped marker — treat as literal text
-      cleaned += text.slice(lastIndex, match.index + match[0].length);
+      cleaned += preprocessed.slice(lastIndex, match.index + match[0].length);
       lastIndex = match.index + match[0].length;
       continue;
     }
 
-    cleaned += text.slice(lastIndex, match.index);
+    cleaned += preprocessed.slice(lastIndex, match.index);
     const marker: StreamMarker = {
       name: match[1],
       arg: match[2] ?? match[3] ?? match[4] ?? "",
@@ -199,17 +244,27 @@ export function extractMarkers(text: string, onMarker: MarkerHandler): string {
     cleaned += markerEmoji(marker.name);
     lastIndex = match.index + match[0].length;
   }
-  cleaned += text.slice(lastIndex);
+  cleaned += preprocessed.slice(lastIndex);
   return unescapeMarkers(cleaned);
 }
 
 export function createMarkerParser(opts: MarkerParserOptions): MarkerParser {
-  const { onMarker, onToken } = opts;
+  const { onMarker, onAvatarMarker, onToken } = opts;
   let buffer = "";
   let cleanText = "";
   const markers: StreamMarker[] = [];
 
   function processBuffer(isFinal: boolean) {
+    // First: extract avatar markers @@[...]@@ before standard markers
+    if (onAvatarMarker) {
+      buffer = buffer.replace(new RegExp(AVATAR_MARKER_RE.source, "g"), (_full, contents: string) => {
+        const clips = parseAvatarClips(contents);
+        Logger.debug(`Avatar marker detected: ${JSON.stringify(clips)}`);
+        try { onAvatarMarker(clips); } catch (e) { Logger.warn(`Avatar marker handler error: ${e}`); }
+        return AVATAR_EMOJI;
+      });
+    }
+
     // Try to match complete markers in the buffer
     let lastIndex = 0;
     const regex = new RegExp(MARKER_RE.source, "g");
@@ -277,8 +332,8 @@ export function createMarkerParser(opts: MarkerParserOptions): MarkerParser {
       }
       buffer = "";
     } else {
-      // Check if the remainder could be a partial marker
-      const partialMatch = PARTIAL_MARKER_RE.exec(remainder);
+      // Check if the remainder could be a partial marker (standard or avatar)
+      const partialMatch = PARTIAL_MARKER_RE.exec(remainder) ?? PARTIAL_AVATAR_RE.exec(remainder);
       if (partialMatch) {
         // Hold back the potential partial marker, emit what's before it
         const safe = remainder.slice(0, partialMatch.index);

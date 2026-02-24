@@ -1,5 +1,5 @@
 import type { ChatDriver, ChatMessage } from "../drivers/types.js";
-import { AgentMemory, type VirtualMemoryStats } from "./agent-memory.js";
+import { AgentMemory, type CompactionHints, type VirtualMemoryStats } from "./agent-memory.js";
 import { saveSession, loadSession, ensureGroDir } from "../session.js";
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -403,6 +403,15 @@ export class VirtualMemory extends AgentMemory {
   }
 
   private forceCompactPending = false;
+
+  /** Run compaction with single-shot hints that temporarily adjust budgets/thresholds. */
+  override async compactWithHints(hints: CompactionHints): Promise<string> {
+    this.pendingCompactionHints = Object.keys(hints).length > 0 ? hints : null;
+    return await this.forceCompact();
+  }
+
+  private pendingCompactionHints: CompactionHints | null = null;
+  private overrideImportanceThreshold: number | null = null;
 
   // --- Phantom Compaction API ---
 
@@ -914,7 +923,8 @@ export class VirtualMemory extends AgentMemory {
     const older: ChatMessage[] = [];
     const promoted: ChatMessage[] = [];
     for (const m of candidatesForPaging) {
-      if ((m.importance ?? 0) >= IMPORTANCE_KEEP_THRESHOLD) {
+      const threshold = this.overrideImportanceThreshold ?? IMPORTANCE_KEEP_THRESHOLD;
+      if ((m.importance ?? 0) >= threshold) {
         promoted.push(m);
       } else {
         older.push(m);
@@ -1228,6 +1238,47 @@ export class VirtualMemory extends AgentMemory {
         this.phantomBuffer.snapshot(this.messagesBuffer, reason);
       }
 
+      // --- Apply single-shot compaction hints (if any) ---
+      const hints = this.pendingCompactionHints;
+      this.pendingCompactionHints = null;
+
+      // Save original cfg values that hints may override
+      const savedAssistantWeight = this.cfg.assistantWeight;
+      const savedUserWeight = this.cfg.userWeight;
+      const savedSystemWeight = this.cfg.systemWeight;
+      const savedToolWeight = this.cfg.toolWeight;
+      const savedMinRecent = this.cfg.minRecentPerLane;
+      const savedImportanceOverride = this.overrideImportanceThreshold;
+
+      try {
+
+      if (hints) {
+        // Apply lane_weights
+        if (hints.lane_weights) {
+          const lw = hints.lane_weights;
+          if (lw.assistant !== undefined) this.cfg.assistantWeight = lw.assistant;
+          if (lw.user !== undefined) this.cfg.userWeight = lw.user;
+          if (lw.system !== undefined) this.cfg.systemWeight = lw.system;
+          if (lw.tool !== undefined) this.cfg.toolWeight = lw.tool;
+        }
+
+        // Apply min_recent
+        if (hints.min_recent !== undefined) {
+          this.cfg.minRecentPerLane = Math.max(1, Math.round(hints.min_recent));
+        }
+
+        // Apply aggressiveness: 0.0 = keep 12, 1.0 = keep 2
+        if (hints.aggressiveness !== undefined) {
+          const a = Math.max(0, Math.min(1, hints.aggressiveness));
+          this.cfg.minRecentPerLane = Math.round(12 - a * 10);
+        }
+
+        // Apply importance_threshold
+        if (hints.importance_threshold !== undefined) {
+          this.overrideImportanceThreshold = Math.max(0, Math.min(1, hints.importance_threshold));
+        }
+      }
+
       const budgets = this.computeLaneBudgets();
 
       // Re-partition to get fresh data
@@ -1422,6 +1473,16 @@ export class VirtualMemory extends AgentMemory {
 
       // Log cleanup event with per-lane paging info
       Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} paged=[A:${finalOlderAssistant.length} U:${olderUser.length} S:${olderSystem.length} T:${olderTool.length}]`);
+
+      } finally {
+        // Restore original cfg values (single-shot semantics)
+        this.cfg.assistantWeight = savedAssistantWeight;
+        this.cfg.userWeight = savedUserWeight;
+        this.cfg.systemWeight = savedSystemWeight;
+        this.cfg.toolWeight = savedToolWeight;
+        this.cfg.minRecentPerLane = savedMinRecent;
+        this.overrideImportanceThreshold = savedImportanceOverride;
+      }
     });
   }
 

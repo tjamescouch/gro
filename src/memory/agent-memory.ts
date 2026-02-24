@@ -1,5 +1,21 @@
 import type { ChatMessage } from "../drivers/types.js";
 
+// --- Compaction Hints ---
+
+/** Single-shot hints for fine-grained control over one compaction cycle. */
+export interface CompactionHints {
+  /** Per-lane priority weights. Higher = preserve more. Auto-normalized.
+   *  Standard lanes: "assistant", "user", "system", "tool". */
+  lane_weights?: Record<string, number>;
+  /** Importance threshold (0.0-1.0) for promoting messages to keep set.
+   *  Lower = keep more. Default: 0.7 */
+  importance_threshold?: number;
+  /** Min recent messages to preserve per lane (single-shot override). */
+  min_recent?: number;
+  /** 0.0 = light cleanup, 1.0 = free maximum space. Default: 0.5 */
+  aggressiveness?: number;
+}
+
 // --- Memory Stats Interfaces ---
 
 export interface MemoryStats {
@@ -68,6 +84,11 @@ export abstract class AgentMemory {
 
   /** Update thinking budget — VirtualMemory uses this to scale compaction aggressiveness. */
   setThinkingBudget(_budget: number): void {}
+
+  /** Run compaction with single-shot hints. Override in subclasses that support compaction. */
+  async compactWithHints(_hints: CompactionHints): Promise<string> {
+    return "compact_context: this memory module does not support compaction.";
+  }
 
   messages(): ChatMessage[] {
     return [...this.messagesBuffer];

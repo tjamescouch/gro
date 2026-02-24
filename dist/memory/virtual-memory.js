@@ -85,6 +85,7 @@ export class VirtualMemory extends AgentMemory {
         this.baseWorkingMemoryTokens = null;
         this.baseHighRatio = null;
         this.baseMinRecentPerLane = null;
+        this.currentThinkingBudget = null;
         this.forceCompactPending = false;
         const pagesDir = config.sessionId
             ? join(DEFAULTS.pagesDir, config.sessionId)
@@ -128,6 +129,7 @@ export class VirtualMemory extends AgentMemory {
         this.model = model;
     }
     setThinkingBudget(budget) {
+        this.currentThinkingBudget = budget;
         // Capture baselines on first call
         if (this.baseWorkingMemoryTokens === null) {
             this.baseWorkingMemoryTokens = this.cfg.workingMemoryTokens;
@@ -600,6 +602,20 @@ export class VirtualMemory extends AgentMemory {
                 break;
             }
         }
+        // Sanitize window back: ensure it doesn't end with an assistant message whose
+        // tool_calls have no following tool results (causes "prefill" / orphaned tool_use errors).
+        while (window.length > 0) {
+            const last = window[window.length - 1];
+            if (last.role === 'assistant' &&
+                Array.isArray(last.tool_calls) &&
+                last.tool_calls.length > 0) {
+                // Assistant with tool_calls at end of window — its results were cut off. Drop it.
+                window.pop();
+            }
+            else {
+                break;
+            }
+        }
         result.push(...window);
         // Safety cap: verify total context size doesn't exceed a hard limit.
         // Even with accurate token estimation, defend against edge cases where
@@ -916,9 +932,30 @@ export class VirtualMemory extends AgentMemory {
                 if (consumedToolCallIds.has(msg.tool_call_id)) {
                     continue;
                 }
-                // Dangling tool result — no matching assistant tool_calls anywhere
+                // Dangling tool result — no matching assistant tool_calls anywhere.
+                // Instead of dropping it (which loses context), create a synthetic
+                // assistant+tool pair with proper tool_calls structure to preserve the information.
                 if (!allCallIds.has(msg.tool_call_id)) {
-                    Logger.warn(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — skipping`);
+                    Logger.warn(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — wrapping in synthetic pair`);
+                    const fnName = msg.name || "unknown_tool";
+                    const callId = msg.tool_call_id;
+                    const resultSnippet = typeof msg.content === "string"
+                        ? (msg.content.length > 200 ? msg.content.slice(0, 200) + "…" : msg.content)
+                        : "[result]";
+                    const syntheticAssistant = Object.assign({ role: "assistant", content: "", from: "" }, { tool_calls: [{
+                                id: callId,
+                                type: "function",
+                                function: { name: fnName, arguments: "{}" },
+                            }] });
+                    const syntheticTool = {
+                        role: "tool",
+                        from: fnName,
+                        content: `[recovered from compaction] ${resultSnippet}`,
+                        tool_call_id: callId,
+                        name: fnName,
+                    };
+                    output.push(syntheticAssistant, syntheticTool);
+                    flattenCount++;
                     continue;
                 }
                 // Belongs to a properly-split pair not yet reached, or other valid state
@@ -1161,6 +1198,58 @@ export class VirtualMemory extends AgentMemory {
     getActivePageIds() { return Array.from(this.activePageIds); }
     getPageCount() { return this.pages.size; }
     hasPage(id) { return this.pages.has(id); }
+    getStats() {
+        // System prompt tokens (first message if system role)
+        const sysMsg = this.messagesBuffer.length > 0 && this.messagesBuffer[0].role === "system"
+            ? this.messagesBuffer[0] : null;
+        const systemTokens = sysMsg ? this.msgTokens([sysMsg]) : 0;
+        // Partition non-system messages by role for lane stats
+        const laneCounts = {};
+        let pinnedCount = 0;
+        for (const m of this.messagesBuffer) {
+            if (m === sysMsg)
+                continue; // skip system prompt
+            const role = m.role;
+            if (!laneCounts[role])
+                laneCounts[role] = { count: 0, chars: 0 };
+            laneCounts[role].count++;
+            laneCounts[role].chars += String(m.content ?? "").length + 32;
+            if ((m.importance ?? 0) >= 0.7)
+                pinnedCount++;
+        }
+        const lanes = Object.entries(laneCounts).map(([role, data]) => ({
+            role,
+            tokens: Math.ceil(data.chars / this.cfg.avgCharsPerToken),
+            count: data.count,
+        }));
+        const wmUsed = this.msgTokens(this.messagesBuffer.filter(m => m !== sysMsg));
+        // Compute actual page slot usage from loaded page metadata
+        let pageSlotUsed = 0;
+        for (const id of this.activePageIds) {
+            const page = this.pages.get(id);
+            if (page)
+                pageSlotUsed += page.tokens;
+        }
+        return {
+            type: "virtual",
+            totalMessages: this.messagesBuffer.length,
+            totalTokensEstimate: this.msgTokens(this.messagesBuffer),
+            bufferMessages: this.messagesBuffer.length,
+            systemTokens,
+            workingMemoryBudget: this.cfg.workingMemoryTokens,
+            workingMemoryUsed: wmUsed,
+            pageSlotBudget: this.cfg.pageSlotTokens,
+            pageSlotUsed,
+            pagesAvailable: this.pages.size,
+            pagesLoaded: this.activePageIds.size,
+            highRatio: this.cfg.highRatio,
+            compactionActive: this.isSummarizing,
+            thinkingBudget: this.currentThinkingBudget,
+            lanes,
+            pinnedMessages: pinnedCount,
+            model: this.model,
+        };
+    }
     /**
      * Start the batch worker subprocess.
      */

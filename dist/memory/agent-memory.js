@@ -3,6 +3,8 @@
  * Subclasses call `runOnce` to serialize/queue summarization so callers never block.
  */
 export class AgentMemory {
+    /** Whether a background summarization/compaction is currently running. */
+    get isSummarizing() { return this.summarizing; }
     constructor(systemPrompt) {
         this.messagesBuffer = [];
         this.summarizing = false;
@@ -28,6 +30,20 @@ export class AgentMemory {
     setThinkingBudget(_budget) { }
     messages() {
         return [...this.messagesBuffer];
+    }
+    /** Return standardized stats about current memory state. Override in subclasses for richer data. */
+    getStats() {
+        const avgCharsPerToken = 2.8;
+        let totalChars = 0;
+        for (const m of this.messagesBuffer) {
+            totalChars += String(m.content ?? "").length + 32;
+        }
+        return {
+            type: "base",
+            totalMessages: this.messagesBuffer.length,
+            totalTokensEstimate: Math.ceil(totalChars / avgCharsPerToken),
+            bufferMessages: this.messagesBuffer.length,
+        };
     }
     nonSystemCount() {
         if (this.messagesBuffer.length === 0)

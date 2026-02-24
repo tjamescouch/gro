@@ -33,5 +33,9 @@ export class SimpleMemory extends AgentMemory {
             createdAt: new Date().toISOString(),
         });
     }
+    getStats() {
+        const stats = super.getStats();
+        return { ...stats, type: "simple" };
+    }
     async onAfterAdd() { }
 }

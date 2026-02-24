@@ -24,6 +24,8 @@ export class ViolationTracker {
         this.consecutiveListenOnly = 0;
         this.consecutiveSameToolCount = 0;
         this.lastToolName = null;
+        /** When true, agent has declared it is intentionally sleeping — suppress idle/loop violations. */
+        this.sleeping = false;
         this.idleThreshold = opts?.idleThreshold ?? 3;
         this.sameToolThreshold = opts?.sameToolThreshold ?? 5;
     }
@@ -70,10 +72,42 @@ export class ViolationTracker {
         });
     }
     /**
+     * Set or clear sleep mode. When sleeping, idle and same-tool-loop checks are
+     * suppressed — the agent has explicitly declared it is in a blocking listen
+     * via the 🧠 stream marker.
+     *
+     * Sleep mode is automatically cleared when a non-listen tool is used
+     * (see checkIdleRound / checkSameToolLoop auto-wake logic).
+     */
+    setSleeping(flag) {
+        if (flag === this.sleeping)
+            return;
+        this.sleeping = flag;
+        if (flag) {
+            // Reset consecutive counters so we start clean when we wake
+            this.consecutiveListenOnly = 0;
+            this.consecutiveSameToolCount = 0;
+            this.lastToolName = null;
+            Logger.info("ViolationTracker: sleep mode ON — idle/loop checks suppressed");
+        }
+        else {
+            Logger.info("ViolationTracker: sleep mode OFF — violation checks resumed");
+        }
+    }
+    isSleeping() {
+        return this.sleeping;
+    }
+    /**
      * Check tool calls from a round to detect idle behavior.
      * Returns true if an idle violation was recorded.
      */
     checkIdleRound(toolNames) {
+        // Auto-wake: non-listen tool usage ends sleep mode
+        if (this.sleeping && toolNames.some(n => !LISTEN_TOOLS.has(n))) {
+            this.setSleeping(false);
+        }
+        if (this.sleeping)
+            return false;
         const allListen = toolNames.length > 0 && toolNames.every(n => LISTEN_TOOLS.has(n));
         if (allListen) {
             this.consecutiveListenOnly++;
@@ -92,6 +126,12 @@ export class ViolationTracker {
      * Returns the tool name if a same_tool_loop violation should fire, null otherwise.
      */
     checkSameToolLoop(toolNames) {
+        // Auto-wake: non-listen tool usage ends sleep mode
+        if (this.sleeping && toolNames.some(n => !LISTEN_TOOLS.has(n))) {
+            this.setSleeping(false);
+        }
+        if (this.sleeping)
+            return null;
         // Only track single-tool rounds
         if (toolNames.length !== 1) {
             this.consecutiveSameToolCount = 0;

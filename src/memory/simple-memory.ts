@@ -1,5 +1,5 @@
 import type { ChatMessage } from "../drivers/types.js";
-import { AgentMemory } from "./agent-memory.js";
+import { AgentMemory, type MemoryStats } from "./agent-memory.js";
 import { saveSession, loadSession, ensureGroDir } from "../session.js";
 
 /**
@@ -39,6 +39,11 @@ export class SimpleMemory extends AgentMemory {
       model: this.model,
       createdAt: new Date().toISOString(),
     });
+  }
+
+  override getStats(): MemoryStats {
+    const stats = super.getStats();
+    return { ...stats, type: "simple" };
   }
 
   protected async onAfterAdd(): Promise<void> {}

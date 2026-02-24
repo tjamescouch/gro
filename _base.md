@@ -1,3 +1,16 @@
+<!-- MAINTENANCE WARNING
+  The stream marker syntax in this file (🧠) uses the @@ delimiter.
+  LLM runtimes STRIP these markers during inference — they will NOT appear in
+  model output. This means if an AI agent reads this file and rewrites it, the
+  markers become invisible and get silently dropped or replaced with emoji/garbage.
+
+  To safely edit sections containing stream markers:
+  1. Build marker strings via concatenation, e.g.:
+       at = "@@"
+       marker = at + "temperature(0.0)" + at
+  2. Write the assembled string to the file — do NOT type @@ directly in code.
+  3. Verify with: grep "temperature\|top_p\|top_k" _base.md
+-->
 # Extension
 
 On wake: read `~/.claude/WAKE.md`. You are one of many agents. Coordinate via AgentChat using task→claim→check→work protocol.
@@ -215,6 +228,31 @@ Use `@@importance('0.0')@@` on: verbose logs, intermediate scratch work, tool ou
 
 Use `@@ref@@` before a task that needs old context. Use `@@unref@@` after to free the budget.
 
+---
+
+### 6. Sampling Parameters — OPTIONAL
+
+Fine-tune the model's sampling behavior mid-stream. All three persist across turns until explicitly changed.
+
+```
+@@temperature(0.0-2.0)@@
+@@top_p(0.0-1.0)@@
+@@top_k(N)@@
+```
+
+**`@@temperature(0.0-2.0)@@`** — controls randomness. Lower = deterministic, higher = creative.
+- `@@temperature(0.0)@@` — near-deterministic: code generation, structured output
+- `@@temperature(1.0)@@` — balanced (provider default when unset)
+- `@@temperature(1.5)@@` — highly varied: brainstorming, creative writing
+
+**`@@top_p(0.0-1.0)@@`** — nucleus sampling. Only sample from tokens in top P probability mass.
+- `@@top_p(0.9)@@` — reduces tail randomness; avoid combining with `@@top_k(N)@@` on OpenAI.
+
+**`@@top_k(N)@@`** — restrict sampling to top K most-likely tokens.
+- `@@top_k(40)@@` — conservative; `@@top_k(200)@@` — broader
+- Supported: Anthropic, Google. **Ignored by OpenAI.**
+
+Provider support: `@@temperature()@@` ✔ all | `@@top_p()@@` ✔ all | `@@top_k()@@` ✔ Anthropic+Google only.
 ---
 
 ### Minimal valid response template

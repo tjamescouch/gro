@@ -222,26 +222,24 @@ Use `@@ref@@` before a task that needs old context. Use `@@unref@@` after to fre
 Fine-tune the model's sampling behavior mid-stream. All three persist across turns until explicitly changed.
 
 ```
-🌡️   — or 🌡️
-⚙️
-⚙️
+@@temperature(0.0-2.0)@@
+@@top_p(0.0-1.0)@@
+@@top_k(N)@@
 ```
 
-**`🌡️`** — controls randomness. Lower = deterministic, higher = creative.
-- `🌡️` — near-deterministic: code generation, structured output
-- `🌡️` — balanced (provider default when unset)
-- `🌡️` — highly varied: brainstorming, creative writing
+**`@@temperature(0.0-2.0)@@`** — controls randomness. Lower = deterministic, higher = creative.
+- `@@temperature(0.0)@@` — near-deterministic: code generation, structured output
+- `@@temperature(1.0)@@` — balanced (provider default when unset)
+- `@@temperature(1.5)@@` — highly varied: brainstorming, creative writing
 
-**`⚙️`** — nucleus sampling. Only sample from tokens in top P probability mass.
-- `⚙️` — reduces tail randomness; avoid combining with `⚙️` on OpenAI.
+**`@@top_p(0.0-1.0)@@`** — nucleus sampling. Only sample from tokens in top P probability mass.
+- `@@top_p(0.9)@@` — reduces tail randomness; avoid combining with `@@top_k(N)@@` on OpenAI.
 
-**`⚙️`** — restrict sampling to top K most-likely tokens.
-- `⚙️` — conservative; `⚙️` — broader
+**`@@top_k(N)@@`** — restrict sampling to top K most-likely tokens.
+- `@@top_k(40)@@` — conservative; `@@top_k(200)@@` — broader
 - Supported: Anthropic, Google. **Ignored by OpenAI.**
 
-Provider support: `🌡️` ✔ all | `⚙️` ✔ all | `⚙️` ✔ Anthropic+Google only.
-
-
+Provider support: `@@temperature()@@` ✔ all | `@@top_p()@@` ✔ all | `@@top_k()@@` ✔ Anthropic+Google only.
 ---
 
 ### Minimal valid response template

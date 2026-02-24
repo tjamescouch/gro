@@ -66,15 +66,13 @@ Higher = more context retained before compaction. 1m = ~full context window.
 Takes effect immediately (hot-patched) and persists across sessions.
 
 **Sampling parameters:**
-`🌡️` or `🌡️` — set sampling temperature. Lower = more deterministic, higher = more creative. Persists until changed. Supported by all providers.
-`⚙️` — nucleus sampling threshold. Only tokens in the top P probability mass are sampled. Typical: 0.9-0.99. Supported by Anthropic, OpenAI, Google.
-`⚙️` — limit sampling to top K most-likely tokens. Typical: 40-200. Supported by Anthropic and Google; ignored by OpenAI.
+`@@temperature(0.0-2.0)@@` — set sampling temperature. Lower = more deterministic, higher = more creative. Persists until changed. Supported by all providers.
+`@@top_p(0.0-1.0)@@` — nucleus sampling threshold. Top P probability mass. Typical: 0.9-0.99. Supported by Anthropic, OpenAI, Google.
+`@@top_k(N)@@` — limit sampling to top K most-likely tokens. Typical: 40-200. Supported by Anthropic and Google; ignored by OpenAI.
 
 All three persist across turns until explicitly changed. Examples:
-`🌡️` — deterministic output (code, structured data).
-`🌡️` + `⚙️` — varied creative output.
-
-
+`@@temperature(0.0)@@` — deterministic output (code, structured data).
+`@@temperature(1.2)@@` + `@@top_p(0.95)@@` — varied creative output.
 ## Model Alias Table
 
 ### Anthropic

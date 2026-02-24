@@ -860,7 +860,7 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       maxTokens: 150,
       updateMode: "every_turn",
       content: "",
-      enabled: true,
+      enabled: false,
       source: taskSource,
     });
     return sensory;

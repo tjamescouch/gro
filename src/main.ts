@@ -33,6 +33,8 @@ import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/
 import type { AgentMemory } from "./memory/agent-memory.js";
 import { SensoryMemory } from "./memory/sensory-memory.js";
 import { ContextMapSource } from "./memory/context-map-source.js";
+import { TemporalSource } from "./memory/temporal-source.js";
+import { TaskSource } from "./memory/task-source.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
@@ -835,6 +837,26 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       enabled: true,
       source: contextMap,
     });
+    // Temporal camera — disabled by default, enable with 🧠
+    const temporal = new TemporalSource({ sessionStart: Date.now() });
+    sensory.addChannel({
+      name: "time",
+      maxTokens: 150,
+      updateMode: "every_turn",
+      content: "",
+      enabled: false,
+      source: temporal,
+    });
+    // Task camera — disabled by default, enable with 🧠
+    const tasks = new TaskSource();
+    sensory.addChannel({
+      name: "tasks",
+      maxTokens: 150,
+      updateMode: "every_turn",
+      content: "",
+      enabled: false,
+      source: tasks,
+    });
     return sensory;
   } catch (err) {
     Logger.warn(`Failed to initialize sensory memory: ${err}`);
@@ -1304,13 +1326,24 @@ async function executeTurn(
        } else {
          Logger.warn(`Stream marker: max-context('${marker.arg}') — invalid size (min 1024 tokens, got ${tokens})`);
        }
-     } else if (marker.name === "sense") {
-       if (memory instanceof SensoryMemory) {
-         const parts = marker.arg.split(",").map(s => s.trim());
-         memory.onSenseMarker(parts[0] || "", parts[1] || "");
-         Logger.info(`Stream marker: sense('${parts[0]}','${parts[1] || ""}')`);
-       }
-     }
+    } else if (marker.name === "sense") {
+      if (memory instanceof SensoryMemory) {
+        const parts = marker.arg.split(",").map(s => s.trim());
+        memory.onSenseMarker(parts[0] || "", parts[1] || "");
+        Logger.info(`Stream marker: sense('${parts[0]}','${parts[1] || ""}')`);
+      }
+    } else if (marker.name === "view") {
+      // 🧠 / 🧠 / 🧠
+      // Enables the named camera and disables all others (single active slot)
+      if (memory instanceof SensoryMemory) {
+        const viewName = marker.arg.trim();
+        const knownViews = ["context", "time", "tasks"];
+        for (const v of knownViews) {
+          memory.setEnabled(v, v === viewName);
+        }
+        Logger.info(`Stream marker: view('${viewName}')`);
+      }
+    }
     };
 
     // Select model tier based on current thinking budget (unless agent pinned a model explicitly)

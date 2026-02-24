@@ -47,6 +47,7 @@ import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
+import { toolRegistry } from "./plugins/tool-registry.js";
 import { ViolationTracker } from "./violations.js";
 import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
 import {
@@ -909,6 +910,7 @@ async function executeTurn(
   tools.push(writeToolDefinition());
   tools.push(globToolDefinition());
   tools.push(grepToolDefinition());
+  tools.push(...toolRegistry.getToolDefinitions());
   runtimeState.beginTurn({ model: cfg.model, maxToolRounds: cfg.maxToolRounds });
 
   let finalText = "";
@@ -932,6 +934,10 @@ async function executeTurn(
     lfsExtractor = new SignalExtractor();
     lfsPoster = new LfsPoster(cfg.lfs as string);
     Logger.info(`LFS enabled → ${cfg.lfs}`);
+    if (!toolRegistry.has("discover_avatar")) {
+      const { registerVisageTools } = await import("./plugins/visage/index.js");
+      registerVisageTools(cfg.lfs as string);
+    }
   }
 
   const THINKING_MEAN = 0.5;  // cruising altitude — mid-tier, not idle
@@ -1605,7 +1611,12 @@ Do not get stuck calling ${idleToolName} repeatedly.`
         } else if (fnName === "Grep") {
           result = executeGrep(fnArgs);
         } else {
-          result = await mcp.callTool(fnName, fnArgs);
+          const pluginResult = await toolRegistry.callTool(fnName, fnArgs);
+          if (pluginResult !== undefined) {
+            result = pluginResult;
+          } else {
+            result = await mcp.callTool(fnName, fnArgs);
+          }
         }
       } catch (e: unknown) {
         roundHadFailure = true;

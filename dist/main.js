@@ -43,6 +43,7 @@ import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
+import { toolRegistry } from "./plugins/tool-registry.js";
 import { ViolationTracker } from "./violations.js";
 import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
 import { loadModelConfig, resolveModelAlias, isKnownAlias, defaultModel, modelIdPrefixPattern, inferProvider, } from "./model-config.js";
@@ -845,6 +846,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     tools.push(writeToolDefinition());
     tools.push(globToolDefinition());
     tools.push(grepToolDefinition());
+    tools.push(...toolRegistry.getToolDefinitions());
     runtimeState.beginTurn({ model: cfg.model, maxToolRounds: cfg.maxToolRounds });
     let finalText = "";
     let turnTokensIn = 0;
@@ -864,6 +866,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         lfsExtractor = new SignalExtractor();
         lfsPoster = new LfsPoster(cfg.lfs);
         Logger.info(`LFS enabled → ${cfg.lfs}`);
+        if (!toolRegistry.has("discover_avatar")) {
+            const { registerVisageTools } = await import("./plugins/visage/index.js");
+            registerVisageTools(cfg.lfs);
+        }
     }
     const THINKING_MEAN = 0.5; // cruising altitude — mid-tier, not idle
     const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle round
@@ -1559,7 +1565,13 @@ Do not get stuck calling ${idleToolName} repeatedly.`
                     result = executeGrep(fnArgs);
                 }
                 else {
-                    result = await mcp.callTool(fnName, fnArgs);
+                    const pluginResult = await toolRegistry.callTool(fnName, fnArgs);
+                    if (pluginResult !== undefined) {
+                        result = pluginResult;
+                    }
+                    else {
+                        result = await mcp.callTool(fnName, fnArgs);
+                    }
                 }
             }
             catch (e) {

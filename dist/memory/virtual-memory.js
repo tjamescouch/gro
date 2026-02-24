@@ -27,8 +27,8 @@ function getSummarizerPromptBase() {
 }
 const DEFAULTS = {
     pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
-    pageSlotTokens: parseInt(process.env.GRO_PAGE_SLOT_TOKENS ?? "6000"),
-    workingMemoryTokens: parseInt(process.env.GRO_WORKING_MEMORY_TOKENS ?? "6000"),
+    pageSlotTokens: parseInt(process.env.GRO_PAGE_SLOT_TOKENS ?? "18000"),
+    workingMemoryTokens: parseInt(process.env.GRO_WORKING_MEMORY_TOKENS ?? "18000"),
     assistantWeight: parseInt(process.env.GRO_ASSISTANT_WEIGHT ?? "8"),
     userWeight: parseInt(process.env.GRO_USER_WEIGHT ?? "4"),
     systemWeight: parseInt(process.env.GRO_SYSTEM_WEIGHT ?? "3"),

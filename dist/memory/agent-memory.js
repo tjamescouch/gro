@@ -3,6 +3,8 @@
  * Subclasses call `runOnce` to serialize/queue summarization so callers never block.
  */
 export class AgentMemory {
+    /** Whether a background summarization/compaction is currently running. */
+    get isSummarizing() { return this.summarizing; }
     constructor(systemPrompt) {
         this.messagesBuffer = [];
         this.summarizing = false;

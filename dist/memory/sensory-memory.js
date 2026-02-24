@@ -66,21 +66,43 @@ export class SensoryMemory extends AgentMemory {
             }
         }
     }
-    /** Handle @@sense@@ marker from stream. */
-    onSenseMarker(action, value) {
-        if (action === "off" || action === "disable") {
-            if (value) {
-                this.setEnabled(value, false);
+    /** Handle @@sense@@ marker from stream. Args: channel (or action), action. */
+    onSenseMarker(channelOrAction, action) {
+        // If first arg is an action keyword with no channel → apply to all channels
+        // Otherwise first arg is channel name, second is action
+        const isAction = (s) => ["off", "disable", "on", "enable"].includes(s);
+        let channel;
+        let op;
+        if (isAction(channelOrAction) && !action) {
+            // @@sense('off')@@ — disable all
+            channel = "";
+            op = channelOrAction;
+        }
+        else if (!isAction(channelOrAction) && isAction(action)) {
+            // @@sense('context,off')@@ — channel first, action second
+            channel = channelOrAction;
+            op = action;
+        }
+        else if (isAction(channelOrAction)) {
+            // @@sense('off,context')@@ — action first, channel second (legacy compat)
+            channel = action;
+            op = channelOrAction;
+        }
+        else {
+            return; // unrecognized
+        }
+        if (op === "off" || op === "disable") {
+            if (channel) {
+                this.setEnabled(channel, false);
             }
             else {
-                // Disable all channels
                 for (const ch of this.channels.values())
                     ch.enabled = false;
             }
         }
-        else if (action === "on" || action === "enable") {
-            if (value) {
-                this.setEnabled(value, true);
+        else if (op === "on" || op === "enable") {
+            if (channel) {
+                this.setEnabled(channel, true);
             }
             else {
                 for (const ch of this.channels.values())
@@ -94,8 +116,12 @@ export class SensoryMemory extends AgentMemory {
     }
     setInner(newInner) {
         this.inner = newInner;
-        // Update any sources that hold a reference to the inner memory
-        // (ContextMapSource constructor takes the inner memory ref)
+        // Update sources that hold a reference to the inner memory
+        for (const ch of this.channels.values()) {
+            if (ch.source && "setMemory" in ch.source && typeof ch.source.setMemory === "function") {
+                ch.source.setMemory(newInner);
+            }
+        }
     }
     // --- Render ---
     renderBuffer() {

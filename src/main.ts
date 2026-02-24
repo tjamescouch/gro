@@ -910,7 +910,6 @@ async function executeTurn(
   tools.push(writeToolDefinition());
   tools.push(globToolDefinition());
   tools.push(grepToolDefinition());
-  tools.push(...toolRegistry.getToolDefinitions());
   runtimeState.beginTurn({ model: cfg.model, maxToolRounds: cfg.maxToolRounds });
 
   let finalText = "";
@@ -939,6 +938,8 @@ async function executeTurn(
       registerVisageTools(cfg.lfs as string);
     }
   }
+  // Merge plugin-registered tools (must come after plugin loading above)
+  tools.push(...toolRegistry.getToolDefinitions());
 
   const THINKING_MEAN = 0.5;  // cruising altitude — mid-tier, not idle
   const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle round

@@ -292,6 +292,14 @@ export function makeAnthropicDriver(cfg) {
             Logger.warn("All messages were filtered during conversion — injecting fallback user message");
             apiMessages.push({ role: "user", content: "(continue)" });
         }
+        // Guard: conversation must end with a user message (Anthropic rejects assistant-prefill).
+        // After compaction + orphan stripping, the last message can be an assistant message
+        // (e.g. all its tool_use blocks were stripped, leaving only text).
+        const lastApiMsg = apiMessages[apiMessages.length - 1];
+        if (lastApiMsg && lastApiMsg.role === "assistant") {
+            Logger.warn("Conversation ends with assistant message after conversion — appending user continuation");
+            apiMessages.push({ role: "user", content: "(continue)" });
+        }
         const thinkingBudget = opts?.thinkingBudget ?? 0;
         // Reserve 30% of max_tokens for completion output, allocate 70% to thinking budget.
         // E.g., maxTokens=4096, thinkingBudget=0.8 → thinking gets ~2293 tokens, output ~1803

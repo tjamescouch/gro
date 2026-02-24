@@ -760,6 +760,22 @@ export class VirtualMemory extends AgentMemory {
       }
     }
 
+    // Sanitize window back: ensure it doesn't end with an assistant message whose
+    // tool_calls have no following tool results (causes "prefill" / orphaned tool_use errors).
+    while (window.length > 0) {
+      const last = window[window.length - 1];
+      if (
+        last.role === 'assistant' &&
+        Array.isArray((last as any).tool_calls) &&
+        (last as any).tool_calls.length > 0
+      ) {
+        // Assistant with tool_calls at end of window — its results were cut off. Drop it.
+        window.pop();
+      } else {
+        break;
+      }
+    }
+
     result.push(...window);
 
     // Safety cap: verify total context size doesn't exceed a hard limit.
@@ -1101,9 +1117,33 @@ export class VirtualMemory extends AgentMemory {
           continue;
         }
 
-        // Dangling tool result — no matching assistant tool_calls anywhere
+        // Dangling tool result — no matching assistant tool_calls anywhere.
+        // Instead of dropping it (which loses context), create a synthetic
+        // assistant+tool pair with proper tool_calls structure to preserve the information.
         if (!allCallIds.has(msg.tool_call_id)) {
-          Logger.warn(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — skipping`);
+          Logger.warn(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — wrapping in synthetic pair`);
+          const fnName = msg.name || "unknown_tool";
+          const callId = msg.tool_call_id;
+          const resultSnippet = typeof msg.content === "string"
+            ? (msg.content.length > 200 ? msg.content.slice(0, 200) + "…" : msg.content)
+            : "[result]";
+          const syntheticAssistant: ChatMessage = Object.assign(
+            { role: "assistant", content: "", from: "" } as ChatMessage,
+            { tool_calls: [{
+              id: callId,
+              type: "function" as const,
+              function: { name: fnName, arguments: "{}" },
+            }] }
+          );
+          const syntheticTool: ChatMessage = {
+            role: "tool",
+            from: fnName,
+            content: `[recovered from compaction] ${resultSnippet}`,
+            tool_call_id: callId,
+            name: fnName,
+          };
+          output.push(syntheticAssistant, syntheticTool);
+          flattenCount++;
           continue;
         }
 

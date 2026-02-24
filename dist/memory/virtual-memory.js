@@ -602,6 +602,20 @@ export class VirtualMemory extends AgentMemory {
                 break;
             }
         }
+        // Sanitize window back: ensure it doesn't end with an assistant message whose
+        // tool_calls have no following tool results (causes "prefill" / orphaned tool_use errors).
+        while (window.length > 0) {
+            const last = window[window.length - 1];
+            if (last.role === 'assistant' &&
+                Array.isArray(last.tool_calls) &&
+                last.tool_calls.length > 0) {
+                // Assistant with tool_calls at end of window — its results were cut off. Drop it.
+                window.pop();
+            }
+            else {
+                break;
+            }
+        }
         result.push(...window);
         // Safety cap: verify total context size doesn't exceed a hard limit.
         // Even with accurate token estimation, defend against edge cases where
@@ -918,9 +932,30 @@ export class VirtualMemory extends AgentMemory {
                 if (consumedToolCallIds.has(msg.tool_call_id)) {
                     continue;
                 }
-                // Dangling tool result — no matching assistant tool_calls anywhere
+                // Dangling tool result — no matching assistant tool_calls anywhere.
+                // Instead of dropping it (which loses context), create a synthetic
+                // assistant+tool pair with proper tool_calls structure to preserve the information.
                 if (!allCallIds.has(msg.tool_call_id)) {
-                    Logger.warn(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — skipping`);
+                    Logger.warn(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — wrapping in synthetic pair`);
+                    const fnName = msg.name || "unknown_tool";
+                    const callId = msg.tool_call_id;
+                    const resultSnippet = typeof msg.content === "string"
+                        ? (msg.content.length > 200 ? msg.content.slice(0, 200) + "…" : msg.content)
+                        : "[result]";
+                    const syntheticAssistant = Object.assign({ role: "assistant", content: "", from: "" }, { tool_calls: [{
+                                id: callId,
+                                type: "function",
+                                function: { name: fnName, arguments: "{}" },
+                            }] });
+                    const syntheticTool = {
+                        role: "tool",
+                        from: fnName,
+                        content: `[recovered from compaction] ${resultSnippet}`,
+                        tool_call_id: callId,
+                        name: fnName,
+                    };
+                    output.push(syntheticAssistant, syntheticTool);
+                    flattenCount++;
                     continue;
                 }
                 // Belongs to a properly-split pair not yet reached, or other valid state

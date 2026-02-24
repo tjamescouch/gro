@@ -5,10 +5,17 @@
  * environment state, etc.) as a system message right after the system prompt.
  * Zero changes to existing memory modules — works with all memory types.
  *
+ * Two-slot camera system: slot0 and slot1 are both agent-switchable via the
+ * stream marker. Default: slot0="context", slot1="time".
+ * Use <view:X> to set slot0, <view:X,1> to set slot1.
+ *
  * Usage:
  *   const inner = new VirtualMemory({ ... });
  *   const sensory = new SensoryMemory(inner, { totalBudget: 500 });
  *   sensory.addChannel({ name: "context", ... source: contextMapSource });
+ *   sensory.addChannel({ name: "time",    ... source: temporalSource });
+ *   sensory.setSlot(0, "context");
+ *   sensory.setSlot(1, "time");
  *   // Before each turn:
  *   await sensory.pollSources();
  *   const msgs = sensory.messages(); // inner messages + sensory buffer at index 1
@@ -48,6 +55,8 @@ export class SensoryMemory extends AgentMemory {
   private channels: Map<string, SensoryChannel> = new Map();
   private totalBudget: number;
   private avgCharsPerToken: number;
+  /** Two camera slots — both agent-switchable. null = slot disabled. */
+  private slots: [string | null, string | null] = [null, null];
 
   constructor(inner: AgentMemory, config: SensoryMemoryConfig = {}) {
     // Don't pass systemPrompt — inner already has it
@@ -82,6 +91,31 @@ export class SensoryMemory extends AgentMemory {
     // Enforce per-channel token limit
     const maxChars = ch.maxTokens * this.avgCharsPerToken;
     ch.content = content.length > maxChars ? content.slice(0, maxChars) + "..." : content;
+  }
+
+  // --- Camera slot management ---
+
+  /**
+   * Set a camera slot to a named channel.
+   * @param slot 0 or 1
+   * @param channelName name of a registered channel, or null to clear slot
+   */
+  setSlot(slot: 0 | 1, channelName: string | null): void {
+    this.slots[slot] = channelName;
+    Logger.info(`[Sensory] slot${slot} → ${channelName ?? "off"}`);
+  }
+
+  getSlot(slot: 0 | 1): string | null {
+    return this.slots[slot];
+  }
+
+  /** Switch a camera slot. If channelName exists, activate it. */
+  switchView(channelName: string, slot: 0 | 1 = 0): void {
+    if (!this.channels.has(channelName)) {
+      Logger.warn(`[Sensory] switchView: unknown channel '${channelName}'`);
+      return;
+    }
+    this.setSlot(slot, channelName);
   }
 
   /** Poll all every_turn sources for fresh content. Call before driver.chat(). */
@@ -157,16 +191,31 @@ export class SensoryMemory extends AgentMemory {
   // --- Render ---
 
   private renderBuffer(): string {
-    const enabled = Array.from(this.channels.values()).filter(ch => ch.enabled && ch.content);
-    if (enabled.length === 0) return "";
+    // Gather content from the two camera slots (in order)
+    const slotContents: Array<{ name: string; content: string }> = [];
+    for (const slotName of this.slots) {
+      if (!slotName) continue;
+      const ch = this.channels.get(slotName);
+      if (ch && ch.enabled && ch.content) {
+        slotContents.push({ name: slotName, content: ch.content });
+      }
+    }
+
+    // Fallback: if no slots configured, render all enabled channels (legacy)
+    const items = slotContents.length > 0
+      ? slotContents
+      : Array.from(this.channels.values())
+          .filter(ch => ch.enabled && ch.content)
+          .map(ch => ({ name: ch.name, content: ch.content }));
+
+    if (items.length === 0) return "";
 
     const parts: string[] = [];
     let totalChars = 0;
     const maxChars = this.totalBudget * this.avgCharsPerToken;
 
-    for (const ch of enabled) {
-      const header = `[${ch.name}]`;
-      const section = `${header}\n${ch.content}`;
+    for (const item of items) {
+      const section = `[${item.name}]\n${item.content}`;
       if (totalChars + section.length > maxChars && parts.length > 0) break;
       parts.push(section);
       totalChars += section.length;

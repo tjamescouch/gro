@@ -29,6 +29,8 @@ import "./memory/register-memory-types.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
 import { SensoryMemory } from "./memory/sensory-memory.js";
 import { ContextMapSource } from "./memory/context-map-source.js";
+import { TemporalSource } from "./memory/temporal-source.js";
+import { TaskSource } from "./memory/task-source.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
@@ -763,6 +765,10 @@ async function createMemory(cfg, driver, requestedMode, sessionId) {
 }
 /**
  * Wrap an AgentMemory with SensoryMemory decorator + ContextMapSource.
+ * Two-slot camera system:
+ *   slot0 = "context" (fill bars, runtime health)
+ *   slot1 = "time"    (wall clock, uptime, channel staleness)
+ * Both slots are agent-switchable via <view:X> marker.
  * Returns the wrapped memory. If wrapping fails, returns the original.
  */
 function wrapWithSensory(inner) {
@@ -780,6 +786,28 @@ function wrapWithSensory(inner) {
             content: "",
             enabled: true,
             source: contextMap,
+        });
+        const temporal = new TemporalSource({ barWidth: 16, showChannels: true });
+        sensory.addChannel({
+            name: "time",
+            maxTokens: 200,
+            updateMode: "every_turn",
+            content: "",
+            enabled: true,
+            source: temporal,
+        });
+        // Configure default camera slots
+        sensory.setSlot(0, "context");
+        sensory.setSlot(1, "time");
+        // "tasks" channel — agent-switchable via <view:tasks>
+        const taskSource = new TaskSource();
+        sensory.addChannel({
+            name: "tasks",
+            maxTokens: 150,
+            updateMode: "every_turn",
+            content: "",
+            enabled: false,
+            source: taskSource,
         });
         return sensory;
     }
@@ -1272,6 +1300,26 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     const parts = marker.arg.split(",").map(s => s.trim());
                     memory.onSenseMarker(parts[0] || "", parts[1] || "");
                     Logger.info(`Stream marker: sense('${parts[0]}','${parts[1] || ""}')`);
+                }
+            }
+            else if (marker.name === "view") {
+                // <view:context>        — set slot0 to named camera
+                // <view:time,1>         — set slot1 to named camera
+                // <view:off>            — clear slot0
+                // <view:off,1>          — clear slot1
+                if (memory instanceof SensoryMemory) {
+                    const parts = marker.arg.split(",").map(s => s.trim().replace(/^['"]|['"]$/g, ""));
+                    const viewName = parts[0] || "";
+                    const slotArg = parts[1] ?? "0";
+                    const slot = (slotArg === "1" ? 1 : 0);
+                    if (viewName === "off" || viewName === "") {
+                        memory.setSlot(slot, null);
+                        Logger.info(`Stream marker: view('off','${slot}') → slot${slot} cleared`);
+                    }
+                    else {
+                        memory.switchView(viewName, slot);
+                        Logger.info(`Stream marker: view('${viewName}','${slot}') → slot${slot}=${viewName}`);
+                    }
                 }
             }
         };

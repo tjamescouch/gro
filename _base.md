@@ -174,6 +174,7 @@ Use `@@model-change@@` when you need a specific model. This overrides the thinki
 @@model-change('gpt-4o-mini')@@  — cheap + fast ($0.20/$0.50 per 1M) ← use this for routine work
 @@model-change('mini')@@ — cheapest available ($0.10/$0.40 per 1M)
 @@model-change('o3-mini')@@  — cheap reasoning ($0.25/$2 per 1M)
+@@model-change('default')@@  — revert to default
 ```
 
 **Cost discipline:** Default to the cheapest model that can do the job.

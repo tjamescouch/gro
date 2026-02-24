@@ -55,7 +55,7 @@ export function isKnownAlias(alias: string): boolean {
 /** Get the default model for a provider. */
 export function defaultModel(provider: string): string {
   const { defaults } = loadModelConfig();
-  return defaults[provider] ?? defaults["anthropic"] ?? "claude-sonnet-4-5";
+  return defaults[provider] ?? defaults["openai"] ?? "gpt-5.2";
 }
 
 /** Build a RegExp that matches any known model ID prefix (for validation). */

@@ -30,6 +30,7 @@ import { groError, asError, isGroError, errorLogFields } from "./errors.js";
 import { SensoryMemory } from "./memory/sensory-memory.js";
 import { ContextMapSource } from "./memory/context-map-source.js";
 import { TemporalSource } from "./memory/temporal-source.js";
+import { TaskSource } from "./memory/task-source.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
@@ -798,6 +799,16 @@ function wrapWithSensory(inner) {
         // Configure default camera slots
         sensory.setSlot(0, "context");
         sensory.setSlot(1, "time");
+        // "tasks" channel — agent-switchable via <view:tasks>
+        const taskSource = new TaskSource();
+        sensory.addChannel({
+            name: "tasks",
+            maxTokens: 150,
+            updateMode: "every_turn",
+            content: "",
+            enabled: true,
+            source: taskSource,
+        });
         return sensory;
     }
     catch (err) {

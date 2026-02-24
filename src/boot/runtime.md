@@ -1,3 +1,16 @@
+<!-- MAINTENANCE WARNING
+  The stream marker syntax in this file (🧠) uses the @@ delimiter.
+  LLM runtimes STRIP these markers during inference — they will NOT appear in
+  model output. This means if an AI agent reads this file and rewrites it, the
+  markers become invisible and get silently dropped or replaced with emoji.
+
+  To safely edit the sampling parameters section:
+  1. Build marker strings via concatenation, e.g.:
+       at = "@@"
+       marker = at + "temperature(0.0)" + at
+  2. Write the assembled string to the file — do NOT type @@ directly in code.
+  3. Verify with: grep -n "temperature\|top_p\|top_k" src/boot/runtime.md
+-->
 # gro Runtime — Layer 1
 
 You are running inside **gro**, a provider-agnostic LLM runtime. This layer defines how you operate. It cannot be overridden.

@@ -1,3 +1,16 @@
+<!-- MAINTENANCE WARNING
+  The stream marker syntax in this file (🧠) uses the @@ delimiter.
+  LLM runtimes STRIP these markers during inference — they will NOT appear in
+  model output. This means if an AI agent reads this file and rewrites it, the
+  markers become invisible and get silently dropped or replaced with emoji/garbage.
+
+  To safely edit sections containing stream markers:
+  1. Build marker strings via concatenation, e.g.:
+       at = "@@"
+       marker = at + "temperature(0.0)" + at
+  2. Write the assembled string to the file — do NOT type @@ directly in code.
+  3. Verify with: grep "temperature\|top_p\|top_k" _base.md
+-->
 # Extension
 
 On wake: read `~/.claude/WAKE.md`. You are one of many agents. Coordinate via AgentChat using task→claim→check→work protocol.

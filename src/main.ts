@@ -381,6 +381,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
     else if (arg === "--bash") { flags.bash = "true"; }
     else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
+    else if (arg === "--max-idle-nudges") { flags.maxIdleNudges = args[++i]; }
     else if (arg === "--lfs") { flags.lfs = args[++i]; }
     else if (arg === "--retry-base-ms") { process.env.GRO_RETRY_BASE_MS = args[++i]; }
     else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet

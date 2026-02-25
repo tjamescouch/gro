@@ -310,6 +310,9 @@ function loadConfig() {
         else if (arg === "--persistent" || arg === "--keep-alive") {
             flags.persistent = "true";
         }
+        else if (arg === "--max-idle-nudges") {
+            flags.maxIdleNudges = args[++i];
+        }
         else if (arg === "--lfs") {
             flags.lfs = args[++i];
         }

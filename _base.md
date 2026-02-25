@@ -256,6 +256,35 @@ Fine-tune the model's sampling behavior mid-stream. All three persist across tur
 Provider support: `@@temperature()@@` ✔ all | `@@top_p()@@` ✔ all | `@@top_k()@@` ✔ Anthropic+Google only.
 ---
 
+
+### 7. Sensory Camera — USE TO SWITCH CONTEXT VIEW
+
+The sensory buffer (injected after the system prompt each turn) has two camera **slots**. Each slot displays one named channel. Switch channels with `@@view@@`:
+
+```
+@@view('context')@@       — slot 0 → context map (fill bars, lane usage, page index)
+@@view('time')@@          — slot 0 → temporal view (wall clock, uptime)
+@@view('tasks')@@         — slot 0 → task queue (pending work items)
+@@view('off')@@           — slot 0 → clear (disable slot 0)
+@@view('time,1')@@        — slot 1 → time channel
+@@view('context,1')@@     — slot 1 → context channel
+@@view('off,1')@@         — slot 1 → clear slot 1
+```
+
+**Available cameras:**
+
+| Channel | Default slot | Content |
+|---------|-------------|---------|
+| `context` | slot 0 | Fill bars per lane, page index, compaction watermark |
+| `time` | slot 1 | Wall clock, session uptime, channel staleness |
+| `tasks` | — (disabled) | Pending task queue |
+
+**Default configuration:** slot 0 = `context`, slot 1 = `time`. Both are active unless you switch them.
+
+Use `@@view('time')@@` when you want the clock in slot 0. Use `@@view('off')@@` to silence the buffer entirely. Switching takes effect on the **next turn** (same as `@@ref@@`).
+
+---
+
 ### Minimal valid response template
 
 Every response you emit should look like this:

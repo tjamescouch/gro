@@ -394,13 +394,24 @@ export function makeAnthropicDriver(cfg) {
         try {
             let res;
             for (let attempt = 0;; attempt++) {
-                res = await timedFetch(endpoint, {
-                    method: "POST",
-                    headers,
-                    body: JSON.stringify(body),
-                    where: "driver:anthropic",
-                    timeoutMs,
-                });
+                try {
+                    res = await timedFetch(endpoint, {
+                        method: "POST",
+                        headers,
+                        body: JSON.stringify(body),
+                        where: "driver:anthropic",
+                        timeoutMs,
+                    });
+                }
+                catch (fetchErr) {
+                    if (attempt < getMaxRetries()) {
+                        const delay = retryDelay(attempt);
+                        Logger.warn(`Anthropic fetch error: ${asError(fetchErr).message}, retry ${attempt + 1}/${getMaxRetries()} in ${Math.round(delay)}ms`);
+                        await sleep(delay);
+                        continue;
+                    }
+                    throw fetchErr;
+                }
                 if (res.ok)
                     break;
                 if (isRetryable(res.status) && attempt < getMaxRetries()) {

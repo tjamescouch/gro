@@ -273,14 +273,24 @@ export function makeGoogleDriver(cfg: GoogleDriverConfig): ChatDriver {
     try {
       let res!: Response;
       for (let attempt = 0; ; attempt++) {
-        res = await timedFetch(endpoint, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-          where: "driver:google:stream",
-          timeoutMs: defaultTimeout,
-        });
+        try {
+          res = await timedFetch(endpoint, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+            where: "driver:google:stream",
+            timeoutMs: defaultTimeout,
+          });
+        } catch (fetchErr: unknown) {
+          if (attempt < getMaxRetries()) {
+            const delay = retryDelay(attempt);
+            Logger.warn(`Google fetch error: ${asError(fetchErr).message}, retry ${attempt + 1}/${getMaxRetries()} in ${Math.round(delay)}ms`);
+            await sleep(delay);
+            continue;
+          }
+          throw fetchErr;
+        }
 
         if (res.ok) break;
 

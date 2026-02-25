@@ -14,7 +14,9 @@ export async function timedFetch(url, init = {}) {
     }
     catch (e) {
         const wrapped = asError(e);
-        const err = new Error(`[fetch timeout] ${where ?? ""} ${url} -> ${wrapped.name}: ${wrapped.message}`);
+        const isAbort = wrapped.name === "AbortError";
+        const tag = isAbort ? "fetch timeout" : "fetch error";
+        const err = new Error(`[${tag}] ${where ?? ""} ${url} -> ${wrapped.name}: ${wrapped.message}`);
         err.cause = e;
         throw err;
     }

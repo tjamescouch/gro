@@ -51,7 +51,8 @@ import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
 import { ViolationTracker } from "./violations.js";
-import { thinkingTierModel as selectTierModel } from "./tier-loader.js";
+import { thinkingTierModel as selectTierModel, selectMultiProviderTierModel } from "./tier-loader.js";
+import type { TierSelection } from "./tier-loader.js";
 import {
   loadModelConfig,
   resolveModelAlias,
@@ -224,6 +225,8 @@ interface GroConfig {
   mcpServers: Record<string, McpServerConfig>;
   maxBudgetUsd: number | null;
   maxTier: "low" | "mid" | "high" | null;
+  /** When set, tier auto-select picks from any listed provider (preference order). */
+  providers: string[];
   /** MCP tool role bindings — auto-detected or explicitly configured. */
   toolRoles: McpToolRoles;
 }
@@ -383,6 +386,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet
     else if (arg === "--max-budget-usd") { flags.maxBudgetUsd = args[++i]; } // accepted, not used yet
     else if (arg === "--max-tier") { flags.maxTier = args[++i]; }
+    else if (arg === "--providers") { flags.providers = args[++i]; }
     else if (arg === "--summarizer-model") { flags.summarizerModel = args[++i]; }
     else if (arg === "--output-format") { flags.outputFormat = args[++i]; }
     else if (arg === "--batch-summarization") { flags.batchSummarization = "true"; }
@@ -517,6 +521,7 @@ function loadConfig(): GroConfig {
     mcpServers,
     maxBudgetUsd: flags.maxBudgetUsd ? parseFloat(flags.maxBudgetUsd) : null,
     maxTier: (flags.maxTier || process.env.GRO_MAX_TIER || null) as GroConfig["maxTier"],
+    providers: (flags.providers || process.env.GRO_PROVIDERS || "").split(",").filter(Boolean),
     // toolRoles auto-detected after MCP connect — placeholder here
     toolRoles: { idleTool: null, idleToolDefaultArgs: {}, idleToolArgStrategy: "last-call", sendTool: null, sendToolMessageField: "message" },
   };
@@ -566,6 +571,7 @@ options:
   --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
   --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
   --max-tier             low | mid | high — cap tier promotion (env: GRO_MAX_TIER)
+  --providers            comma-separated providers for cross-provider tier selection (env: GRO_PROVIDERS)
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string
@@ -988,8 +994,12 @@ async function executeTurn(
 
   /** Select model tier based on thinking budget and provider.
    * Loads tier ladders from providers/*.json config files.
+   * When cfg.providers is set, selects across multiple providers.
    */
-  function thinkingTierModel(budget: number): string {
+  function thinkingTierModel(budget: number): string | TierSelection {
+    if (cfg.providers.length > 1) {
+      return selectMultiProviderTierModel(budget, cfg.providers, cfg.model, loadModelConfig().aliases, cfg.maxTier ?? undefined);
+    }
     const provider = inferProvider(cfg.provider, cfg.model);
     return selectTierModel(budget, provider, cfg.model, loadModelConfig().aliases, cfg.maxTier ?? undefined);
   }
@@ -1361,11 +1371,36 @@ async function executeTurn(
 
     // Select model tier based on current thinking budget (unless agent pinned a model explicitly)
     if (!modelExplicitlySet) {
-      const tierModel = thinkingTierModel(activeThinkingBudget);
-      if (tierModel !== activeModel) {
-        Logger.info(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierModel}`);
-        activeModel = tierModel;
-        runtimeState.setActiveModel(tierModel);
+      const tierResult = thinkingTierModel(activeThinkingBudget);
+      if (typeof tierResult === "string") {
+        // Single-provider mode — just a model name
+        if (tierResult !== activeModel) {
+          Logger.info(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierResult}`);
+          activeModel = tierResult;
+          runtimeState.setActiveModel(tierResult);
+        }
+      } else {
+        // Multi-provider mode — { provider, model } tuple
+        const needsSwitch = tierResult.model !== activeModel;
+        const providerChanged = tierResult.provider !== cfg.provider;
+        if (needsSwitch) {
+          Logger.info(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierResult.model} (${tierResult.provider})`);
+          if (providerChanged) {
+            const newApiKey = resolveApiKey(tierResult.provider);
+            const newBaseUrl = defaultBaseUrl(tierResult.provider);
+            try {
+              activeDriver = createDriverForModel(tierResult.provider as Provider, tierResult.model, newApiKey, newBaseUrl, cfg.maxTokens);
+              cfg.provider = tierResult.provider as Provider;
+              cfg.apiKey = newApiKey;
+              cfg.baseUrl = newBaseUrl;
+              Logger.info(`Cross-provider tier switch → ${tierResult.provider}`);
+            } catch (err: unknown) {
+              Logger.error(`Cross-provider tier switch to ${tierResult.provider} FAILED: ${err}`);
+            }
+          }
+          activeModel = tierResult.model;
+          runtimeState.setActiveModel(tierResult.model);
+        }
       }
     }
 
@@ -2086,6 +2121,14 @@ async function main() {
   Logger.setVerbose(cfg.verbose);
 
   Logger.info(`Runtime: ${C.cyan("gro")} ${C.gray(VERSION)}  Model: ${C.gray(cfg.model)} ${C.gray(`(${cfg.provider})`)}`);
+
+  // Validate --providers API keys
+  if (cfg.providers.length > 0) {
+    Logger.info(`Multi-provider tier selection: ${cfg.providers.join(", ")}`);
+    for (const p of cfg.providers) {
+      if (!resolveApiKey(p)) Logger.warn(`--providers: no API key for ${p}`);
+    }
+  }
 
   // Resolve session ID
   let sessionId: string;

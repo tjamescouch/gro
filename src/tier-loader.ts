@@ -98,3 +98,62 @@ export function thinkingTierModel(
 
   return tierConfig.tiers[selectedTier] ?? fallbackModel;
 }
+
+/** Result of multi-provider tier selection — includes which provider was chosen. */
+export interface TierSelection {
+  provider: string;
+  model: string;
+}
+
+/**
+ * Select model tier across multiple providers.
+ * Iterates providers in preference order, returning the first that has a
+ * non-null model at the computed tier level. Falls back to the first
+ * provider's default model if nothing matches.
+ */
+export function selectMultiProviderTierModel(
+  budget: number,
+  providers: string[],
+  fallbackModel: string,
+  modelAliases: Record<string, string>,
+  maxTier?: "low" | "mid" | "high"
+): TierSelection {
+  const tierConfigs = loadTierConfigs();
+
+  // Determine the raw tier from budget (use default thresholds)
+  let selectedTier: "low" | "mid" | "high";
+  // Use first provider's config for thresholds if available, else defaults
+  const firstConfig = tierConfigs.get(providers[0]);
+  if (!firstConfig) {
+    if (budget < 0.25) selectedTier = "low";
+    else if (budget < 0.65) selectedTier = "mid";
+    else selectedTier = "high";
+  } else {
+    const { thresholds } = firstConfig;
+    if (budget < thresholds.low) selectedTier = "low";
+    else if (budget < thresholds.mid) selectedTier = "mid";
+    else selectedTier = "high";
+  }
+
+  // Clamp to maxTier if specified
+  if (maxTier && TIER_RANK[selectedTier] > TIER_RANK[maxTier]) {
+    selectedTier = maxTier;
+  }
+
+  // Iterate providers in preference order — first with a non-null model wins
+  for (const provider of providers) {
+    const config = tierConfigs.get(provider);
+    if (!config) {
+      // Unknown provider — try alias-based resolution (anthropic defaults)
+      const aliasMap: Record<string, string> = { low: "haiku", mid: "sonnet", high: "opus" };
+      const model = modelAliases[aliasMap[selectedTier]];
+      if (model) return { provider, model };
+      continue;
+    }
+    const model = config.tiers[selectedTier];
+    if (model) return { provider, model };
+  }
+
+  // Nothing matched — fall back to first provider with the fallback model
+  return { provider: providers[0], model: fallbackModel };
+}

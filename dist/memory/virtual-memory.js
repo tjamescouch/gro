@@ -941,28 +941,20 @@ export class VirtualMemory extends AgentMemory {
                     continue;
                 }
                 // Dangling tool result — no matching assistant tool_calls anywhere.
-                // Instead of dropping it (which loses context), create a synthetic
-                // assistant+tool pair with proper tool_calls structure to preserve the information.
+                // Convert to a plain text assistant message to preserve context without
+                // creating tool_calls structure that can break on re-flattening.
                 if (!allCallIds.has(msg.tool_call_id)) {
-                    Logger.warn(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — wrapping in synthetic pair`);
+                    Logger.warn(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — converting to text`);
                     const fnName = msg.name || "unknown_tool";
-                    const callId = msg.tool_call_id;
                     const resultSnippet = typeof msg.content === "string"
                         ? (msg.content.length > 2000 ? msg.content.slice(0, 2000) + "…" : msg.content)
                         : "[result]";
-                    const syntheticAssistant = Object.assign({ role: "assistant", content: "", from: "" }, { tool_calls: [{
-                                id: callId,
-                                type: "function",
-                                function: { name: fnName, arguments: "{}" },
-                            }] });
-                    const syntheticTool = {
-                        role: "tool",
-                        from: fnName,
-                        content: `[recovered from compaction] ${resultSnippet}`,
-                        tool_call_id: callId,
-                        name: fnName,
+                    const flatMessage = {
+                        role: "assistant",
+                        from: msg.from || "VirtualMemory",
+                        content: `[${fnName} result recovered from compaction] ${resultSnippet}`,
                     };
-                    output.push(syntheticAssistant, syntheticTool);
+                    output.push(flatMessage);
                     flattenCount++;
                     continue;
                 }

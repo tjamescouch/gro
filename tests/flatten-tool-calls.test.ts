@@ -407,9 +407,9 @@ describe("flattenCompactedToolCalls: metadata format", () => {
       "Result should contain the tool output");
   });
 
-  test("result snippet is truncated at 200 chars", () => {
+  test("result snippet is truncated at 2000 chars", () => {
     const vm = new VirtualMemory({ driver: mockDriver() });
-    const longResult = "x".repeat(500);
+    const longResult = "x".repeat(3000);
     const assistant = assistantWithToolCalls([{ id: "call_1", name: "read" }]);
 
     // Tool result exists but not adjacent
@@ -426,7 +426,7 @@ describe("flattenCompactedToolCalls: metadata format", () => {
     );
     const meta = (flatAssistant as any).metadata.summarized_tool_call;
 
-    assert.ok(meta.result.length <= 204, // 200 chars + "..."
+    assert.ok(meta.result.length <= 2003, // 2000 chars + "..."
       `Result should be truncated. Got ${meta.result.length} chars`);
     assert.ok(meta.result.endsWith("..."), "Truncated result should end with ...");
   });

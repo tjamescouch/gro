@@ -67,7 +67,7 @@ export class SensoryMemory extends AgentMemory {
      */
     setSlot(slot, channelName) {
         this.slots[slot] = channelName;
-        Logger.info(`[Sensory] slot${slot} → ${channelName ?? "off"}`);
+        Logger.telemetry(`[Sensory] slot${slot} → ${channelName ?? "off"}`);
     }
     getSlot(slot) {
         return this.slots[slot];

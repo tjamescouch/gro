@@ -269,7 +269,7 @@ export function createMarkerParser(opts) {
             // Emit emoji indicator into the output stream
             const emoji = markerEmoji(name);
             cleanText += emoji;
-            if (onToken)
+            if (onToken && Logger.isVerbose())
                 onToken(emoji);
             lastIndex = match.index + match[0].length;
         }

@@ -23,6 +23,10 @@ export class Logger {
     static info(...args) {
         console.log(...args);
     }
+    static telemetry(...args) {
+        if (Logger._verbose)
+            console.log(...args);
+    }
     static warn(...args) { console.warn(...args); }
     static error(...args) { console.error(...args); }
     static debug(...args) {

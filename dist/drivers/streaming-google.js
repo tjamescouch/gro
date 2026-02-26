@@ -184,7 +184,7 @@ export function makeGoogleDriver(cfg) {
                 snippet = content.length > 120 ? content.slice(0, 120) + "..." : content;
             }
         }
-        Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` <${snippet}>` : ""}`);
+        Logger.telemetry(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` <${snippet}>` : ""}`);
         const controller = new AbortController();
         const userSignal = opts?.signal;
         const linkAbort = () => controller.abort();
@@ -288,7 +288,7 @@ export function makeGoogleDriver(cfg) {
                     outputTokens: data.usageMetadata.candidatesTokenCount ?? 0,
                 } : undefined;
                 const responseSize = JSON.stringify({ text: content, toolCalls, usage }).length;
-                Logger.info(`[API ←] ${(responseSize / (1024 * 1024)).toFixed(2)} MB`);
+                Logger.telemetry(`[API ←] ${(responseSize / (1024 * 1024)).toFixed(2)} MB`);
                 return { text: content, toolCalls, usage };
             }
             // SSE streaming
@@ -433,7 +433,7 @@ export function makeGoogleDriver(cfg) {
             }
             // Log response
             const responseSize = JSON.stringify({ text: fullText, toolCalls: toolCallsAccum, usage: streamUsage }).length;
-            Logger.info(`[API ←] ${(responseSize / (1024 * 1024)).toFixed(2)} MB`);
+            Logger.telemetry(`[API ←] ${(responseSize / (1024 * 1024)).toFixed(2)} MB`);
             return {
                 text: fullText,
                 reasoning: fullReasoning || undefined,

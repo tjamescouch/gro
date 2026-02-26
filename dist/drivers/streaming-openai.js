@@ -68,7 +68,7 @@ export function makeStreamingOpenAiDriver(cfg) {
                 snippet = content.length > 120 ? content.slice(0, 120) + "..." : content;
             }
         }
-        Logger.info(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` <${snippet}>` : ""}`);
+        Logger.telemetry(`[API →] ${sizeMB} MB (${messages.length} messages)${snippet ? ` <${snippet}>` : ""}`);
         Logger.debug("streaming messages out", messages);
         const controller = new AbortController();
         const userSignal = opts?.signal;
@@ -231,7 +231,7 @@ export function makeStreamingOpenAiDriver(cfg) {
                 // Log response size
                 const responseSize = JSON.stringify({ text: content, toolCalls, usage }).length;
                 const respMB = (responseSize / (1024 * 1024)).toFixed(2);
-                Logger.info(`[API ←] ${respMB} MB`);
+                Logger.telemetry(`[API ←] ${respMB} MB`);
                 return { text: content, reasoning: msg?.reasoning || undefined, toolCalls, usage };
             }
             // SSE streaming

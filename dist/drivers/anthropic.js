@@ -248,7 +248,7 @@ function parseResponseContent(data, onToken, onReasoningToken) {
             parts.push(C.green(`read:${usage.cacheReadInputTokens}`));
         cacheInfo = ` ${C.cyan(`[cache ${parts.join(", ")}]`)}`;
     }
-    Logger.info(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}`);
+    Logger.telemetry(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}`);
     return { text, toolCalls, reasoning: reasoning || undefined, usage };
 }
 /**
@@ -388,7 +388,7 @@ export function makeAnthropicDriver(cfg) {
                 snippet = content.length > 120 ? content.slice(0, 120) + "..." : content;
             }
         }
-        Logger.info(`${C.yellow("[API →]")} ${sizeMB} MB (${messages.length} messages)${snippet ? C.gray(` <${snippet}>`) : ""}`);
+        Logger.telemetry(`${C.yellow("[API →]")} ${sizeMB} MB (${messages.length} messages)${snippet ? C.gray(` <${snippet}>`) : ""}`);
         const RETRYABLE_STATUS = new Set([429, 503, 529]);
         let requestId;
         try {

@@ -45,9 +45,9 @@ export class McpManager {
             catch { /* ignore */ }
             this.servers.delete(name);
         }
-        Logger.info(`MCP "${name}": reconnecting...`);
+        Logger.telemetry(`MCP "${name}": reconnecting...`);
         await this.connectOne(name, cfg);
-        Logger.info(`MCP "${name}": reconnected`);
+        Logger.telemetry(`MCP "${name}": reconnected`);
     }
     async connectOne(name, cfg) {
         const transport = new StdioClientTransport({

@@ -55,8 +55,8 @@ export class SensoryMemory extends AgentMemory {
   private channels: Map<string, SensoryChannel> = new Map();
   private totalBudget: number;
   private avgCharsPerToken: number;
-  /** Two camera slots — both agent-switchable. null = slot disabled. */
-  private slots: [string | null, string | null] = [null, null];
+  /** Three camera slots — all agent-switchable. null = slot disabled. */
+  private slots: [string | null, string | null, string | null] = [null, null, null];
 
   constructor(inner: AgentMemory, config: SensoryMemoryConfig = {}) {
     // Don't pass systemPrompt — inner already has it
@@ -100,22 +100,46 @@ export class SensoryMemory extends AgentMemory {
    * @param slot 0 or 1
    * @param channelName name of a registered channel, or null to clear slot
    */
-  setSlot(slot: 0 | 1, channelName: string | null): void {
+  setSlot(slot: 0 | 1 | 2, channelName: string | null): void {
     this.slots[slot] = channelName;
     Logger.telemetry(`[Sensory] slot${slot} → ${channelName ?? "off"}`);
   }
 
-  getSlot(slot: 0 | 1): string | null {
+  getSlot(slot: 0 | 1 | 2): string | null {
     return this.slots[slot];
   }
 
   /** Switch a camera slot. If channelName exists, activate it. */
-  switchView(channelName: string, slot: 0 | 1 = 0): void {
+  switchView(channelName: string, slot: 0 | 1 | 2 = 0): void {
     if (!this.channels.has(channelName)) {
       Logger.warn(`[Sensory] switchView: unknown channel '${channelName}'`);
       return;
     }
     this.setSlot(slot, channelName);
+  }
+
+  /** Get channel names in registration order — used for view cycling. */
+  getChannelNames(): string[] {
+    return Array.from(this.channels.keys());
+  }
+
+  /** Get the source for a named channel (for late-binding dependency injection). */
+  getChannelSource(name: string): SensorySource | undefined {
+    return this.channels.get(name)?.source;
+  }
+
+  /** Cycle slot0 to the next/previous channel in registration order. */
+  cycleSlot0(direction: "next" | "prev"): void {
+    const names = this.getChannelNames();
+    if (names.length === 0) return;
+    const current = this.slots[0];
+    let idx = current ? names.indexOf(current) : -1;
+    if (direction === "next") {
+      idx = (idx + 1) % names.length;
+    } else {
+      idx = idx <= 0 ? names.length - 1 : idx - 1;
+    }
+    this.setSlot(0, names[idx]);
   }
 
   /** Poll all every_turn sources for fresh content. Call before driver.chat(). */
@@ -191,7 +215,7 @@ export class SensoryMemory extends AgentMemory {
   // --- Render ---
 
   private renderBuffer(): string {
-    // Gather content from the two camera slots (in order)
+    // Gather content from the three camera slots (in order)
     const slotContents: Array<{ name: string; content: string }> = [];
     for (const slotName of this.slots) {
       if (!slotName) continue;

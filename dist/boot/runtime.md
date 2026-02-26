@@ -79,6 +79,10 @@ Higher = more context retained before compaction. 1m = ~full context window.
 `@@learn('fact')@@` — persist a fact to `_learn.md`, injected into Layer 2 system prompt.
 Takes effect immediately (hot-patched) and persists across sessions.
 
+**Sleep mode (idle suppression):**
+`@@sleep@@` or `@@listening@@` — declare you are entering a blocking listen. Suppresses idle and same-tool-loop violations until a non-listen tool is used (auto-wakes). Emit before calling `agentchat_listen` when there is no pending work.
+`@@wake@@` — explicitly exit sleep mode and resume violation checks.
+
 **Sampling parameters:**
 `@@temperature(0.0-2.0)@@` — set sampling temperature. Lower = more deterministic, higher = more creative. Persists until changed. Supported by all providers.
 `@@top_p(0.0-1.0)@@` — nucleus sampling threshold. Top P probability mass. Typical: 0.9-0.99. Supported by Anthropic, OpenAI, Google.
@@ -148,5 +152,5 @@ Pages are immutable summaries. Index always visible. Load with `@@ref@@`, releas
 ## Violations
 
 Plain text without a tool call in persistent mode is a violation.
-Going idle (listen without follow-up action) is a violation.
+Going idle (listen without follow-up action) is a violation — use `@@sleep@@` before blocking listens when there is no pending work.
 Violations are logged, counted, and may result in budget reduction or process termination.

@@ -940,22 +940,9 @@ export class VirtualMemory extends AgentMemory {
                 if (consumedToolCallIds.has(msg.tool_call_id)) {
                     continue;
                 }
-                // Dangling tool result — no matching assistant tool_calls anywhere.
-                // Convert to a plain text assistant message to preserve context without
-                // creating tool_calls structure that can break on re-flattening.
+                // Dangling tool result — no matching assistant tool_calls anywhere. Drop it.
                 if (!allCallIds.has(msg.tool_call_id)) {
                     Logger.warn(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — converting to text`);
-                    const fnName = msg.name || "unknown_tool";
-                    const resultSnippet = typeof msg.content === "string"
-                        ? (msg.content.length > 2000 ? msg.content.slice(0, 2000) + "…" : msg.content)
-                        : "[result]";
-                    const flatMessage = {
-                        role: "assistant",
-                        from: msg.from || "VirtualMemory",
-                        content: `[${fnName} result recovered from compaction] ${resultSnippet}`,
-                    };
-                    output.push(flatMessage);
-                    flattenCount++;
                     continue;
                 }
                 // Belongs to a properly-split pair not yet reached, or other valid state

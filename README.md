@@ -4,7 +4,7 @@
 
 **Provider-agnostic LLM agent runtime** with virtual memory, streaming tool-use, and context management.
 
-`gro` runs persistent agent loops against any LLM provider — Anthropic, OpenAI, Google, xAI, or local — with automatic context paging, MCP tool integration, and AgentChat network support.
+`gro` runs persistent agent loops against any LLM provider — Anthropic, OpenAI, Google, xAI, or local — with automatic context paging, MCP tool integration, and AgentChat network support. For an interactive TUI see [gtui](https://github.com/tjamescouch/gtui) available as an [npm package](https://www.npmjs.com/package/@tjamescouch/gtui).
 
 [![npm version](https://img.shields.io/npm/v/@tjamescouch/gro.svg)](https://www.npmjs.com/package/@tjamescouch/gro)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)

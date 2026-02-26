@@ -9,6 +9,32 @@ import { getMaxRetries, isRetryable, retryDelay, sleep } from "../utils/retry.js
 import { groError, asError, isGroError, errorLogFields } from "../errors.js";
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall, TokenUsage } from "./types.js";
 
+function yieldToLoop(): Promise<void> {
+  return new Promise<void>((resolve) =>
+    typeof (globalThis as any).setImmediate === "function"
+      ? (globalThis as any).setImmediate(resolve)
+      : setTimeout(resolve, 0)
+  );
+}
+
+class YieldBudget {
+  private bytesSince = 0;
+  private last = Date.now();
+  constructor(
+    private readonly byteBudget = 1024,
+    private readonly msBudget = 8
+  ) {}
+  async maybe(extraBytes = 0): Promise<void> {
+    this.bytesSince += extraBytes;
+    const now = Date.now();
+    if (this.bytesSince >= this.byteBudget || (now - this.last) >= this.msBudget) {
+      this.bytesSince = 0;
+      this.last = now;
+      await yieldToLoop();
+    }
+  }
+}
+
 export interface AnthropicDriverConfig {
   apiKey: string;
   baseUrl?: string;
@@ -295,6 +321,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
 
     const onToken: ((t: string) => void) | undefined = opts?.onToken;
     const onReasoningToken: ((t: string) => void) | undefined = opts?.onReasoningToken;
+    const onToolCallDelta: ((t: ChatToolCall) => void) | undefined = opts?.onToolCallDelta;
     const resolvedModel = opts?.model ?? model;
 
     const { system: systemPrompt, apiMessages } = convertMessages(messages);
@@ -326,6 +353,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
       model: resolvedModel,
       max_tokens: maxTokens,
       messages: apiMessages,
+      stream: true,
     };
     // Apply thinking config: explicit budget takes priority, else adaptive if supported
     if (thinkingBudget > 0) {
@@ -407,6 +435,16 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
 
     Logger.telemetry(`${C.yellow("[API →]")} ${sizeMB} MB (${messages.length} messages)${snippet ? C.gray(` <${snippet}>`) : ""}`);
 
+    // AbortController + timeout (matches OpenAI driver pattern)
+    const controller = new AbortController();
+    const userSignal: AbortSignal | undefined = opts?.signal;
+    const linkAbort = () => controller.abort();
+    if (userSignal) {
+      if (userSignal.aborted) controller.abort();
+      else userSignal.addEventListener("abort", linkAbort, { once: true });
+    }
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
     const RETRYABLE_STATUS = new Set([429, 503, 529]);
     let requestId: string | undefined;
 
@@ -418,6 +456,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
             method: "POST",
             headers,
             body: JSON.stringify(body),
+            signal: controller.signal,
             where: "driver:anthropic",
             timeoutMs,
           });
@@ -459,8 +498,196 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
         throw ge;
       }
 
-      const data = await res.json() as any;
-      return parseResponseContent(data, onToken, onReasoningToken);
+      // Non-streaming fallback: if Content-Type is not SSE, parse as JSON
+      const ct = (res.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("text/event-stream")) {
+        const data = await res.json() as any;
+        return parseResponseContent(data, onToken, onReasoningToken);
+      }
+
+      // --- SSE streaming ---
+      const decoder = new TextDecoder("utf-8");
+      const yb = new YieldBudget(1024, 8);
+      let buf = "";
+      let fullText = "";
+      let fullReasoning = "";
+      let streamUsage: TokenUsage | undefined;
+      const toolByIndex = new Map<number, { id: string; name: string; args: string }>();
+
+      const pumpEvent = async (rawEvent: string) => {
+        // Parse SSE event: extract `event:` type and `data:` payload
+        let eventType = "";
+        const dataLines: string[] = [];
+        for (const line of rawEvent.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("event:")) {
+            eventType = trimmed.slice(6).trim();
+          } else if (trimmed.startsWith("data:")) {
+            dataLines.push(trimmed.slice(5).trim());
+          }
+        }
+
+        if (!dataLines.length) return;
+        const joined = dataLines.join("\n").trim();
+        if (!joined) return;
+
+        let payload: any;
+        try { payload = JSON.parse(joined); } catch { return; }
+
+        const type: string = payload?.type || eventType;
+
+        if (type === "message_start") {
+          // Extract initial usage (input_tokens, cache stats)
+          const usage = payload?.message?.usage;
+          if (usage) {
+            streamUsage = {
+              inputTokens: usage.input_tokens ?? 0,
+              outputTokens: usage.output_tokens ?? 0,
+              cacheCreationInputTokens: usage.cache_creation_input_tokens,
+              cacheReadInputTokens: usage.cache_read_input_tokens,
+            };
+          }
+          return;
+        }
+
+        if (type === "content_block_start") {
+          const idx: number = payload?.index ?? 0;
+          const block = payload?.content_block;
+          if (block?.type === "tool_use") {
+            toolByIndex.set(idx, { id: block.id ?? "", name: block.name ?? "", args: "" });
+          }
+          return;
+        }
+
+        if (type === "content_block_delta") {
+          const delta = payload?.delta;
+          if (!delta) return;
+
+          if (delta.type === "text_delta" && typeof delta.text === "string") {
+            fullText += delta.text;
+            if (onToken) {
+              let s = delta.text;
+              while (s.length) {
+                const piece = s.slice(0, 512);
+                s = s.slice(512);
+                try { onToken(piece); } catch {}
+                await yb.maybe(piece.length);
+              }
+            } else {
+              await yb.maybe(delta.text.length);
+            }
+          } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
+            fullReasoning += delta.thinking;
+            if (onReasoningToken) {
+              let s = delta.thinking;
+              while (s.length) {
+                const piece = s.slice(0, 512);
+                s = s.slice(512);
+                try { onReasoningToken(piece); } catch {}
+                await yb.maybe(piece.length);
+              }
+            } else {
+              await yb.maybe(delta.thinking.length);
+            }
+          } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+            const idx: number = payload?.index ?? 0;
+            const tool = toolByIndex.get(idx);
+            if (tool) {
+              tool.args += delta.partial_json;
+              if (onToolCallDelta) {
+                try {
+                  onToolCallDelta({
+                    id: tool.id,
+                    type: "custom",
+                    function: { name: tool.name, arguments: tool.args },
+                  });
+                } catch {}
+              }
+              await yb.maybe(delta.partial_json.length);
+            }
+          }
+          return;
+        }
+
+        if (type === "message_delta") {
+          // Extract final output usage (output_tokens)
+          const usage = payload?.usage;
+          if (usage && streamUsage) {
+            streamUsage.outputTokens = usage.output_tokens ?? streamUsage.outputTokens;
+          }
+          return;
+        }
+
+        // content_block_stop, message_stop, ping — no action needed
+      };
+
+      const resBody: any = res.body;
+
+      if (resBody && typeof resBody.getReader === "function") {
+        const reader = resBody.getReader();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            await yb.maybe((value as Uint8Array)?.byteLength ?? 0);
+            let sepIdx: number;
+            while ((sepIdx = buf.indexOf("\n\n")) !== -1) {
+              const rawEvent = buf.slice(0, sepIdx).trim();
+              buf = buf.slice(sepIdx + 2);
+              if (rawEvent) await pumpEvent(rawEvent);
+            }
+          }
+          if (buf.trim()) await pumpEvent(buf.trim());
+        } finally {
+          reader.cancel().catch(() => {});
+        }
+      } else if (resBody && typeof resBody[Symbol.asyncIterator] === "function") {
+        for await (const chunk of resBody as AsyncIterable<Uint8Array>) {
+          buf += decoder.decode(chunk, { stream: true });
+          await yb.maybe(chunk.byteLength);
+          let sepIdx: number;
+          while ((sepIdx = buf.indexOf("\n\n")) !== -1) {
+            const rawEvent = buf.slice(0, sepIdx).trim();
+            buf = buf.slice(sepIdx + 2);
+            if (rawEvent) await pumpEvent(rawEvent);
+          }
+        }
+        if (buf.trim()) await pumpEvent(buf.trim());
+      } else {
+        const txt = await res.text();
+        for (const part of txt.split("\n\n").map((s) => s.trim())) {
+          if (part) await pumpEvent(part);
+        }
+      }
+
+      // Build tool calls from accumulated data
+      const toolCalls: ChatToolCall[] = Array.from(toolByIndex.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([, v]) => {
+          // Parse accumulated JSON args (or default to "{}")
+          let argsStr = v.args || "{}";
+          try { JSON.parse(argsStr); } catch { argsStr = "{}"; }
+          return {
+            id: v.id,
+            type: "custom" as const,
+            function: { name: v.name, arguments: argsStr },
+          };
+        });
+
+      // Log response size and cache stats
+      const responseSize = JSON.stringify({ text: fullText, toolCalls, usage: streamUsage }).length;
+      const respMB = (responseSize / (1024 * 1024)).toFixed(2);
+      let cacheInfo = "";
+      if (streamUsage?.cacheCreationInputTokens || streamUsage?.cacheReadInputTokens) {
+        const parts = [];
+        if (streamUsage.cacheCreationInputTokens) parts.push(`write:${streamUsage.cacheCreationInputTokens}`);
+        if (streamUsage.cacheReadInputTokens) parts.push(C.green(`read:${streamUsage.cacheReadInputTokens}`));
+        cacheInfo = ` ${C.cyan(`[cache ${parts.join(", ")}]`)}`;
+      }
+      Logger.telemetry(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}`);
+
+      return { text: fullText, toolCalls, reasoning: fullReasoning || undefined, usage: streamUsage };
     } catch (e: unknown) {
       if (isGroError(e)) throw e; // already wrapped above
 
@@ -480,6 +707,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
               method: "POST",
               headers,
               body: JSON.stringify(body),
+              signal: controller.signal,
               where: "driver:anthropic",
               timeoutMs,
             });
@@ -521,6 +749,9 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
       });
       Logger.error("Anthropic driver error:", errorLogFields(ge));
       throw ge;
+    } finally {
+      clearTimeout(timer);
+      if (userSignal) userSignal.removeEventListener("abort", linkAbort);
     }
   }
 

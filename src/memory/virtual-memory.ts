@@ -1083,7 +1083,7 @@ export class VirtualMemory extends AgentMemory {
           const toolResult = toolResultMap.get(callId);
           const rawResult = toolResult ? String(toolResult.content ?? "") : "";
           const resultSnippet = rawResult
-            ? (rawResult.length > 200 ? rawResult.slice(0, 200) + "..." : rawResult)
+            ? (rawResult.length > 2000 ? rawResult.slice(0, 2000) + "..." : rawResult)
             : "[result truncated during compaction]";
 
           const argsSnippet = fnArgs.length > 200 ? fnArgs.slice(0, 200) + "..." : fnArgs;

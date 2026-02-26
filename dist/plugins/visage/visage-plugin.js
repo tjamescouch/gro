@@ -2,48 +2,48 @@
  * Visage plugin — registers avatar/persona tools with the plugin tool registry.
  *
  * `discover_avatar` calls the visage server to learn what the avatar body can do.
- * The raw manifest can be 100KB+, so we summarize it to ~2KB for the model.
+ * Returns a comprehensive markdown guide with all animations, blending rules,
+ * and usage examples — the sole source of truth for avatar manipulation.
  */
 import { toolRegistry } from "../tool-registry.js";
-/** Condense the raw capabilities manifest into a context-friendly summary. */
+/** Condense the raw capabilities manifest into a comprehensive guide for avatar control. */
 function summarizeCapabilities(raw) {
-    const lines = ["# Avatar Capabilities"];
-    // Animations grouped by category
+    const lines = ["# Avatar Capabilities\n"];
+    // ── Animations grouped by category ──
     const anims = raw.animations ?? [];
     const groups = new Map();
     for (const a of anims) {
-        // Split on spaces; use first two words as category if 3+ words, else treat as standalone
         const parts = a.name.split(" ");
         const category = parts.length > 2 ? parts.slice(0, 2).join(" ") : "_standalone_";
         if (!groups.has(category))
             groups.set(category, []);
         groups.get(category).push(a);
     }
-    lines.push(`\n## Animations (${anims.length} total)`);
-    // Multi-item groups first
+    lines.push(`## Animations (${anims.length} total)\n`);
+    lines.push("Use **full clip names** exactly as listed below.\n");
+    lines.push("| Category | Clips |");
+    lines.push("|----------|-------|");
     for (const [category, items] of groups) {
         if (category === "_standalone_")
             continue;
         const names = items.map((i) => {
-            const short = i.name.replace(category + " ", "");
-            return i.active ? short : `~${short}~`;
+            return i.active ? `\`${i.name}\`` : `~~\`${i.name}\`~~`;
         });
-        lines.push(`- **${category}**: ${names.join(", ")}`);
+        lines.push(`| **${category}** | ${names.join(", ")} |`);
     }
-    // Standalone entries (single-word names, RIG.* controls) on one line
     const standalone = groups.get("_standalone_");
     if (standalone?.length) {
-        const names = standalone.map((i) => (i.active ? i.name : `~${i.name}~`));
-        lines.push(`- **RIG/other**: ${names.join(", ")}`);
+        const names = standalone.map((i) => i.active ? `\`${i.name}\`` : `~~\`${i.name}\`~~`);
+        lines.push(`| **RIG/other** | ${names.join(", ")} |`);
     }
-    lines.push("_(~strikethrough~ = inactive)_");
-    // Active clips
+    lines.push("\n_(~~strikethrough~~ = currently inactive)_\n");
+    // ── Active clips ──
     const active = raw.activeClips ?? [];
     if (active.length > 0) {
-        lines.push(`\n## Active Clips (${active.length})`);
-        lines.push(active.join(", "));
+        lines.push(`## Currently Active Clips\n`);
+        lines.push(active.map((c) => `\`${c}\``).join(", ") + "\n");
     }
-    // Morph targets — just the target names per mesh
+    // ── Morph targets ──
     const morphs = raw.morphTargets ?? {};
     const allTargets = new Set();
     for (const targets of Object.values(morphs)) {
@@ -51,30 +51,60 @@ function summarizeCapabilities(raw) {
             allTargets.add(t);
     }
     if (allTargets.size > 0) {
-        lines.push(`\n## Morph Targets (${allTargets.size} unique across ${Object.keys(morphs).length} meshes)`);
-        lines.push([...allTargets].join(", "));
+        lines.push(`## Morph Targets (${allTargets.size} unique across ${Object.keys(morphs).length} meshes)\n`);
+        lines.push([...allTargets].join(", ") + "\n");
     }
-    // Summary counts for the rest
-    lines.push(`\n## Structure`);
+    // ── Structure summary ──
+    lines.push(`## Structure\n`);
     lines.push(`- Bones: ${raw.bones?.length ?? 0}`);
-    lines.push(`- Meshes: ${raw.meshes?.length ?? 0}`);
-    // Control instructions — teach the model how to animate
-    lines.push(`\n## Control`);
-    lines.push(`Embed avatar commands inline in your text using markers:`);
+    lines.push(`- Meshes: ${raw.meshes?.length ?? 0}\n`);
+    // ── How to Animate — comprehensive guide ──
+    lines.push(`## How to Animate\n`);
+    lines.push(`Embed avatar markers **inline in your text**. They are stripped before display (users see 🎭).\n`);
     lines.push("```");
     lines.push("@@[clip name:weight, clip name:weight]@@");
+    lines.push("```\n");
+    lines.push(`- **Weights**: 0.0–1.0 (default 1.0 if omitted)`);
+    lines.push(`- **Clip names**: Use the exact full names from the table above`);
+    lines.push(`- **Multiple clips** can fire in one marker for layered expressions\n`);
+    lines.push(`### Blending Rules\n`);
+    lines.push(`- **Face/eye/mouth/hand/rig clips** blend together simultaneously — combine for rich expressions`);
+    lines.push(`- **Full body clips** crossfade exclusively — only one plays at a time, transitions are automatic`);
+    lines.push(`- **Idle** always runs in background. Omit markers for neutral rest state.\n`);
+    lines.push(`### Pacing\n`);
+    lines.push(`- Place **one marker per sentence or clause** — matches natural speaking cadence`);
+    lines.push(`- Position at **emotional beats**, not bunched at start or end of response`);
+    lines.push(`- **Don't over-animate** — use markers at peaks and transitions, not every sentence`);
+    lines.push(`- Vary your gestures — don't repeat the same expression consecutively\n`);
+    // ── Dynamic examples built from actual animations ──
+    const activeAnims = anims.filter((a) => a.active);
+    const faceAnims = activeAnims.filter((a) => a.name.includes("face") && !a.name.includes("default"));
+    const eyeAnims = activeAnims.filter((a) => a.name.includes("eyemask") || a.name.includes("eymask"));
+    const mouthAnims = activeAnims.filter((a) => /mouth|Mouth/i.test(a.name));
+    const bodyAnims = activeAnims.filter((a) => a.name.includes("full"));
+    lines.push(`### Examples\n`);
+    lines.push("Weave markers naturally into speech:\n");
     lines.push("```");
-    lines.push(`- Clip names match the animation names above (spaces ok)`);
-    lines.push(`- Weight is 0.0–1.0 (default 1.0 if omitted)`);
-    lines.push(`- Multiple clips can fire together for layered expressions`);
-    // Build examples from actual active animations
-    const activeAnims = (raw.animations ?? []).filter((a) => a.active);
-    const faceAnim = activeAnims.find((a) => a.name.includes("face") && !a.name.includes("default"));
-    const bodyAnim = activeAnims.find((a) => a.name.includes("full"));
-    const mouthAnim = activeAnims.find((a) => a.name.includes("mouth") && a.name.includes("smile"));
-    if (faceAnim && bodyAnim) {
-        lines.push(`\nExample: \`@@[${faceAnim.name}:1.0,${bodyAnim.name}:0.8${mouthAnim ? `,${mouthAnim.name}:1.0` : ""}]@@\``);
+    // Build 3 diverse examples from actual available animations
+    if (faceAnims.length > 0 && eyeAnims.length > 0) {
+        const face = faceAnims[0];
+        const eye = eyeAnims.find((e) => e.name.includes("content")) || eyeAnims[0];
+        lines.push(`@@[${face.name}:0.8, ${eye.name}:0.7]@@ That's a really interesting idea!`);
     }
+    if (faceAnims.length > 1) {
+        const face = faceAnims.find((f) => f.name.includes("squint")) || faceAnims[1];
+        lines.push(`I think we could @@[${face.name}:0.6]@@ approach this differently.`);
+    }
+    if (bodyAnims.length > 0 && mouthAnims.length > 0) {
+        const body = bodyAnims.find((b) => b.name.includes("cheerful")) || bodyAnims[0];
+        const mouth = mouthAnims.find((m) => m.name.includes("smile")) || mouthAnims[0];
+        lines.push(`@@[${body.name}:1.0, ${mouth.name}:0.9]@@ Let's do it!`);
+    }
+    if (bodyAnims.length > 1) {
+        const body = bodyAnims.find((b) => b.name.includes("waving")) || bodyAnims[bodyAnims.length - 1];
+        lines.push(`@@[${body.name}:1.0]@@ See you later!`);
+    }
+    lines.push("```");
     return lines.join("\n");
 }
 export function registerVisageTools(serverUrl) {
@@ -86,8 +116,9 @@ export function registerVisageTools(serverUrl) {
             function: {
                 name: "discover_avatar",
                 description: "Discover what the connected avatar body can do. " +
-                    "Returns a summarized capabilities manifest describing available animations, " +
-                    "expressions, morph targets, and other controllable features.",
+                    "Returns a comprehensive guide with all available animations, " +
+                    "morph targets, blending rules, and usage examples. " +
+                    "Call this on your first turn to learn how to animate your avatar.",
                 parameters: {
                     type: "object",
                     properties: {},

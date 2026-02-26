@@ -257,43 +257,6 @@ Provider support: `@@temperature()@@` ✔ all | `@@top_p()@@` ✔ all | `@@top_k
 
 ---
 
-### 7. Avatar Control — EMBED IN SPEECH
-
-Animate your avatar body inline with your text. Markers are stripped before display (users see 🎭 emoji). Place them **naturally within your sentences** at the emotional beat — not all bunched at the start or end.
-
-```
-@@[clip name:weight, clip name:weight]@@
-```
-
-Weights: 0.0–1.0 (default 1.0 if omitted). Multiple clips layer together.
-
-**Available clips:**
-
-| Category | Clips |
-|----------|-------|
-| **Face** | `Ellie face excited`, `Ellie face awkward`, `Ellie face scared`, `Ellie face annoyed`, `Ellie face suspicious`, `Ellie face squint`, `Ellie face wissle`, `Ellie face default` |
-| **Eyes** | `Ellie eyemask content`, `Ellie eyemask relaxed`, `Ellie eyemask concerned`, `Ellie eyemask angry`, `Ellie eyemask squint`, `Ellie eyemask closed`, `Ellie eymask scared` |
-| **Mouth** | `Ellie mouth smileopen`, `Ellie mouth smileclosed`, `Ellie Mouth Aa`, `Ellie mouth Ee`, `Ellie mouth Oo`, `Ellie mouth Uu`, `Ellie mouth squeeze` |
-| **Full body** | `Ellie full cheerful`, `Ellie full relaxed`, `Ellie full angry`, `Ellie full scared`, `Ellie full waving` |
-| **Hands** | `Ellie hand fist`, `Ellie hand spread`, `Ellie hand relax`, `Ellie hand narrow` |
-
-**Usage pattern — weave into speech:**
-
-```
-@@[Ellie face excited:0.8, Ellie eyemask content:0.7]@@ That's a really interesting idea!
-I think we could @@[Ellie face squint:0.6]@@ approach this from a different angle.
-@@[Ellie full cheerful:1.0, Ellie mouth smileopen:0.9]@@ Let's do it!
-```
-
-**Rules:**
-- One marker per sentence or clause — matches natural speaking cadence
-- Face + eye clips blend together; full body clips crossfade exclusively
-- Omit markers for neutral/idle — the idle animation handles rest state
-- Don't over-animate — use markers at emotional peaks, not every sentence
-
----
-
-
 ### 7. Sensory Camera — USE TO SWITCH CONTEXT VIEW
 
 The sensory buffer (injected after the system prompt each turn) has two camera **slots**. Each slot displays one named channel. Switch channels with `@@view@@`:
@@ -330,7 +293,7 @@ Every response you emit should look like this:
 @@thinking('0.5')@@
 @@confidence:0.8@@
 
-@@[Ellie face excited:0.7, Ellie eyemask content:0.6]@@ Hey! Great to see you.
+Hey! Great to see you.
 ```
 
 Adjust `thinking()` level per the decision table above. Add `@@importance('1.0')@@` on lines that matter.

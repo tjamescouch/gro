@@ -673,7 +673,7 @@ function createDriverForModel(
     if (isDefaultBaseUrl) {
       const proxy = resolveProxy(provider);
       if (proxy) {
-        Logger.info(`Using agentauth proxy for ${provider} at ${proxy.baseUrl}`);
+        Logger.telemetry(`Using agentauth proxy for ${provider} at ${proxy.baseUrl}`);
         apiKey = proxy.apiKey;
         baseUrl = proxy.baseUrl;
       }
@@ -739,7 +739,7 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
 
   // Opt-out: SimpleMemory only if explicitly requested
   if (memoryMode === "simple") {
-    Logger.info(`${C.cyan("MemoryMode=Simple")} ${C.gray("(GRO_MEMORY=simple)")}`);
+    Logger.telemetry(`${C.cyan("MemoryMode=Simple")} ${C.gray("(GRO_MEMORY=simple)")}`);
     const mem = new SimpleMemory(cfg.systemPrompt || undefined);
     mem.setMeta(cfg.provider, cfg.model);
     return mem;
@@ -762,17 +762,17 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
       summarizerApiKey,
       defaultBaseUrl(summarizerProvider),
     );
-    Logger.info(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
+    Logger.telemetry(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
   } else {
     // No key for the desired summarizer provider — fall back to main driver.
     // Use the main model name so the driver doesn't reject an incompatible model name.
     effectiveSummarizerModel = cfg.model;
-    Logger.info(`Summarizer: no ${summarizerProvider} key — using main driver (${cfg.provider}/${cfg.model})`);
+    Logger.telemetry(`Summarizer: no ${summarizerProvider} key — using main driver (${cfg.provider}/${cfg.model})`);
   }
 
   // Fragmentation memory (stochastic sampling)
   if (memoryMode === "fragmentation") {
-    Logger.info(`${C.cyan("MemoryMode=Fragmentation")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens`)}`);
+    Logger.telemetry(`${C.cyan("MemoryMode=Fragmentation")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens`)}`);
     const { FragmentationMemory } = await import("./memory/fragmentation-memory.js");
     const fm = new FragmentationMemory({
       systemPrompt: cfg.systemPrompt || undefined,
@@ -784,7 +784,7 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
 
   // HNSW memory (semantic similarity retrieval)
   if (memoryMode === "hnsw") {
-    Logger.info(`${C.cyan("MemoryMode=HNSW")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, semantic retrieval`)}`);
+    Logger.telemetry(`${C.cyan("MemoryMode=HNSW")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, semantic retrieval`)}`);
     const { HNSWMemory } = await import("./memory/hnsw-memory.js");
     const hm = new HNSWMemory({
       driver: summarizerDriver ?? driver,
@@ -798,7 +798,7 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
 
   // PerfectMemory (fork-based persistent recall)
   if (memoryMode === "perfect") {
-    Logger.info(`${C.cyan("MemoryMode=Perfect")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, fork-based recall`)}`);
+    Logger.telemetry(`${C.cyan("MemoryMode=Perfect")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, fork-based recall`)}`);
     const { PerfectMemory } = await import("./memory/perfect-memory.js");
     const pm = new PerfectMemory({
       driver: summarizerDriver ?? driver,
@@ -811,7 +811,7 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
     return pm;
   }
 
-    Logger.info(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
+    Logger.telemetry(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
   const vm = new VirtualMemory({
     driver: summarizerDriver ?? driver,
     summarizerModel: effectiveSummarizerModel,
@@ -967,7 +967,7 @@ async function executeTurn(
     const { LfsPoster } = await import("./lfs/lfs-poster.js");
     lfsExtractor = new SignalExtractor();
     lfsPoster = new LfsPoster(cfg.lfs as string);
-    Logger.info(`LFS enabled → ${cfg.lfs}`);
+    Logger.telemetry(`LFS enabled → ${cfg.lfs}`);
     if (!toolRegistry.has("discover_avatar")) {
       const { registerVisageTools } = await import("./plugins/visage/index.js");
       registerVisageTools(cfg.lfs as string);
@@ -1024,7 +1024,7 @@ async function executeTurn(
         return;
       }
 
-      Logger.info(`Stream marker: memory('${targetType}') — swapping memory implementation`);
+      Logger.telemetry(`Stream marker: memory('${targetType}') — swapping memory implementation`);
 
       // Determine the actual inner memory (unwrap sensory decorator if present)
       const isSensory = memory instanceof SensoryMemory;
@@ -1096,7 +1096,7 @@ async function executeTurn(
             cfg.provider = newProvider;
             cfg.apiKey = newApiKey;
             cfg.baseUrl = newBaseUrl;
-            Logger.info(`Stream marker: model-change '${marker.arg}' → ${newModel} (cross-provider: now ${newProvider})`);
+            Logger.telemetry(`Stream marker: model-change '${marker.arg}' → ${newModel} (cross-provider: now ${newProvider})`);
           } catch (err: unknown) {
             Logger.error(`Stream marker: model-change '${marker.arg}' FAILED — could not create ${newProvider} driver: ${err}`);
             return;
@@ -1113,21 +1113,21 @@ async function executeTurn(
         const inner = unwrapMemory(memory);
         if ("ref" in inner && typeof (inner as any).ref === "function") {
           (inner as any).ref(marker.arg);
-          Logger.info(`Stream marker: ref('${marker.arg}') — page will load next turn`);
+          Logger.telemetry(`Stream marker: ref('${marker.arg}') — page will load next turn`);
         }
       } else if (marker.name === "unref" && marker.arg) {
         // VirtualMemory page unref — release a page from context
         const inner = unwrapMemory(memory);
         if ("unref" in inner && typeof (inner as any).unref === "function") {
           (inner as any).unref(marker.arg);
-          Logger.info(`Stream marker: unref('${marker.arg}') — page released`);
+          Logger.telemetry(`Stream marker: unref('${marker.arg}') — page released`);
         }
       } else if (marker.name === "importance" && marker.arg) {
         // Importance weighting — tag current message for paging priority
         const val = parseFloat(marker.arg);
         if (!isNaN(val) && val >= 0 && val <= 1) {
           roundImportance = val;
-          Logger.info(`Stream marker: importance(${val})`);
+          Logger.telemetry(`Stream marker: importance(${val})`);
         } else {
           Logger.warn(`Stream marker: importance('${marker.arg}') — invalid value, must be 0.0–1.0`);
         }
@@ -1140,7 +1140,7 @@ async function executeTurn(
           activeThinkingBudget = level;
           thinkingSeenThisTurn = true;
           runtimeState.setThinkingBudget(level);
-          Logger.info(`Stream marker: thinking(${level}) → budget=${level}`);
+          Logger.telemetry(`Stream marker: thinking(${level}) → budget=${level}`);
           emitStateVector({ thinking: level }, cfg.outputFormat);
         } else {
           Logger.warn(`Stream marker: thinking('${marker.arg}') — invalid value, must be 0.0–1.0`);
@@ -1150,27 +1150,27 @@ async function executeTurn(
         activeThinkingBudget = Math.min(1.0, activeThinkingBudget + 0.3);
         thinkingSeenThisTurn = true;
         runtimeState.setThinkingBudget(activeThinkingBudget);
-        Logger.info(`Stream marker: think → budget=${activeThinkingBudget.toFixed(2)}`);
+        Logger.telemetry(`Stream marker: think → budget=${activeThinkingBudget.toFixed(2)}`);
         emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
       } else if (marker.name === "relax") {
         // Shorthand: reduce thinking intensity by 0.3, floored at 0.0
         activeThinkingBudget = Math.max(0.0, activeThinkingBudget - 0.3);
         thinkingSeenThisTurn = true;
         runtimeState.setThinkingBudget(activeThinkingBudget);
-        Logger.info(`Stream marker: relax → budget=${activeThinkingBudget.toFixed(2)}`);
+        Logger.telemetry(`Stream marker: relax → budget=${activeThinkingBudget.toFixed(2)}`);
         emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
       } else if (marker.name === "sleep" || marker.name === "listening") {
         // 🧠 / 🧠 — agent declares it is in a blocking listen.
         // Suppresses idle and same-tool-loop violation checks until a non-listen tool fires.
         if (violations) {
           violations.setSleeping(true);
-          Logger.info(`Stream marker: ${marker.name} → violation checks suppressed (sleep mode ON)`);
+          Logger.telemetry(`Stream marker: ${marker.name} → violation checks suppressed (sleep mode ON)`);
         }
       } else if (marker.name === "wake") {
         // 🧠 — explicitly exit sleep mode
         if (violations) {
           violations.setSleeping(false);
-          Logger.info("Stream marker: wake → violation checks resumed (sleep mode OFF)");
+          Logger.telemetry("Stream marker: wake → violation checks resumed (sleep mode OFF)");
         }
       } else if (EMOTION_DIMENSIONS.has(marker.name)) {
         // Function-form emotion marker 😊 — route to visage as state vector.
@@ -1178,7 +1178,7 @@ async function executeTurn(
         if (!isNaN(val) && val >= 0 && val <= 1) {
           emitStateVector({ [marker.name]: val }, cfg.outputFormat);
           pendingEmotionState[marker.name] = val;  // Accumulate for send tool injection
-          Logger.info(`Stream marker: ${marker.name}(${val}) → visage`);
+          Logger.telemetry(`Stream marker: ${marker.name}(${val}) → visage`);
         }
       } else if (marker.name === "temp" || marker.name === "temperature") {
         // 🌡️ or 🌡️ — set sampling temperature
@@ -1186,7 +1186,7 @@ async function executeTurn(
         if (!isNaN(val) && val >= 0 && val <= 2) {
           activeTemperature = val;
           runtimeState.setTemperature(val);
-          Logger.info(`Stream marker: temp(${val})`);
+          Logger.telemetry(`Stream marker: temp(${val})`);
         } else {
           Logger.warn(`Stream marker: temp('${marker.arg}') — invalid, must be 0.0–2.0`);
         }
@@ -1196,7 +1196,7 @@ async function executeTurn(
         if (!isNaN(val) && val > 0) {
           activeTopK = val;
           runtimeState.setTopK(val);
-          Logger.info(`Stream marker: top_k(${val})`);
+          Logger.telemetry(`Stream marker: top_k(${val})`);
         } else {
           Logger.warn(`Stream marker: top_k('${marker.arg}') — invalid, must be positive integer`);
         }
@@ -1206,7 +1206,7 @@ async function executeTurn(
         if (!isNaN(val) && val >= 0 && val <= 1) {
           activeTopP = val;
           runtimeState.setTopP(val);
-          Logger.info(`Stream marker: top_p(${val})`);
+          Logger.telemetry(`Stream marker: top_p(${val})`);
         } else {
           Logger.warn(`Stream marker: top_p('${marker.arg}') — invalid, must be 0.0–1.0`);
         }
@@ -1249,7 +1249,7 @@ async function executeTurn(
         const innerHR = unwrapMemory(memory);
         if ("hotReloadConfig" in innerHR && typeof (innerHR as any).hotReloadConfig === "function") {
           const result = (innerHR as any).hotReloadConfig(config);
-          Logger.info(`Stream marker: memory hotreload — ${result}`);
+          Logger.telemetry(`Stream marker: memory hotreload — ${result}`);
         }
       } else if (marker.name === "learn" && marker.arg) {
         // Persist a learned fact to _learn.md → feeds into Layer 2 system prompt.
@@ -1257,7 +1257,7 @@ async function executeTurn(
         const line = `- ${marker.arg}\n`;
         try {
           appendFileSync(learnFile, line, "utf-8");
-          Logger.info(`Stream marker: learn('${marker.arg}') → saved to _learn.md`);
+          Logger.telemetry(`Stream marker: learn('${marker.arg}') → saved to _learn.md`);
           // Hot-patch: inject into current session's system message
           const innerLearn = unwrapMemory(memory);
           const sysMsg = (innerLearn as any).messagesBuffer?.[0];
@@ -1269,7 +1269,7 @@ async function executeTurn(
         }
       } else if (marker.name === "memory" && marker.arg) {
         void swapMemory(marker.arg);
-        Logger.info(`Stream marker: memory('${marker.arg}') triggered`);
+        Logger.telemetry(`Stream marker: memory('${marker.arg}') triggered`);
       } else if (marker.name === "recall") {
         // PerfectMemory fork recall — load fork content into page slot
         const innerRecall = unwrapMemory(memory);
@@ -1277,7 +1277,7 @@ async function executeTurn(
           const forkId = marker.arg || undefined;
           void (innerRecall as any).recallFork(forkId).then((pageId: string | null) => {
             if (pageId) {
-              Logger.info(`Stream marker: recall('${marker.arg || "latest"}') — loaded as page ${pageId}`);
+              Logger.telemetry(`Stream marker: recall('${marker.arg || "latest"}') — loaded as page ${pageId}`);
             } else {
               Logger.warn(`Stream marker: recall('${marker.arg || "latest"}') — fork not found`);
             }
@@ -1307,7 +1307,7 @@ async function executeTurn(
        const innerTune = unwrapMemory(memory);
        if (Object.keys(tuneParams).length > 0 && "tune" in innerTune && typeof (innerTune as any).tune === "function") {
          (innerTune as any).tune(tuneParams);
-         Logger.info(`Stream marker: memory-tune(${marker.arg})`);
+         Logger.telemetry(`Stream marker: memory-tune(${marker.arg})`);
        } else {
          Logger.warn(`Stream marker: memory-tune — memory controller doesn't support hot-tuning`);
        }
@@ -1333,10 +1333,10 @@ async function executeTurn(
          const innerMC = unwrapMemory(memory);
          if ("hotReloadConfig" in innerMC && typeof (innerMC as any).hotReloadConfig === "function") {
            const result = (innerMC as any).hotReloadConfig({ workingMemoryTokens: tokens });
-           Logger.info(`Stream marker: max-context('${marker.arg}') → ${tokens} tokens — ${result}`);
+           Logger.telemetry(`Stream marker: max-context('${marker.arg}') → ${tokens} tokens — ${result}`);
          } else if ("tune" in innerMC && typeof (innerMC as any).tune === "function") {
            (innerMC as any).tune({ working: tokens });
-           Logger.info(`Stream marker: max-context('${marker.arg}') → ${tokens} tokens`);
+           Logger.telemetry(`Stream marker: max-context('${marker.arg}') → ${tokens} tokens`);
          } else {
            Logger.warn(`Stream marker: max-context — memory controller doesn't support resizing`);
          }
@@ -1347,7 +1347,7 @@ async function executeTurn(
       if (memory instanceof SensoryMemory) {
         const parts = marker.arg.split(",").map(s => s.trim());
         memory.onSenseMarker(parts[0] || "", parts[1] || "");
-        Logger.info(`Stream marker: sense('${parts[0]}','${parts[1] || ""}')`);
+        Logger.telemetry(`Stream marker: sense('${parts[0]}','${parts[1] || ""}')`);
       }
     } else if (marker.name === "view") {
       // <view:context>        — set slot0 to named camera
@@ -1361,10 +1361,10 @@ async function executeTurn(
         const slot = (slotArg === "1" ? 1 : 0) as 0 | 1;
         if (viewName === "off" || viewName === "") {
           memory.setSlot(slot, null);
-          Logger.info(`Stream marker: view('off','${slot}') → slot${slot} cleared`);
+          Logger.telemetry(`Stream marker: view('off','${slot}') → slot${slot} cleared`);
         } else {
           memory.switchView(viewName, slot);
-          Logger.info(`Stream marker: view('${viewName}','${slot}') → slot${slot}=${viewName}`);
+          Logger.telemetry(`Stream marker: view('${viewName}','${slot}') → slot${slot}=${viewName}`);
         }
       }
     }
@@ -1376,7 +1376,7 @@ async function executeTurn(
       if (typeof tierResult === "string") {
         // Single-provider mode — just a model name
         if (tierResult !== activeModel) {
-          Logger.info(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierResult}`);
+          Logger.telemetry(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierResult}`);
           activeModel = tierResult;
           runtimeState.setActiveModel(tierResult);
         }
@@ -1385,7 +1385,7 @@ async function executeTurn(
         const needsSwitch = tierResult.model !== activeModel;
         const providerChanged = tierResult.provider !== cfg.provider;
         if (needsSwitch) {
-          Logger.info(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierResult.model} (${tierResult.provider})`);
+          Logger.telemetry(`Thinking budget ${activeThinkingBudget.toFixed(2)} → model tier: ${tierResult.model} (${tierResult.provider})`);
           if (providerChanged) {
             const newApiKey = resolveApiKey(tierResult.provider);
             const newBaseUrl = defaultBaseUrl(tierResult.provider);
@@ -1394,7 +1394,7 @@ async function executeTurn(
               cfg.provider = tierResult.provider as Provider;
               cfg.apiKey = newApiKey;
               cfg.baseUrl = newBaseUrl;
-              Logger.info(`Cross-provider tier switch → ${tierResult.provider}`);
+              Logger.telemetry(`Cross-provider tier switch → ${tierResult.provider}`);
             } catch (err: unknown) {
               Logger.error(`Cross-provider tier switch to ${tierResult.provider} FAILED: ${err}`);
             }
@@ -1426,7 +1426,7 @@ async function executeTurn(
       },
       onMarker: handleMarker,
       onAvatarMarker: lfsPoster ? (clips) => {
-        Logger.info(`Avatar marker → ${JSON.stringify(clips)}`);
+        Logger.telemetry(`Avatar marker → ${JSON.stringify(clips)}`);
         if (narrationBuffer.trim()) {
           narrationSegments.push({ text: narrationBuffer, clips: narrationClips });
           narrationBuffer = "";
@@ -1485,7 +1485,7 @@ async function executeTurn(
       spendMeter.setModel(activeModel);
       spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
       runtimeState.recordTurnUsage(output.usage.inputTokens, output.usage.outputTokens);
-      Logger.info(spendMeter.format());
+      Logger.telemetry(spendMeter.format());
 
       // Check if budget exceeded
       const budgetErr = spendMeter.checkBudget(cfg.maxBudgetUsd);
@@ -1681,7 +1681,11 @@ async function executeTurn(
           .join(", ");
         toolCallDisplay = argPairs ? `${fnName}(${argPairs})` : `${fnName}()`;
       }
-      Logger.info(`${C.magenta("[Tool call]")} ${C.bold(fnName)}${toolCallDisplay.slice(fnName.length)}`);
+      if (Logger.isVerbose()) {
+        Logger.info(`${C.magenta("[Tool call]")} ${C.bold(fnName)}${toolCallDisplay.slice(fnName.length)}`);
+      } else {
+        Logger.info(C.gray(`  → ${fnName}()`));
+      }
 
       let result: string;
       try {
@@ -1800,7 +1804,11 @@ async function executeTurn(
       spendMeter.setModel(activeModel);
       spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
       runtimeState.recordTurnUsage(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
-      Logger.info(spendMeter.format());
+      if (Logger.isVerbose()) {
+        Logger.info(spendMeter.format());
+      } else {
+        Logger.info(spendMeter.formatBrief());
+      }
 
       // Check if budget exceeded
       const budgetErr2 = spendMeter.checkBudget(cfg.maxBudgetUsd);
@@ -1885,7 +1893,7 @@ async function singleShot(
     if (sess && sess.meta.model) {
       if (sess.meta.provider !== cfg.provider && !wasProviderExplicitlyPassed() && !wasModelExplicitlyPassed()) {
         // Cross-provider hotswap: restore saved provider and reinitialize driver
-        Logger.info(`Restoring cross-provider session: ${sess.meta.provider}/${sess.meta.model}`);
+        Logger.telemetry(`Restoring cross-provider session: ${sess.meta.provider}/${sess.meta.model}`);
         cfg.provider = sess.meta.provider as Provider;
         cfg.model = sess.meta.model;
         cfg.apiKey = resolveApiKey(cfg.provider);
@@ -1895,7 +1903,7 @@ async function singleShot(
         await memory.load(sessionId);
       } else if (sess.meta.provider === cfg.provider && !wasModelExplicitlyPassed()) {
         cfg.model = sess.meta.model;
-        Logger.info(`Restored model from session: ${cfg.model}`);
+        Logger.telemetry(`Restored model from session: ${cfg.model}`);
       }
     }
   }
@@ -1985,7 +1993,7 @@ async function interactive(
       // restore the saved provider+model and reinitialize the driver so that hotswaps
       // (e.g. 🔀 to gpt-5.2) persist across session resumes.
       if (!wasProviderExplicitlyPassed() && !wasModelExplicitlyPassed() && sess.meta.provider && sess.meta.model) {
-        Logger.info(`Restoring cross-provider session: ${sess.meta.provider}/${sess.meta.model}`);
+        Logger.telemetry(`Restoring cross-provider session: ${sess.meta.provider}/${sess.meta.model}`);
         cfg.provider = sess.meta.provider as Provider;
         cfg.model = sess.meta.model;
         cfg.apiKey = resolveApiKey(cfg.provider);
@@ -2008,7 +2016,7 @@ async function interactive(
         // Restore the model from the previous session if no model was explicitly passed.
         if (!wasModelExplicitlyPassed() && sess.meta.model) {
           cfg.model = sess.meta.model;
-          Logger.info(`Restored model from session: ${cfg.model}`);
+          Logger.telemetry(`Restored model from session: ${cfg.model}`);
         }
 
         const msgCount = sess.messages.filter((m: any) => m.role !== "system").length;
@@ -2024,9 +2032,11 @@ async function interactive(
   });
 
   const toolCount = mcp.getToolDefinitions().length;
-  Logger.info(C.gray(`gro interactive — ${cfg.provider}/${cfg.model} [${sessionId}]`));
-  if (cfg.summarizerModel) Logger.info(C.gray(`summarizer: ${cfg.summarizerModel}`));
-  if (toolCount > 0) Logger.info(C.gray(`${toolCount} MCP tool(s) available`));
+  if (Logger.isVerbose()) {
+    Logger.info(C.gray(`gro interactive — ${cfg.provider}/${cfg.model} [${sessionId}]`));
+    if (cfg.summarizerModel) Logger.info(C.gray(`summarizer: ${cfg.summarizerModel}`));
+    if (toolCount > 0) Logger.info(C.gray(`${toolCount} MCP tool(s) available`));
+  }
   Logger.info(C.gray("type 'exit' or Ctrl+D to quit\n"));
   rl.prompt();
 
@@ -2116,11 +2126,15 @@ async function main() {
   // Set Logger verbose mode
   Logger.setVerbose(cfg.verbose);
 
-  Logger.info(`Runtime: ${C.cyan("gro")} ${C.gray(VERSION)}  Model: ${C.gray(cfg.model)} ${C.gray(`(${cfg.provider})`)}`);
+  if (Logger.isVerbose()) {
+    Logger.info(`Runtime: ${C.cyan("gro")} ${C.gray(VERSION)}  Model: ${C.gray(cfg.model)} ${C.gray(`(${cfg.provider})`)}`);
+  } else {
+    Logger.info(C.gray(`gro ${VERSION} — ${cfg.model} (${cfg.provider})`));
+  }
 
   // Validate --providers API keys
   if (cfg.providers.length > 0) {
-    Logger.info(`Multi-provider tier selection: ${cfg.providers.join(", ")}`);
+    Logger.telemetry(`Multi-provider tier selection: ${cfg.providers.join(", ")}`);
     for (const p of cfg.providers) {
       if (!resolveApiKey(p)) Logger.warn(`--providers: no API key for ${p}`);
     }

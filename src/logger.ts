@@ -26,6 +26,10 @@ export class Logger {
     console.log(...args);
   }
 
+  static telemetry(...args: any[]) {
+    if (Logger._verbose) console.log(...args);
+  }
+
   static warn(...args: any[]) { console.warn(...args); }
   static error(...args: any[]) { console.error(...args); }
 

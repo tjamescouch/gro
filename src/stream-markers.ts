@@ -316,7 +316,7 @@ export function createMarkerParser(opts: MarkerParserOptions): MarkerParser {
       // Emit emoji indicator into the output stream
       const emoji = markerEmoji(name);
       cleanText += emoji;
-      if (onToken) onToken(emoji);
+      if (onToken && Logger.isVerbose()) onToken(emoji);
 
       lastIndex = match.index + match[0].length;
     }

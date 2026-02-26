@@ -70,9 +70,9 @@ export class McpManager {
       try { await old.client.close(); } catch { /* ignore */ }
       this.servers.delete(name);
     }
-    Logger.info(`MCP "${name}": reconnecting...`);
+    Logger.telemetry(`MCP "${name}": reconnecting...`);
     await this.connectOne(name, cfg);
-    Logger.info(`MCP "${name}": reconnected`);
+    Logger.telemetry(`MCP "${name}": reconnected`);
   }
 
   private async connectOne(name: string, cfg: McpServerConfig): Promise<void> {

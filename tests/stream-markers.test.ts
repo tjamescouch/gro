@@ -1,7 +1,8 @@
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createMarkerParser } from "../src/stream-markers.js";
 import type { StreamMarker } from "../src/stream-markers.js";
+import { Logger } from "../src/logger.js";
 
 describe("createMarkerParser", () => {
   it("passes through plain text unchanged", () => {
@@ -22,6 +23,29 @@ describe("createMarkerParser", () => {
   });
 
   it("detects a single marker in one chunk", () => {
+    Logger.setVerbose(true);
+    try {
+      const tokens: string[] = [];
+      const markers: StreamMarker[] = [];
+      const parser = createMarkerParser({
+        onToken: (s) => tokens.push(s),
+        onMarker: (m) => markers.push(m),
+      });
+
+      parser.onToken("before @@model-change('haiku')@@ after");
+      parser.flush();
+
+      assert.equal(tokens.join(""), "before \u{1F500} after");
+      assert.equal(markers.length, 1);
+      assert.equal(markers[0].name, "model-change");
+      assert.equal(markers[0].arg, "haiku");
+    } finally {
+      Logger.setVerbose(false);
+    }
+  });
+
+  it("suppresses marker emojis from onToken in default mode", () => {
+    Logger.setVerbose(false);
     const tokens: string[] = [];
     const markers: StreamMarker[] = [];
     const parser = createMarkerParser({
@@ -32,10 +56,11 @@ describe("createMarkerParser", () => {
     parser.onToken("before @@model-change('haiku')@@ after");
     parser.flush();
 
-    assert.equal(tokens.join(""), "before \u{1F500} after");
+    // Emoji suppressed from onToken stream in default mode
+    assert.equal(tokens.join(""), "before  after");
+    // But cleanText still includes the emoji
+    assert.equal(parser.getCleanText(), "before \u{1F500} after");
     assert.equal(markers.length, 1);
-    assert.equal(markers[0].name, "model-change");
-    assert.equal(markers[0].arg, "haiku");
   });
 
   it("detects a marker split across token chunks", () => {

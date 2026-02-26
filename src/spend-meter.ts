@@ -179,6 +179,12 @@ export class SpendMeter {
     return C.gray(`[spend] ${costStr}  ${C.yellow(rateStr)}  ${tokStr}`);
   }
 
+  formatBrief(): string {
+    const cost = this.cost();
+    const tokOut = this.totalOut;
+    return C.gray(`$${cost.toFixed(4)} · ${tokOut} tokens`);
+  }
+
   get tokens() { return { in: this.totalIn, out: this.totalOut }; }
 }
 

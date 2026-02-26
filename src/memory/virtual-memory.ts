@@ -263,54 +263,54 @@ export class VirtualMemory extends AgentMemory {
         case "workingmemory":
           this.cfg.workingMemoryTokens = val;
           this.baseWorkingMemoryTokens = val;
-          Logger.info(`VirtualMemory: workingMemoryTokens → ${val}`);
+          Logger.telemetry(`VirtualMemory: workingMemoryTokens → ${val}`);
           break;
         case "page":
         case "page_slot":
         case "pageslot":
           this.cfg.pageSlotTokens = val;
-          Logger.info(`VirtualMemory: pageSlotTokens → ${val}`);
+          Logger.telemetry(`VirtualMemory: pageSlotTokens → ${val}`);
           break;
         case "high":
         case "high_ratio":
           if (val >= 0 && val <= 1) {
             this.cfg.highRatio = val;
-            Logger.info(`VirtualMemory: highRatio → ${val}`);
+            Logger.telemetry(`VirtualMemory: highRatio → ${val}`);
           }
           break;
         case "low":
         case "low_ratio":
           if (val >= 0 && val <= 1) {
             this.cfg.lowRatio = val;
-            Logger.info(`VirtualMemory: lowRatio → ${val}`);
+            Logger.telemetry(`VirtualMemory: lowRatio → ${val}`);
           }
           break;
         case "min_recent":
         case "minrecent":
           if (val >= 1) {
             this.cfg.minRecentPerLane = Math.round(val);
-            Logger.info(`VirtualMemory: minRecentPerLane → ${Math.round(val)}`);
+            Logger.telemetry(`VirtualMemory: minRecentPerLane → ${Math.round(val)}`);
           }
           break;
         case "assistant_weight":
         case "assistantweight":
           this.cfg.assistantWeight = val;
-          Logger.info(`VirtualMemory: assistantWeight → ${val}`);
+          Logger.telemetry(`VirtualMemory: assistantWeight → ${val}`);
           break;
         case "user_weight":
         case "userweight":
           this.cfg.userWeight = val;
-          Logger.info(`VirtualMemory: userWeight → ${val}`);
+          Logger.telemetry(`VirtualMemory: userWeight → ${val}`);
           break;
         case "system_weight":
         case "systemweight":
           this.cfg.systemWeight = val;
-          Logger.info(`VirtualMemory: systemWeight → ${val}`);
+          Logger.telemetry(`VirtualMemory: systemWeight → ${val}`);
           break;
         case "tool_weight":
         case "toolweight":
           this.cfg.toolWeight = val;
-          Logger.info(`VirtualMemory: toolWeight → ${val}`);
+          Logger.telemetry(`VirtualMemory: toolWeight → ${val}`);
           break;
        default:
          Logger.warn(`VirtualMemory.tune: unknown parameter '${key}'`);
@@ -1156,7 +1156,7 @@ export class VirtualMemory extends AgentMemory {
     }
 
     if (flattenCount > 0) {
-      Logger.info(`[VM] flattenCompactedToolCalls: flattened ${flattenCount} tool call(s) into summarized pairs`);
+      Logger.telemetry(`[VM] flattenCompactedToolCalls: flattened ${flattenCount} tool call(s) into summarized pairs`);
     }
 
     buf.splice(0, buf.length, ...output);
@@ -1211,7 +1211,7 @@ export class VirtualMemory extends AgentMemory {
 
     // VM diagnostics logging (if GRO_VM_DEBUG=true)
     if (process.env.GRO_VM_DEBUG === "true") {
-      Logger.info(`[VM] A:${assistantTokens}/${budgets.assistant} U:${userTokens}/${budgets.user} S:${systemTokens}/${budgets.system} T:${toolTokens}/${budgets.tool} paging=[A:${assistantOverBudget} U:${userOverBudget} S:${systemOverBudget} T:${toolOverBudget}]`);
+      Logger.telemetry(`[VM] A:${assistantTokens}/${budgets.assistant} U:${userTokens}/${budgets.user} S:${systemTokens}/${budgets.system} T:${toolTokens}/${budgets.tool} paging=[A:${assistantOverBudget} U:${userOverBudget} S:${systemOverBudget} T:${toolOverBudget}]`);
     }
 
     // If no lane is over budget, nothing to do (unless forced)
@@ -1461,7 +1461,7 @@ export class VirtualMemory extends AgentMemory {
       const reclaimedMB = (parseFloat(beforeMB) - parseFloat(afterMB)).toFixed(2);
 
       // Log cleanup event with per-lane paging info
-      Logger.info(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} paged=[A:${finalOlderAssistant.length} U:${olderUser.length} S:${olderSystem.length} T:${olderTool.length}]`);
+      Logger.telemetry(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} paged=[A:${finalOlderAssistant.length} U:${olderUser.length} S:${olderSystem.length} T:${olderTool.length}]`);
 
       } finally {
         // Restore original cfg values (single-shot semantics)
@@ -1514,7 +1514,7 @@ export class VirtualMemory extends AgentMemory {
     if (!this.activePageIds.has(id)) {
       this.pendingRefs.add(id);
     }
-    Logger.info(`[VM] pinPage('${id}'): pinned`);
+    Logger.telemetry(`[VM] pinPage('${id}'): pinned`);
   }
 
   /**
@@ -1522,7 +1522,7 @@ export class VirtualMemory extends AgentMemory {
    */
   unpinPage(id: string): void {
     this.pinnedPageIds.delete(id);
-    Logger.info(`[VM] unpinPage('${id}'): unpinned`);
+    Logger.telemetry(`[VM] unpinPage('${id}'): unpinned`);
   }
 
   /**
@@ -1621,7 +1621,7 @@ export class VirtualMemory extends AgentMemory {
     });
 
     this.batchWorkerManager.start();
-    Logger.info("[VirtualMemory] Batch worker started");
+    Logger.telemetry("[VirtualMemory] Batch worker started");
   }
 
   /**

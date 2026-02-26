@@ -3,7 +3,7 @@ import type { GrotuiConfig } from "./types.js";
 export function parseConfig(argv: string[]): GrotuiConfig {
   const config: GrotuiConfig = {
     command: "gro",
-    args: ["-p", "--bash"],
+    args: ["--bash"],
     panelRatios: [50, 25, 25],
   };
 

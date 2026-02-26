@@ -51,6 +51,10 @@ export class OutputParser {
     for (const line of lines) {
       if (!line.trim()) continue;
 
+      // Skip readline prompt lines (may include ANSI codes)
+      const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
+      if (/^you > $/.test(stripped.trim())) continue;
+
       // Detect tool call patterns
       const toolCallMatch = line.match(
         /(?:Tool call|Calling tool|tool_use):\s*(\w+)\s*\((.+)\)/i,

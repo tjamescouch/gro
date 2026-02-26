@@ -1,7 +1,7 @@
 export function parseConfig(argv) {
     const config = {
         command: "gro",
-        args: ["-p", "--bash"],
+        args: ["--bash"],
         panelRatios: [50, 25, 25],
     };
     const passthrough = [];

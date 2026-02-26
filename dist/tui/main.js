@@ -41,7 +41,9 @@ function main() {
                 }
             }
             chatPanel.finalizeResponse();
-            logsPanel.appendLog(`Process exited (code ${code})`, "debug");
+            if (code !== 0) {
+                logsPanel.appendLog(`Process exited (code ${code})`, code === null ? "debug" : "warn");
+            }
             inputBox.style.border = { fg: "green" };
             inputBox.setLabel(" Type here > ");
             screen.render();

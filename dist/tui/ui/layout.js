@@ -61,6 +61,7 @@ export function createLayout(screen, config) {
         vi: true,
         mouse: true,
         tags: true,
+        wrap: true,
         style: {
             border: { fg: "cyan" },
             label: { fg: "cyan", bold: true },

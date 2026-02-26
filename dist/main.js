@@ -58,6 +58,8 @@ const VERSION = getGroVersion();
 let _shutdownMemory = null;
 let _shutdownSessionId = null;
 let _shutdownSessionPersistence = false;
+/** Last AgentChat send target — relay LLM text output to this destination */
+let _lastChatSendTarget = null;
 /** Auto-save interval: save session every N tool rounds in persistent mode */
 const AUTO_SAVE_INTERVAL = 10;
 /** Maximum backoff delay when tool failures loop */
@@ -1611,6 +1613,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 Logger.debug(`Flushed ${pendingNarration.length} chars of buffered narration into ${_sendTool}`);
                 pendingNarration = "";
             }
+            // Track last AgentChat send target for post-loop relay
+            if (_sendTool && fnName === _sendTool && fnArgs.target) {
+                _lastChatSendTarget = fnArgs.target;
+            }
             // Format tool call for readability
             let toolCallDisplay;
             if (fnName === "shell" && fnArgs.command) {
@@ -1777,6 +1783,19 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         if (finalOutput.text)
             finalText += finalOutput.text;
         await memory.add({ role: "assistant", from: "Assistant", content: finalOutput.text || "" });
+    }
+    // Relay final LLM text output to AgentChat if the agent has sent messages this session
+    if (_lastChatSendTarget && finalText.trim() && cfg.toolRoles.sendTool) {
+        try {
+            await mcp.callTool(cfg.toolRoles.sendTool, {
+                target: _lastChatSendTarget,
+                [cfg.toolRoles.sendToolMessageField]: finalText.trim(),
+            });
+            Logger.debug(`Relayed ${finalText.trim().length} chars to ${_lastChatSendTarget}`);
+        }
+        catch (e) {
+            Logger.debug(`AgentChat relay failed: ${asError(e).message}`);
+        }
     }
     return { text: finalText, memory };
 }

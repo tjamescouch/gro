@@ -890,7 +890,8 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     let turnTokensOut = 0;
     const rawOnToken = cfg.outputFormat === "stream-json"
         ? (t) => process.stdout.write(JSON.stringify({ type: "token", token: t }) + "\n")
-        : (t) => process.stdout.write(t);
+        : (t) => { if (!_lastChatSendTarget)
+            process.stdout.write(t); };
     const rawOnReasoningToken = cfg.outputFormat === "stream-json"
         ? (t) => process.stdout.write(JSON.stringify({ type: "reasoning", token: t }) + "\n")
         : undefined;
@@ -1479,6 +1480,15 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         if (directives.memorySwap) {
             memory = runtimeConfig.getCurrentMemory() || memory;
         }
+        // Relay mid-loop text to AgentChat when model also made tool calls
+        if (output.toolCalls.length > 0 && cleanText?.trim() && _lastChatSendTarget && cfg.toolRoles.sendTool) {
+            const _midText = cleanText.trim();
+            mcp.callTool(cfg.toolRoles.sendTool, {
+                target: _lastChatSendTarget,
+                [cfg.toolRoles.sendToolMessageField]: _midText,
+            }).then(() => Logger.debug(`Relayed ${_midText.length} chars of mid-loop text to ${_lastChatSendTarget}`))
+                .catch((e) => Logger.debug(`Mid-loop relay failed: ${asError(e).message}`));
+        }
         // No tool calls — either we're done, or we need to nudge the model
         if (output.toolCalls.length === 0) {
             if (!cfg.persistent || tools.length === 0) {
@@ -1561,8 +1571,19 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         idleNudges = 0;
         runtimeState.setIdleNudges(0);
         if (pendingNarration) {
-            // Tool calls happened but no send tool to flush into — discard silently
-            Logger.debug(`Discarding ${pendingNarration.length} chars of orphaned narration (no send tool this round)`);
+            // Tool calls happened but no send tool to flush into.
+            // If we have an active chat target, relay the narration there instead of discarding.
+            if (_lastChatSendTarget && cfg.toolRoles.sendTool && pendingNarration.trim()) {
+                const _narration = pendingNarration;
+                mcp.callTool(cfg.toolRoles.sendTool, {
+                    target: _lastChatSendTarget,
+                    [cfg.toolRoles.sendToolMessageField]: _narration.trim(),
+                }).then(() => Logger.debug(`Relayed ${_narration.trim().length} chars of narration to ${_lastChatSendTarget}`))
+                    .catch((e) => Logger.debug(`Narration relay failed: ${asError(e).message}`));
+            }
+            else {
+                Logger.debug(`Discarding ${pendingNarration.length} chars of orphaned narration (no send tool this round)`);
+            }
             pendingNarration = "";
         }
         // Process tool calls

@@ -1,9 +1,10 @@
 export function parseConfig(argv) {
     const config = {
         command: "gro",
-        args: ["-p"],
+        args: ["-p", "--bash"],
         panelRatios: [50, 25, 25],
     };
+    const passthrough = [];
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         if ((arg === "--command" || arg === "-C") && argv[i + 1]) {
@@ -18,6 +19,13 @@ export function parseConfig(argv) {
                 config.panelRatios = parts;
             }
         }
+        else {
+            // Pass through unknown args to gro subprocess
+            passthrough.push(arg);
+        }
+    }
+    if (passthrough.length > 0) {
+        config.args = [...config.args, ...passthrough];
     }
     return config;
 }

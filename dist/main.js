@@ -490,7 +490,7 @@ function loadConfig() {
         persistent: flags.persistent === "true",
         persistentPolicy: flags.persistentPolicy || "listen-only",
         maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
-        bash: flags.bash === "true",
+        bash: flags.bash === "true" || interactiveMode,
         lfs: flags.lfs || process.env.GRO_LFS || null,
         summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
         outputFormat: flags.outputFormat || "text",

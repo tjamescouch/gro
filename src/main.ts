@@ -511,7 +511,7 @@ function loadConfig(): GroConfig {
     persistent: flags.persistent === "true",
     persistentPolicy: (flags.persistentPolicy as "listen-only" | "work-first") || "listen-only",
     maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
-    bash: flags.bash === "true",
+    bash: flags.bash === "true" || interactiveMode,
     lfs: flags.lfs || process.env.GRO_LFS || null,
     summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
     outputFormat: (flags.outputFormat as GroConfig["outputFormat"]) || "text",

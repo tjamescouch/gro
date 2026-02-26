@@ -31,6 +31,9 @@ import { SensoryMemory } from "./memory/sensory-memory.js";
 import { ContextMapSource } from "./memory/context-map-source.js";
 import { TemporalSource } from "./memory/temporal-source.js";
 import { TaskSource } from "./memory/task-source.js";
+import { SocialSource } from "./memory/social-source.js";
+import { SpendSource } from "./memory/spend-source.js";
+import { ViolationsSource } from "./memory/violations-source.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
@@ -783,7 +786,7 @@ async function createMemory(cfg, driver, requestedMode, sessionId) {
  */
 function wrapWithSensory(inner) {
     try {
-        const sensory = new SensoryMemory(inner, { totalBudget: 500 });
+        const sensory = new SensoryMemory(inner, { totalBudget: 700 });
         const contextMap = new ContextMapSource(inner, {
             barWidth: 32,
             showLanes: true,
@@ -806,9 +809,6 @@ function wrapWithSensory(inner) {
             enabled: true,
             source: temporal,
         });
-        // Configure default camera slots
-        sensory.setSlot(0, "context");
-        sensory.setSlot(1, "time");
         // "tasks" channel — agent-switchable via <view:tasks>
         const taskSource = new TaskSource();
         sensory.addChannel({
@@ -819,6 +819,40 @@ function wrapWithSensory(inner) {
             enabled: false,
             source: taskSource,
         });
+        // "social" channel — reads ~/.gro/social-feed.jsonl from AgentChat MCP
+        const socialSource = new SocialSource();
+        sensory.addChannel({
+            name: "social",
+            maxTokens: 200,
+            updateMode: "every_turn",
+            content: "",
+            enabled: true,
+            source: socialSource,
+        });
+        // "spend" channel — session cost awareness
+        const spendSource = new SpendSource(spendMeter);
+        sensory.addChannel({
+            name: "spend",
+            maxTokens: 100,
+            updateMode: "every_turn",
+            content: "",
+            enabled: false,
+            source: spendSource,
+        });
+        // "violations" channel — violation tracking (tracker wired later via setTracker)
+        const violationsSource = new ViolationsSource(null);
+        sensory.addChannel({
+            name: "violations",
+            maxTokens: 80,
+            updateMode: "every_turn",
+            content: "",
+            enabled: false,
+            source: violationsSource,
+        });
+        // Configure default camera slots
+        sensory.setSlot(0, "context");
+        sensory.setSlot(1, "time");
+        sensory.setSlot(2, "social");
         return sensory;
     }
     catch (err) {
@@ -1320,14 +1354,24 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             else if (marker.name === "view") {
                 // <view:context>        — set slot0 to named camera
                 // <view:time,1>         — set slot1 to named camera
+                // <view:social,2>       — set slot2 to named camera
                 // <view:off>            — clear slot0
-                // <view:off,1>          — clear slot1
+                // <view:next>           — cycle slot0 forward
+                // <view:prev>           — cycle slot0 backward
                 if (memory instanceof SensoryMemory) {
                     const parts = marker.arg.split(",").map(s => s.trim().replace(/^['"]|['"]$/g, ""));
                     const viewName = parts[0] || "";
                     const slotArg = parts[1] ?? "0";
-                    const slot = (slotArg === "1" ? 1 : 0);
-                    if (viewName === "off" || viewName === "") {
+                    const slot = (slotArg === "2" ? 2 : slotArg === "1" ? 1 : 0);
+                    if (viewName === "next") {
+                        memory.cycleSlot0("next");
+                        Logger.telemetry(`Stream marker: view('next') → slot0 cycled forward`);
+                    }
+                    else if (viewName === "prev") {
+                        memory.cycleSlot0("prev");
+                        Logger.telemetry(`Stream marker: view('prev') → slot0 cycled backward`);
+                    }
+                    else if (viewName === "off" || viewName === "") {
                         memory.setSlot(slot, null);
                         Logger.telemetry(`Stream marker: view('off','${slot}') → slot${slot} cleared`);
                     }
@@ -1891,6 +1935,11 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     await memory.add({ role: "user", from: "User", content: prompt });
     // Violation tracker for persistent mode
     const tracker = cfg.persistent ? new ViolationTracker() : undefined;
+    if (memory instanceof SensoryMemory && tracker) {
+        const vs = memory.getChannelSource("violations");
+        if (vs && "setTracker" in vs)
+            vs.setTracker(tracker);
+    }
     runtimeState.initSession({
         sessionId,
         sessionPersistence: cfg.sessionPersistence,
@@ -1940,6 +1989,11 @@ async function interactive(cfg, driver, mcp, sessionId) {
     const readline = await import("readline");
     // Violation tracker for persistent mode
     const tracker = cfg.persistent ? new ViolationTracker() : undefined;
+    if (memory instanceof SensoryMemory && tracker) {
+        const vs = memory.getChannelSource("violations");
+        if (vs && "setTracker" in vs)
+            vs.setTracker(tracker);
+    }
     runtimeState.initSession({
         sessionId,
         sessionPersistence: cfg.sessionPersistence,

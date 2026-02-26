@@ -57,7 +57,7 @@ const THINKING_MARKERS = new Set(["think", "relax", "zzz", "thinking"]);
 const RESERVED_MARKERS = new Set([
     "model-change", "ref", "unref", "importance", "thinking", "think", "relax", "zzz",
     "memory", "callback", "emotion", "dim", "working", "memory-hotreload", "learn",
-    "recall", "max-context", "sense"
+    "recall", "max-context", "sense", "view"
 ]);
 /**
  * Emotion dimensions — valid names for @@dim:value@@ or @@dim('0.5')@@ markers.
@@ -85,6 +85,7 @@ const MARKER_EMOJI = {
     "top_p": "\u{2699}\u{FE0F}", // ⚙️
     "max-context": "\u{1F4D0}", // 📐
     "sense": "\u{1F441}\u{FE0F}", // 👁️
+    "view": "\u{1F4F7}", // 📷
 };
 function markerEmoji(name) {
     if (MARKER_EMOJI[name])

@@ -28,8 +28,8 @@ export class SensoryMemory extends AgentMemory {
         // Don't pass systemPrompt — inner already has it
         super();
         this.channels = new Map();
-        /** Two camera slots — both agent-switchable. null = slot disabled. */
-        this.slots = [null, null];
+        /** Three camera slots — all agent-switchable. null = slot disabled. */
+        this.slots = [null, null, null];
         // Clear the empty messagesBuffer created by super() — we delegate everything to inner
         this.messagesBuffer = []; // unused, inner owns messages
         this.inner = inner;
@@ -79,6 +79,29 @@ export class SensoryMemory extends AgentMemory {
             return;
         }
         this.setSlot(slot, channelName);
+    }
+    /** Get channel names in registration order — used for view cycling. */
+    getChannelNames() {
+        return Array.from(this.channels.keys());
+    }
+    /** Get the source for a named channel (for late-binding dependency injection). */
+    getChannelSource(name) {
+        return this.channels.get(name)?.source;
+    }
+    /** Cycle slot0 to the next/previous channel in registration order. */
+    cycleSlot0(direction) {
+        const names = this.getChannelNames();
+        if (names.length === 0)
+            return;
+        const current = this.slots[0];
+        let idx = current ? names.indexOf(current) : -1;
+        if (direction === "next") {
+            idx = (idx + 1) % names.length;
+        }
+        else {
+            idx = idx <= 0 ? names.length - 1 : idx - 1;
+        }
+        this.setSlot(0, names[idx]);
     }
     /** Poll all every_turn sources for fresh content. Call before driver.chat(). */
     async pollSources() {
@@ -155,7 +178,7 @@ export class SensoryMemory extends AgentMemory {
     }
     // --- Render ---
     renderBuffer() {
-        // Gather content from the two camera slots (in order)
+        // Gather content from the three camera slots (in order)
         const slotContents = [];
         for (const slotName of this.slots) {
             if (!slotName)

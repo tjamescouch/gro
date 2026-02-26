@@ -506,7 +506,7 @@ function loadConfig(): GroConfig {
     print: printMode,
     maxToolRounds: parseInt(flags.maxToolRounds || "10"),
     persistent: flags.persistent === "true",
-    persistentPolicy: (flags.persistentPolicy as "listen-only" | "work-first") || "work-first",
+    persistentPolicy: (flags.persistentPolicy as "listen-only" | "work-first") || "listen-only",
     maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
     bash: flags.bash === "true",
     lfs: flags.lfs || process.env.GRO_LFS || null,
@@ -1597,12 +1597,7 @@ async function executeTurn(
       // Nudge based on policy
       const idleToolName = cfg.toolRoles.idleTool || "listen";
       const nudgeContent = cfg.persistentPolicy === "work-first"
-        ? `[SYSTEM] Persistent mode: you must keep making forward progress.
-Loop:
-1) Check messages quickly (${idleToolName} with short timeout)
-2) Do one work slice (bash/file tools/git)
-3) Repeat.
-Do not get stuck calling ${idleToolName} repeatedly.`
+        ? `[SYSTEM] You have been idle. If there are unread messages or pending tasks, act on them now. If nothing needs doing, emit @@sleep@@ and call ${idleToolName} with a long timeout.`
         : `[SYSTEM] Call ${idleToolName}.`;
 
       await memory.add({

@@ -35,7 +35,7 @@ export class ViolationTracker {
   private sleeping = false;
 
   constructor(opts?: { idleThreshold?: number; sameToolThreshold?: number }) {
-    this.idleThreshold = opts?.idleThreshold ?? 3;
+    this.idleThreshold = opts?.idleThreshold ?? 10;
     this.sameToolThreshold = opts?.sameToolThreshold ?? 5;
   }
 
@@ -75,7 +75,7 @@ export class ViolationTracker {
     if (type === "plain_text") {
       msg = `[VIOLATION #${this.totalViolations}: plain_text. You have ${this.totalViolations} violations this session. You emitted text without a tool call. Resume tool loop immediately.]`;
     } else if (type === "idle") {
-      msg = `[VIOLATION #${this.totalViolations}: idle. You have ${this.totalViolations} violations this session. You are listening without taking action. Find work or report status. Repeated violations result in budget reduction.]`;
+      msg = `[VIOLATION #${this.totalViolations}: idle. You have been listening for many consecutive rounds. If there is pending work, act on it. If not, emit @@sleep@@ before your next listen call to suppress this warning.]`;
     } else {
       msg = `[VIOLATION #${this.totalViolations}: same_tool_loop. You have ${this.totalViolations} violations this session. You have called ${toolName} ${this.consecutiveSameToolCount} times consecutively without doing any work. Do one work slice (bash/tool) now before calling ${toolName} again.]`;
     }

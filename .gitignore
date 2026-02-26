@@ -1,6 +1,7 @@
 node_modules/
 .org/
 .gro
+.owl
 *.tgz
 .claude
 .agentchat

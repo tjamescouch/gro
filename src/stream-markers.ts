@@ -1,7 +1,7 @@
 /**
  * Stream Marker Parser
  *
- * Intercepts @@name('arg')@@ patterns in the token stream.
+ * Intercepts @@name('arg')@@ and @@name:value@@ patterns in the token stream.
  * Generic architecture — any marker type can register a handler.
  *
  * Markers are replaced with emoji indicators in the output stream:
@@ -15,6 +15,8 @@
  *   @@callback('name')@@       — fire a named callback
  *   @@emotion('happy')@@       — set facial expression / emotion state
  *   @@importance('0.9')@@      — tag message importance (0.0-1.0) for memory paging priority
+ *   @@confidence:0.9@@         — colon-format emotion dimension
+ *   @@joy:0.5,confidence:0.8@@ — multi-value colon-format dimensions
  *
  * Avatar markers (@@[...]@@):
  *   @@[face excited:1.0,full cheerful:0.8]@@  — animate avatar clips with weights
@@ -55,23 +57,23 @@ export interface MarkerParserOptions {
 }
 
 /**
- * Regex for matching complete markers.
- * Supports: 🧠 and 🧠 and 🧠 and 🧠
- */
-/**
  * Marker regex: @@name('arg')@@ or @@name("arg")@@ or @@name@@
  * Non-greedy matching prevents consuming URLs like "http://..." incorrectly.
- * Supports escaped markers: @@ → treated as literal text.
+ * Supports escaped markers: \@@ → treated as literal text.
  */
 const MARKER_RE = /(?<!\\)@@([a-zA-Z][a-zA-Z0-9_-]*)(?:\((?:'([^']*?)'|"([^"]*?)"|([^)]*?))\))?@@/g;
 
 /**
- * Regex to detect escaped markers (@@) — these should NOT be processed.
+ * Colon-format markers: @@name:value@@ or @@name:value,name:value,...@@
+ * Values must be numeric (integer or decimal). Each name:value pair fires separately.
  */
-const ESCAPED_MARKER_RE = /\@@/g;
+const COLON_MARKER_RE = /(?<!\\)@@([a-zA-Z][a-zA-Z0-9_-]*:[0-9.]+(?:,[a-zA-Z][a-zA-Z0-9_-]*:[0-9.]+)*)@@/g;
 
 /** Partial marker detection — we might be mid-stream in a marker */
 const PARTIAL_MARKER_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*)?$/;
+
+/** Partial colon marker detection for streaming buffering */
+const PARTIAL_COLON_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?::[0-9.]*(?:,[a-zA-Z][a-zA-Z0-9_-]*(?::[0-9.]*)?)*)?$/;
 
 /** Avatar marker: @@[clip name:weight, ...]@@ */
 const AVATAR_MARKER_RE = /@@\[([^\]@]+)\]@@/g;
@@ -137,12 +139,9 @@ export interface MarkerParser {
   getMarkers: () => StreamMarker[];
   /** Flush any buffered partial content (call at end of stream) */
   flush: () => void;
+  /** Reset parser state for reuse */
+  reset: () => void;
 }
-
-/**
- * Scan a string for markers, fire the handler for each, and return cleaned text.
- * Unlike the streaming parser, this operates on a complete string (e.g. tool call arguments).
- */
 
 /**
  * Validate marker name and arg — prevent reserved keyword collisions.
@@ -169,7 +168,7 @@ function validateMarker(name: string, arg: string): { valid: boolean; error?: st
 }
 
 /**
- * Strip escape sequences @@ → @@ in the output.
+ * Strip escape sequences \@@ → @@ in the output.
  * Call this on final clean text to unescape literal @@ markers.
  */
 function unescapeMarkers(text: string): string {
@@ -197,6 +196,10 @@ function parseAvatarClips(contents: string): Record<string, number> {
   return clips;
 }
 
+/**
+ * Scan a string for markers, fire the handler for each, and return cleaned text.
+ * Unlike the streaming parser, this operates on a complete string (e.g. tool call arguments).
+ */
 export function extractMarkers(text: string, onMarker: MarkerHandler, onAvatarMarker?: AvatarMarkerHandler): string {
   // First pass: strip avatar markers @@[...]@@ before standard marker processing
   let preprocessed = text;
@@ -208,168 +211,288 @@ export function extractMarkers(text: string, onMarker: MarkerHandler, onAvatarMa
     });
   }
 
+  // Second pass: colon-format markers (more specific, must run first)
+  // Do colon replacement first, then function-form on result
   let cleaned = "";
   let lastIndex = 0;
   const regex = new RegExp(MARKER_RE.source, "g");
   let match: RegExpExecArray | null;
 
-  while ((match = regex.exec(preprocessed)) !== null) {
-    // Check for escaped marker — if @@ precedes, skip it
-    if (match.index > 0 && preprocessed[match.index - 1] === '\\') {
-      // This is an escaped marker — treat as literal text
-      cleaned += preprocessed.slice(lastIndex, match.index + match[0].length);
+  let afterColon = "";
+  let cLastIndex = 0;
+  const colonRegex = new RegExp(COLON_MARKER_RE.source, "g");
+  let cMatch: RegExpExecArray | null;
+
+  while ((cMatch = colonRegex.exec(preprocessed)) !== null) {
+    if (cMatch.index > 0 && preprocessed[cMatch.index - 1] === '\\') {
+      afterColon += preprocessed.slice(cLastIndex, cMatch.index + cMatch[0].length);
+      cLastIndex = cMatch.index + cMatch[0].length;
+      continue;
+    }
+
+    afterColon += preprocessed.slice(cLastIndex, cMatch.index);
+
+    const pairs = cMatch[1].split(",");
+    let firstEmoji = "";
+    for (const pair of pairs) {
+      const colonIdx = pair.indexOf(":");
+      const name = pair.slice(0, colonIdx);
+      const arg = pair.slice(colonIdx + 1);
+      const raw = cMatch[0];
+
+      const validation = validateMarker(name, arg);
+      if (!validation.valid) {
+        Logger.warn(`Invalid marker: ${validation.error}`);
+        continue;
+      }
+
+      const marker: StreamMarker = { name, arg, raw };
+      try { onMarker(marker); } catch (e) {
+        Logger.warn(`Marker handler error: ${e}`);
+      }
+      if (!firstEmoji) firstEmoji = markerEmoji(name);
+    }
+
+    afterColon += firstEmoji || markerEmoji(pairs[0].split(":")[0]);
+    cLastIndex = cMatch.index + cMatch[0].length;
+  }
+  afterColon += preprocessed.slice(cLastIndex);
+
+  // Now run function-form regex on the colon-cleaned text
+  lastIndex = 0;
+  while ((match = regex.exec(afterColon)) !== null) {
+    if (match.index > 0 && afterColon[match.index - 1] === '\\') {
+      cleaned += afterColon.slice(lastIndex, match.index + match[0].length);
       lastIndex = match.index + match[0].length;
       continue;
     }
 
-    cleaned += preprocessed.slice(lastIndex, match.index);
+    cleaned += afterColon.slice(lastIndex, match.index);
     const marker: StreamMarker = {
       name: match[1],
       arg: match[2] ?? match[3] ?? match[4] ?? "",
       raw: match[0],
     };
 
-    // Validate before calling handler
     const validation = validateMarker(marker.name, marker.arg);
     if (!validation.valid) {
       Logger.warn(`Invalid marker: ${validation.error}`);
-      cleaned += match[0]; // Keep the malformed marker as-is
+      cleaned += match[0];
       lastIndex = match.index + match[0].length;
       continue;
     }
 
-    try { onMarker(marker); } catch (e) { 
+    try { onMarker(marker); } catch (e) {
       Logger.warn(`Marker handler error: ${e}`);
     }
-    // Emit emoji indicator instead of stripping completely
     cleaned += markerEmoji(marker.name);
     lastIndex = match.index + match[0].length;
   }
-  cleaned += preprocessed.slice(lastIndex);
+  cleaned += afterColon.slice(lastIndex);
   return unescapeMarkers(cleaned);
 }
 
-export function createMarkerParser(opts: MarkerParserOptions): MarkerParser {
-  const { onMarker, onAvatarMarker, onToken } = opts;
-  let buffer = "";
-  let cleanText = "";
-  const markers: StreamMarker[] = [];
+/**
+ * StreamMarkerParser class — streaming parser for @@marker@@ patterns.
+ * Handles function-form @@name('arg')@@, colon-form @@name:value@@, and avatar markers.
+ */
+export class StreamMarkerParser implements MarkerParser {
+  private buffer = "";
+  private cleanText = "";
+  private markers: StreamMarker[] = [];
+  private opts: MarkerParserOptions;
 
-  function processBuffer(isFinal: boolean) {
+  constructor(opts: MarkerParserOptions) {
+    this.opts = opts;
+  }
+
+  onToken = (s: string): void => {
+    this.buffer += s;
+    this.processBuffer(false);
+  };
+
+  flush = (): void => {
+    this.processBuffer(true);
+  };
+
+  getCleanText = (): string => {
+    return this.cleanText;
+  };
+
+  getMarkers = (): StreamMarker[] => {
+    return [...this.markers];
+  };
+
+  reset = (): void => {
+    this.buffer = "";
+    this.cleanText = "";
+    this.markers = [];
+  };
+
+  private emitText(text: string): void {
+    if (!text) return;
+    this.cleanText += text;
+    if (this.opts.onToken) this.opts.onToken(text);
+  }
+
+  private emitEmoji(name: string): void {
+    const emoji = markerEmoji(name);
+    this.cleanText += emoji;
+    if (this.opts.onToken && Logger.isVerbose()) this.opts.onToken(emoji);
+  }
+
+  private handleMarkerMatch(name: string, arg: string, raw: string): void {
+    const validation = validateMarker(name, arg);
+    if (!validation.valid) {
+      Logger.warn(`Invalid marker: ${validation.error}`);
+      this.cleanText += raw;
+      if (this.opts.onToken) this.opts.onToken(raw);
+      return;
+    }
+
+    const marker: StreamMarker = { name, arg, raw };
+    this.markers.push(marker);
+    Logger.debug(`Stream marker detected: ${raw}`);
+
+    try {
+      this.opts.onMarker(marker);
+    } catch (e: unknown) {
+      Logger.warn(`Marker handler error for ${name}: ${e}`);
+    }
+
+    this.emitEmoji(name);
+  }
+
+  private processBuffer(isFinal: boolean): void {
     // First: extract avatar markers @@[...]@@ before standard markers
-    if (onAvatarMarker) {
-      buffer = buffer.replace(new RegExp(AVATAR_MARKER_RE.source, "g"), (_full, contents: string) => {
+    if (this.opts.onAvatarMarker) {
+      this.buffer = this.buffer.replace(new RegExp(AVATAR_MARKER_RE.source, "g"), (_full, contents: string) => {
         const clips = parseAvatarClips(contents);
         Logger.debug(`Avatar marker detected: ${JSON.stringify(clips)}`);
-        try { onAvatarMarker(clips); } catch (e) { Logger.warn(`Avatar marker handler error: ${e}`); }
+        try { this.opts.onAvatarMarker!(clips); } catch (e) { Logger.warn(`Avatar marker handler error: ${e}`); }
         return AVATAR_EMOJI;
       });
     }
 
-    // Try to match complete markers in the buffer
+    // Process colon-format markers first (more specific), then function-form.
+    // We do colon replacement in-place on the buffer first, then run function-form.
+    this.buffer = this.processColonInBuffer();
+
+    // Try to match complete function-form markers in the buffer
     let lastIndex = 0;
     const regex = new RegExp(MARKER_RE.source, "g");
     let match: RegExpExecArray | null;
 
-    while ((match = regex.exec(buffer)) !== null) {
-      // Check for escaped marker — if @@ precedes, treat as literal
-      if (match.index > 0 && buffer[match.index - 1] === '\\') {
-        // Skip this match, it's escaped
-        const before = buffer.slice(lastIndex, match.index + match[0].length);
-        cleanText += before;
-        if (onToken) onToken(before);
+    while ((match = regex.exec(this.buffer)) !== null) {
+      // Check for escaped marker — if \@@ precedes, treat as literal
+      if (match.index > 0 && this.buffer[match.index - 1] === '\\') {
+        const before = this.buffer.slice(lastIndex, match.index + match[0].length);
+        this.emitText(before);
         lastIndex = match.index + match[0].length;
         continue;
       }
 
       // Emit any text before this marker
-      const before = buffer.slice(lastIndex, match.index);
-      if (before) {
-        cleanText += before;
-        if (onToken) onToken(before);
-      }
+      const before = this.buffer.slice(lastIndex, match.index);
+      this.emitText(before);
 
       // Parse the marker
       const name = match[1];
       const arg = match[2] ?? match[3] ?? match[4] ?? "";
       const raw = match[0];
 
-      // Validate marker before processing
-      const validation = validateMarker(name, arg);
-      if (!validation.valid) {
-        Logger.warn(`Invalid marker: ${validation.error}`);
-        cleanText += raw; // Keep malformed marker in output
-        if (onToken) onToken(raw);
-        lastIndex = match.index + match[0].length;
-        continue;
-      }
-
-      const marker: StreamMarker = { name, arg, raw };
-      markers.push(marker);
-      Logger.debug(`Stream marker detected: ${raw}`);
-
-      try {
-        onMarker(marker);
-      } catch (e: unknown) {
-        Logger.warn(`Marker handler error for ${name}: ${e}`);
-      }
-
-      // Emit emoji indicator into the output stream
-      const emoji = markerEmoji(name);
-      cleanText += emoji;
-      if (onToken && Logger.isVerbose()) onToken(emoji);
-
+      this.handleMarkerMatch(name, arg, raw);
       lastIndex = match.index + match[0].length;
     }
 
     // Whatever's left after all matches
-    const remainder = buffer.slice(lastIndex);
+    const remainder = this.buffer.slice(lastIndex);
 
     if (isFinal) {
       // End of stream — flush everything remaining as text
-      if (remainder) {
-        cleanText += remainder;
-        if (onToken) onToken(remainder);
-      }
-      buffer = "";
+      this.emitText(remainder);
+      this.buffer = "";
     } else {
-      // Check if the remainder could be a partial marker (standard or avatar)
-      const partialMatch = PARTIAL_MARKER_RE.exec(remainder) ?? PARTIAL_AVATAR_RE.exec(remainder);
+      // Check if the remainder could be a partial marker (standard, colon, or avatar)
+      const partialMatch = PARTIAL_COLON_RE.exec(remainder)
+        ?? PARTIAL_MARKER_RE.exec(remainder)
+        ?? PARTIAL_AVATAR_RE.exec(remainder);
       if (partialMatch) {
         // Hold back the potential partial marker, emit what's before it
         const safe = remainder.slice(0, partialMatch.index);
-        if (safe) {
-          cleanText += safe;
-          if (onToken) onToken(safe);
-        }
-        buffer = remainder.slice(partialMatch.index);
+        this.emitText(safe);
+        this.buffer = remainder.slice(partialMatch.index);
       } else {
         // No partial marker — emit all remaining text
-        if (remainder) {
-          cleanText += remainder;
-          if (onToken) onToken(remainder);
-        }
-        buffer = "";
+        this.emitText(remainder);
+        this.buffer = "";
       }
     }
   }
 
-  return {
-    onToken(s: string) {
-      buffer += s;
-      processBuffer(false);
-    },
+  /**
+   * Process colon-format markers in the buffer, replacing them with emojis
+   * and firing handlers. Returns the modified buffer string.
+   */
+  private processColonInBuffer(): string {
+    const regex = new RegExp(COLON_MARKER_RE.source, "g");
+    let result = "";
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
 
-    getCleanText() {
-      return cleanText;
-    },
+    while ((match = regex.exec(this.buffer)) !== null) {
+      if (match.index > 0 && this.buffer[match.index - 1] === '\\') {
+        result += this.buffer.slice(lastIndex, match.index + match[0].length);
+        lastIndex = match.index + match[0].length;
+        continue;
+      }
 
-    getMarkers() {
-      return [...markers];
-    },
+      result += this.buffer.slice(lastIndex, match.index);
 
-    flush() {
-      processBuffer(true);
-    },
-  };
+      // Parse comma-separated name:value pairs
+      const pairs = match[1].split(",");
+      let firstEmoji = "";
+      for (const pair of pairs) {
+        const colonIdx = pair.indexOf(":");
+        const name = pair.slice(0, colonIdx);
+        const arg = pair.slice(colonIdx + 1);
+        const raw = match[0];
+
+        const validation = validateMarker(name, arg);
+        if (!validation.valid) {
+          Logger.warn(`Invalid marker: ${validation.error}`);
+          continue;
+        }
+
+        const marker: StreamMarker = { name, arg, raw };
+        this.markers.push(marker);
+        Logger.debug(`Stream marker detected: @@${name}:${arg}@@`);
+
+        try {
+          this.opts.onMarker(marker);
+        } catch (e: unknown) {
+          Logger.warn(`Marker handler error for ${name}: ${e}`);
+        }
+
+        if (!firstEmoji) firstEmoji = markerEmoji(name);
+      }
+
+      // Emit emoji for the colon marker group (use first dimension's emoji)
+      const emoji = firstEmoji || markerEmoji(pairs[0].split(":")[0]);
+      this.cleanText += emoji;
+      if (this.opts.onToken && Logger.isVerbose()) this.opts.onToken(emoji);
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    result += this.buffer.slice(lastIndex);
+    return result;
+  }
+}
+
+/**
+ * Factory function — backward-compatible wrapper around StreamMarkerParser.
+ */
+export function createMarkerParser(opts: MarkerParserOptions): MarkerParser {
+  return new StreamMarkerParser(opts);
 }

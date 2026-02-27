@@ -72,6 +72,8 @@ Higher = more context retained before compaction. 1m = ~full context window.
 
 **Memory pages:**
 `@@ref('id')@@` — load page into context next turn
+`@@ref('?query')@@` — semantic search: find pages by meaning and auto-load the best matches.
+Pages are also auto-loaded when semantically relevant to your conversation (requires embedding API key).
 `@@unref('id')@@` — release page from context
 
 **Learn:**

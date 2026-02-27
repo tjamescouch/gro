@@ -60,6 +60,8 @@ export interface ContextPage {
   tokens: number;
   /** Max importance weight of messages in this page (0.0–1.0) */
   maxImportance?: number;
+  /** Summary text used for semantic indexing (set after summarization) */
+  summary?: string;
 }
 
 export interface VirtualMemoryConfig {
@@ -163,6 +165,8 @@ export class VirtualMemory extends AgentMemory {
   // Memory performance instrumentation
   private metricsCollector: MemoryMetricsCollector | null = null;
 
+  /** Callback fired when a new page is created. Set by SemanticRetrieval for auto-indexing. */
+  onPageCreated?: (pageId: string, summary: string, label: string) => void;
 
   constructor(config: VirtualMemoryConfig = {}) {
     super(config.systemPrompt);
@@ -622,6 +626,15 @@ export class VirtualMemory extends AgentMemory {
     } else {
       // Fallback: simple label + ref without LLM
       summary = `[Summary of ${messages.length} messages: ${label}] `;
+    }
+
+    // Store summary on page for semantic indexing and re-save
+    page.summary = summary;
+    this.savePage(page);
+
+    // Notify semantic retrieval (if connected)
+    if (this.onPageCreated) {
+      this.onPageCreated(page.id, summary, label);
     }
 
     return { page, summary };
@@ -1525,6 +1538,7 @@ export class VirtualMemory extends AgentMemory {
   getActivePageIds(): string[] { return Array.from(this.activePageIds); }
   getPageCount(): number { return this.pages.size; }
   hasPage(id: string): boolean { return this.pages.has(id); }
+  getPagesDir(): string { return this.cfg.pagesDir; }
 
   override getStats(): VirtualMemoryStats {
     // System prompt tokens (first message if system role)

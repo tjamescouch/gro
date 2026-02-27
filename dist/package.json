@@ -1,6 +1,6 @@
 {
   "name": "@tjamescouch/gro",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "license": "MIT",
   "description": "Provider-agnostic LLM runtime with context management",
   "bin": {
@@ -40,7 +40,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
-    "@tjamescouch/gro": "^1.9.12",
     "blessed": "^0.1.81",
     "isexe": "^4.0.0"
   }

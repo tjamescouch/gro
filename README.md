@@ -185,6 +185,24 @@ gro --no-mcp                       "no tools"
 
 ---
 
+## Containerized Deployment
+
+For production or multi-agent workloads, run gro inside an isolated container using [thesystem](https://github.com/tjamescouch/thesystem). This provides API key isolation (keys never leave the host), session persistence across runs, and sandboxed execution inside a Lima VM + Podman container.
+
+```sh
+# Install thesystem and boot the environment
+brew tap tjamescouch/thesystem && brew install thesystem
+thesystem init && thesystem keys set anthropic sk-ant-...
+thesystem start
+
+# Drop into an interactive gro session inside a pod
+thesystem gro
+thesystem gro -P openai -m gpt-4.1
+thesystem gro --no-continue   # fresh session
+```
+
+See the [thesystem README](https://github.com/tjamescouch/thesystem) for full setup and multi-agent swarm configuration.
+
 ## AgentChat Integration
 
 Run gro as a persistent agent connected to an AgentChat network:

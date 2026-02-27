@@ -393,7 +393,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--lfs") { flags.lfs = args[++i]; }
     else if (arg === "--retry-base-ms") { process.env.GRO_RETRY_BASE_MS = args[++i]; }
     else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet
-    else if (arg === "--max-budget-usd") { flags.maxBudgetUsd = args[++i]; } // accepted, not used yet
+    else if (arg === "--max-budget-usd" || arg === "--max-cost") { flags.maxBudgetUsd = args[++i]; }
     else if (arg === "--max-tier") { flags.maxTier = args[++i]; }
     else if (arg === "--providers") { flags.providers = args[++i]; }
     else if (arg === "--summarizer-model") { flags.summarizerModel = args[++i]; }
@@ -586,6 +586,7 @@ options:
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string
+  --max-cost             alias for --max-budget-usd
   --no-cache             disable Anthropic prompt caching
   --no-mcp               disable MCP server connections
   --no-session-persistence  don't save sessions to .gro/
@@ -1053,6 +1054,7 @@ async function executeTurn(
   let consecutiveFailedRounds = 0;
   let pendingNarration = "";  // Buffer for plain text emitted between tool calls
   let pendingEmotionState: Record<string, number> = {};  // Accumulates emotion dims for injection into send tool
+  spendMeter.startTurn();
   for (let round = 0; round < cfg.maxToolRounds; round++) {
     runtimeState.advanceRound();
     let roundHadFailure = false;
@@ -1534,7 +1536,6 @@ async function executeTurn(
       // Log cumulative usage to stderr — niki parses these patterns for budget enforcement
       process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
       spendMeter.setModel(activeModel);
-      spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
       runtimeState.recordTurnUsage(output.usage.inputTokens, output.usage.outputTokens);
       Logger.telemetry(spendMeter.format());
 
@@ -1821,11 +1822,12 @@ async function executeTurn(
         name: fnName,
       });
     }
+    spendMeter.recordToolCalls(output.toolCalls.length);
 
     // Check for violations (idle + same-tool-loop)
     if (violations) {
       const toolNames = output.toolCalls.map(tc => tc.function.name);
-      
+
       // Check for idle violation (consecutive listen-only rounds)
       if (violations.checkIdleRound(toolNames)) {
         await violations.inject(memory, "idle");
@@ -1860,6 +1862,7 @@ async function executeTurn(
       runtimeState.setConsecutiveFailedRounds(0);
     }
   }
+  spendMeter.endTurn();
 
   // If we exhausted maxToolRounds (loop didn't break via no-tool-calls),
   // give the model one final turn with no tools so it can produce a closing response.
@@ -1878,7 +1881,6 @@ async function executeTurn(
       turnTokensOut += finalOutput.usage.outputTokens;
       process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
       spendMeter.setModel(activeModel);
-      spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
       runtimeState.recordTurnUsage(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
       if (Logger.isVerbose()) {
         Logger.info(spendMeter.format());
@@ -2040,6 +2042,7 @@ async function singleShot(
   // Exit with non-zero code on fatal API errors so the supervisor
   // can distinguish "finished cleanly" from "crashed on API call"
   if (fatalError) {
+    Logger.info(spendMeter.formatSummary());
     process.exit(1);
   }
 
@@ -2050,6 +2053,7 @@ async function singleShot(
       process.stdout.write("\n");
     }
   }
+  Logger.info(spendMeter.formatSummary());
 }
 
 async function interactive(
@@ -2178,6 +2182,7 @@ async function interactive(
       }
     }
     await mcp.disconnectAll();
+    Logger.info(spendMeter.formatSummary());
     Logger.info(C.gray(`\ngoodbye. session: ${sessionId}`));
     process.exit(0);
   });
@@ -2273,7 +2278,7 @@ async function main() {
     "--system-prompt", "--system-prompt-file",
     "--append-system-prompt", "--append-system-prompt-file",
     "--context-tokens", "--max-tokens", "--max-tool-rounds", "--max-turns",
-    "--max-thinking-tokens", "--max-budget-usd",
+    "--max-thinking-tokens", "--max-budget-usd", "--max-cost",
     "--summarizer-model", "--output-format", "--mcp-config",
     "--resume", "-r",
     "--max-retries", "--retry-base-ms",
@@ -2347,6 +2352,7 @@ for (const sig of ["SIGTERM", "SIGHUP"] as const) {
         Logger.error(C.red(`session save on ${sig} failed: ${asError(e).message}`));
       }
     }
+    Logger.info(spendMeter.formatSummary());
     process.exit(0);
   });
 }

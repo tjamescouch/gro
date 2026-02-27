@@ -3,6 +3,7 @@
  * Direct HTTP — no SDK dependency.
  */
 import { Logger, C } from "../logger.js";
+import { spendMeter } from "../spend-meter.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
 import { getMaxRetries, isRetryable, retryDelay, sleep } from "../utils/retry.js";
@@ -298,7 +299,15 @@ function parseResponseContent(data: any, onToken?: (t: string) => void, onReason
     if (usage.cacheReadInputTokens) parts.push(C.green(`read:${usage.cacheReadInputTokens}`));
     cacheInfo = ` ${C.cyan(`[cache ${parts.join(", ")}]`)}`;
   }
-  Logger.telemetry(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}`);
+  let costInfo = "";
+  if (usage) {
+    spendMeter.record(usage.inputTokens, usage.outputTokens, usage.cacheCreationInputTokens, usage.cacheReadInputTokens);
+    const reqCost = spendMeter.lastRequestCost;
+    const sessCost = spendMeter.cost();
+    const color = reqCost < 0.01 ? C.green : reqCost < 0.05 ? C.yellow : C.red;
+    costInfo = ` ${color(`[$${reqCost.toFixed(4)} / $${sessCost.toFixed(4)}]`)}`;
+  }
+  Logger.telemetry(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}${costInfo}`);
 
   return { text, toolCalls, reasoning: reasoning || undefined, usage };
 }
@@ -707,7 +716,15 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
         if (streamUsage.cacheReadInputTokens) parts.push(C.green(`read:${streamUsage.cacheReadInputTokens}`));
         cacheInfo = ` ${C.cyan(`[cache ${parts.join(", ")}]`)}`;
       }
-      Logger.telemetry(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}`);
+      let costInfo = "";
+      if (streamUsage) {
+        spendMeter.record(streamUsage.inputTokens, streamUsage.outputTokens, streamUsage.cacheCreationInputTokens, streamUsage.cacheReadInputTokens);
+        const reqCost = spendMeter.lastRequestCost;
+        const sessCost = spendMeter.cost();
+        const color = reqCost < 0.01 ? C.green : reqCost < 0.05 ? C.yellow : C.red;
+        costInfo = ` ${color(`[$${reqCost.toFixed(4)} / $${sessCost.toFixed(4)}]`)}`;
+      }
+      Logger.telemetry(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}${costInfo}`);
 
       return { text: fullText, toolCalls, reasoning: fullReasoning || undefined, usage: streamUsage };
     } catch (e: unknown) {

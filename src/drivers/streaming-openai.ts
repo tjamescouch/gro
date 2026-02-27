@@ -2,7 +2,8 @@
  * Streaming OpenAI-compatible chat driver.
  * Works with OpenAI, Anthropic (via proxy), LM Studio, Ollama, etc.
  */
-import { Logger } from "../logger.js";
+import { Logger, C } from "../logger.js";
+import { spendMeter } from "../spend-meter.js";
 import { asError } from "../errors.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
@@ -259,7 +260,15 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
         // Log response size
         const responseSize = JSON.stringify({ text: content, toolCalls, usage }).length;
         const respMB = (responseSize / (1024 * 1024)).toFixed(2);
-        Logger.telemetry(`[API ←] ${respMB} MB`);
+        let costInfo = "";
+        if (usage) {
+          spendMeter.record(usage.inputTokens, usage.outputTokens);
+          const reqCost = spendMeter.lastRequestCost;
+          const sessCost = spendMeter.cost();
+          const color = reqCost < 0.01 ? C.green : reqCost < 0.05 ? C.yellow : C.red;
+          costInfo = ` ${color(`[$${reqCost.toFixed(4)} / $${sessCost.toFixed(4)}]`)}`;
+        }
+        Logger.telemetry(`[API ←] ${respMB} MB${costInfo}`);
 
         return { text: content, reasoning: msg?.reasoning || undefined, toolCalls, usage };
       }
@@ -405,7 +414,15 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
       // Log response size
       const responseSize = JSON.stringify({ text: fullText, toolCalls, usage: streamUsage }).length;
       const respMB = (responseSize / (1024 * 1024)).toFixed(2);
-      Logger.info(`[API ←] ${respMB} MB`);
+      let costInfo = "";
+      if (streamUsage) {
+        spendMeter.record(streamUsage.inputTokens, streamUsage.outputTokens);
+        const reqCost = spendMeter.lastRequestCost;
+        const sessCost = spendMeter.cost();
+        const color = reqCost < 0.01 ? C.green : reqCost < 0.05 ? C.yellow : C.red;
+        costInfo = ` ${color(`[$${reqCost.toFixed(4)} / $${sessCost.toFixed(4)}]`)}`;
+      }
+      Logger.telemetry(`[API ←] ${respMB} MB${costInfo}`);
 
       return { text: fullText, reasoning: fullReasoning || undefined, toolCalls, usage: streamUsage };
     } catch (e: unknown) {

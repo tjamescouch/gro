@@ -27,7 +27,11 @@ export class SpendSource implements SensorySource {
     const lines: string[] = [];
     lines.push(`  cost $${cost.toFixed(4)}`);
     lines.push(`   tok ${this.fmtK(tokens.in)} in / ${this.fmtK(tokens.out)} out`);
-    lines.push(` total ${this.fmtK(tokens.in + tokens.out)}`);
+    const last = this.meter.lastTurnMs;
+    if (last > 0) {
+      lines.push(` turn ${this.fmtDur(last)} | longest ${this.fmtDur(this.meter.longestTurnMs)} | avg ${this.fmtDur(this.meter.avgTurnMs)}`);
+    }
+    lines.push(`   hz ${this.meter.currentHorizon} cur / ${this.meter.maxHorizon} max (${this.meter.totalTurns} turns)`);
     return lines.join("\n");
   }
 
@@ -35,5 +39,10 @@ export class SpendSource implements SensorySource {
     if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
     if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
     return n.toFixed(0);
+  }
+
+  private fmtDur(ms: number): string {
+    if (ms < 1000) return `${ms}ms`;
+    return `${(ms / 1000).toFixed(1)}s`;
   }
 }

@@ -2425,7 +2425,6 @@ async function interactive(
       if (input === "exit" || input === "quit") { rl.close(); return; }
 
       turnRunning = true;
-      rl.pause();
       try {
         await memory.add({ role: "user", from: "User", content: input });
         const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
@@ -2446,7 +2445,6 @@ async function interactive(
       }
 
       turnRunning = false;
-      rl.resume();
       process.stdout.write("\n");
       rl.prompt();
     }, 50);
@@ -2624,7 +2622,7 @@ async function main() {
 }
 
 // Graceful shutdown on signals — save session before exiting
-for (const sig of ["SIGTERM", "SIGHUP"] as const) {
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.on(sig, async () => {
     Logger.info(C.gray(`\nreceived ${sig}, saving session and shutting down...`));
     if (_shutdownMemory && _shutdownSessionId && _shutdownSessionPersistence) {

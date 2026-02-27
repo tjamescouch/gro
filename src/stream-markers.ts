@@ -90,7 +90,7 @@ const THINKING_MARKERS = new Set(["think", "relax", "zzz", "thinking"]);
 const RESERVED_MARKERS = new Set([
   "model-change", "ref", "unref", "importance", "thinking", "think", "relax", "zzz",
   "memory", "callback", "emotion", "dim", "working", "memory-hotreload", "learn",
-  "recall", "max-context", "sense", "view"
+  "recall", "max-context", "sense", "view", "resummarize"
 ]);
 
 /**
@@ -122,6 +122,7 @@ const MARKER_EMOJI: Record<string, string> = {
   "max-context": "\u{1F4D0}",    // 📐
   "sense": "\u{1F441}\u{FE0F}",  // 👁️
   "view": "\u{1F4F7}",            // 📷
+  "resummarize": "\u{1F504}",     // 🔄
 };
 
 function markerEmoji(name: string): string {

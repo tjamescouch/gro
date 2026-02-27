@@ -41,6 +41,7 @@ import { ViolationsSource } from "./memory/violations-source.js";
 import { tryCreateEmbeddingProvider } from "./memory/embedding-provider.js";
 import { PageSearchIndex } from "./memory/page-search-index.js";
 import { SemanticRetrieval } from "./memory/semantic-retrieval.js";
+import { BatchSummarizer } from "./memory/batch-summarizer.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
@@ -929,11 +930,18 @@ function unwrapMemory(mem: AgentMemory): AgentMemory {
   return mem instanceof SensoryMemory ? (mem as SensoryMemory).getInner() : mem;
 }
 
+interface SemanticInit {
+  retrieval: SemanticRetrieval;
+  /** Start a batch re-summarization. Returns null if no embedding provider. */
+  startBatch: (summarize: (content: string, label: string) => Promise<string>, options?: { force?: boolean }) => Promise<void>;
+}
+
 /**
  * Initialize semantic retrieval if an embedding API key is available.
  * Returns null if no key found or the memory type doesn't support pages.
+ * Also handles orphan shadow recovery and provides batch summarizer launch.
  */
-async function initSemanticRetrieval(mem: AgentMemory): Promise<SemanticRetrieval | null> {
+async function initSemanticRetrieval(mem: AgentMemory): Promise<SemanticInit | null> {
   const inner = unwrapMemory(mem);
   if (!(inner instanceof VirtualMemory)) return null;
 
@@ -945,6 +953,13 @@ async function initSemanticRetrieval(mem: AgentMemory): Promise<SemanticRetrieva
 
   const vm = inner as VirtualMemory;
   const indexPath = join(vm.getPagesDir(), "embeddings.json");
+  const shadowPath = join(dirname(indexPath), "embeddings.shadow.json");
+
+  // Recover orphaned shadow index from a previous crash
+  if (BatchSummarizer.recoverOrphanedShadow(indexPath, shadowPath)) {
+    Logger.telemetry("[BatchSummarizer] Recovered orphaned shadow index");
+  }
+
   const searchIndex = new PageSearchIndex({ indexPath, embeddingProvider });
   await searchIndex.load();
 
@@ -966,8 +981,40 @@ async function initSemanticRetrieval(mem: AgentMemory): Promise<SemanticRetrieva
   Logger.telemetry(
     `[SemanticRetrieval] Enabled (${embeddingProvider.provider}/${embeddingProvider.model}, ${searchIndex.size} pages indexed)`
   );
-  return retrieval;
+
+  // Batch summarizer launcher — captures idle signaling closure
+  const startBatch = async (
+    summarize: (content: string, label: string) => Promise<string>,
+    options?: { force?: boolean },
+  ) => {
+    const batch = new BatchSummarizer({
+      semanticRetrieval: retrieval,
+      embeddingProvider,
+      indexPath,
+      pagesDir: vm.getPagesDir(),
+      summarize,
+      shouldYield: () => _turnActive,
+      waitForIdle: () => new Promise<void>(resolve => {
+        const check = () => {
+          if (!_turnActive) { resolve(); return; }
+          setTimeout(check, 500);
+        };
+        check();
+      }),
+    });
+
+    Logger.telemetry("[BatchSummarizer] Starting batch re-summarization");
+    const result = await batch.run(options);
+    Logger.telemetry(
+      `[BatchSummarizer] Done: ${result.summarized} summarized, ${result.skipped} skipped, ${result.failed} failed (${result.durationMs}ms)`
+    );
+  };
+
+  return { retrieval, startBatch };
 }
+
+/** Module-level flag: true while a conversation turn is actively running. */
+let _turnActive = false;
 
 // ---------------------------------------------------------------------------
 // Output formatting
@@ -1093,7 +1140,8 @@ async function executeTurn(
   }
 
   // Semantic retrieval: auto-surface relevant pages by meaning
-  const semanticRetrieval = await initSemanticRetrieval(memory);
+  const semanticInit = await initSemanticRetrieval(memory);
+  const semanticRetrieval = semanticInit?.retrieval ?? null;
 
   let brokeCleanly = false;
   let sleepRequested = false;  // @@sleep@@/@@listening@@ → yield to user
@@ -1102,6 +1150,7 @@ async function executeTurn(
   let pendingNarration = "";  // Buffer for plain text emitted between tool calls
   let pendingEmotionState: Record<string, number> = {};  // Accumulates emotion dims for injection into send tool
   spendMeter.startTurn();
+  _turnActive = true;
   for (let round = 0; round < cfg.maxToolRounds; round++) {
     runtimeState.advanceRound();
     let roundHadFailure = false;
@@ -1486,6 +1535,24 @@ async function executeTurn(
           memory.switchView(viewName, slot);
           Logger.telemetry(`Stream marker: view('${viewName}','${slot}') → slot${slot}=${viewName}`);
         }
+      }
+    } else if (marker.name === "resummarize") {
+      // Trigger batch re-summarization of all pages (background, yield-aware)
+      if (semanticInit) {
+        const innerVM = unwrapMemory(memory);
+        if (innerVM instanceof VirtualMemory) {
+          const vm = innerVM as VirtualMemory;
+          const force = marker.arg === "force";
+          semanticInit.startBatch(
+            (content, label) => vm.summarizeText(content, label),
+            { force },
+          ).catch(err => {
+            Logger.warn(`[BatchSummarizer] Error: ${err}`);
+          });
+          Logger.telemetry(`Stream marker: resummarize${force ? "(force)" : ""} → batch started`);
+        }
+      } else {
+        Logger.warn("Stream marker: resummarize — semantic retrieval not available");
       }
     }
    };
@@ -2022,6 +2089,7 @@ async function executeTurn(
     semanticRetrieval.saveIndex();
   }
 
+  _turnActive = false;
   return { text: finalText, memory };
 }
 

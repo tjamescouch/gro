@@ -1540,6 +1540,29 @@ export class VirtualMemory extends AgentMemory {
   hasPage(id: string): boolean { return this.pages.has(id); }
   getPagesDir(): string { return this.cfg.pagesDir; }
 
+  /**
+   * Summarize raw text content using the summarizer model.
+   * Used by BatchSummarizer for re-summarizing page content.
+   */
+  async summarizeText(content: string, label: string): Promise<string> {
+    const sys: ChatMessage = {
+      role: "system",
+      from: "System",
+      content: getSummarizerPromptBase(),
+    };
+    const usr: ChatMessage = {
+      role: "user",
+      from: "User",
+      content: `Summarize this conversation segment (${label}):\n\n${content.slice(0, 12000)}`,
+    };
+    try {
+      const out = await this.cfg.driver!.chat([sys, usr], { model: this.cfg.summarizerModel });
+      return String((out as any)?.text ?? "").trim();
+    } catch {
+      return `[Summary of page: ${label}]`;
+    }
+  }
+
   override getStats(): VirtualMemoryStats {
     // System prompt tokens (first message if system role)
     const sysMsg = this.messagesBuffer.length > 0 && this.messagesBuffer[0].role === "system"

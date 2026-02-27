@@ -75,6 +75,7 @@ Higher = more context retained before compaction. 1m = ~full context window.
 `@@ref('?query')@@` — semantic search: find pages by meaning and auto-load the best matches.
 Pages are also auto-loaded when semantically relevant to your conversation (requires embedding API key).
 `@@unref('id')@@` — release page from context
+`@@resummarize@@` — trigger batch re-summarization of all pages. Rebuilds the semantic index in the background using a shadow index (no query distortion during rebuild). Yields to interactive turns. Use `@@resummarize('force')@@` to re-summarize all pages regardless of content changes.
 
 **Learn:**
 `@@learn('fact')@@` — persist a fact to `_learn.md`, injected into Layer 2 system prompt.

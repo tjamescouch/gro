@@ -110,9 +110,10 @@ export class PageSearchIndex {
     }
   }
 
-  save(): void {
+  save(pathOverride?: string): void {
+    const target = pathOverride ?? this.indexPath;
     try {
-      mkdirSync(dirname(this.indexPath), { recursive: true });
+      mkdirSync(dirname(target), { recursive: true });
       const data: PersistedIndex = {
         version: 1,
         provider: this.provider.provider,
@@ -123,7 +124,7 @@ export class PageSearchIndex {
         ),
         updatedAt: new Date().toISOString(),
       };
-      writeFileSync(this.indexPath, JSON.stringify(data) + "\n");
+      writeFileSync(target, JSON.stringify(data) + "\n");
     } catch (err) {
       Logger.warn(`[PageSearchIndex] Save failed: ${err}`);
     }
@@ -194,5 +195,27 @@ export class PageSearchIndex {
 
   get size(): number {
     return this.entries.size;
+  }
+
+  /** Deep-copy this index (for use as shadow during batch re-summarization). */
+  clone(pathOverride?: string): PageSearchIndex {
+    const cloned = new PageSearchIndex({
+      indexPath: pathOverride ?? this.indexPath,
+      embeddingProvider: this.provider,
+    });
+    for (const [id, entry] of this.entries) {
+      cloned.entries.set(id, { embedding: [...entry.embedding], label: entry.label });
+    }
+    return cloned;
+  }
+
+  /** Create an empty index for building from scratch (shadow index). */
+  static fromScratch(config: { indexPath: string; embeddingProvider: EmbeddingProvider }): PageSearchIndex {
+    return new PageSearchIndex(config);
+  }
+
+  /** Replace the index path (used after atomic swap). */
+  setIndexPath(newPath: string): void {
+    this.indexPath = newPath;
   }
 }

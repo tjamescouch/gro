@@ -230,9 +230,10 @@ export class VirtualMemory extends AgentMemory {
         const changes = [];
         if (config.workingMemoryTokens !== undefined) {
             const old = this.cfg.workingMemoryTokens;
+            const oldBase = this.baseWorkingMemoryTokens;
             this.cfg.workingMemoryTokens = config.workingMemoryTokens;
             this.baseWorkingMemoryTokens = config.workingMemoryTokens; // Reset baseline
-            changes.push(`workingMemoryTokens: ${old} → ${config.workingMemoryTokens}`);
+            changes.push(`workingMemoryTokens: ${old} → ${config.workingMemoryTokens} (baseline: ${oldBase} → ${config.workingMemoryTokens})`);
         }
         if (config.pageSlotTokens !== undefined) {
             const old = this.cfg.pageSlotTokens;
@@ -609,14 +610,19 @@ export class VirtualMemory extends AgentMemory {
             result.push(sysMsg);
             usedTokens += this.msgTokens([sysMsg]);
         }
-        // 2. Page slot — loaded pages
-        const pageMessages = this.buildPageSlot();
+        // 2. Page slot — loaded pages (capped to leave room for working memory)
+        const wmBudget = this.cfg.workingMemoryTokens;
+        const hardCap = wmBudget * 4;
+        // Ensure pages don't consume so much that WM has no room under the hard cap.
+        // Reserve at least wmBudget for working memory.
+        const maxPageBudget = Math.max(0, hardCap - usedTokens - wmBudget);
+        const effectivePageBudget = Math.min(this.cfg.pageSlotTokens, maxPageBudget);
+        const pageMessages = this.buildPageSlot(effectivePageBudget);
         if (pageMessages.length > 0) {
             result.push(...pageMessages);
             usedTokens += this.msgTokens(pageMessages);
         }
         // 3. Working memory — recent messages within budget
-        const wmBudget = this.cfg.workingMemoryTokens;
         const nonSystem = this.messagesBuffer.filter(m => m !== sysMsg);
         const window = [];
         let wmTokens = 0;
@@ -673,16 +679,15 @@ export class VirtualMemory extends AgentMemory {
         // Safety cap: verify total context size doesn't exceed a hard limit.
         // Even with accurate token estimation, defend against edge cases where
         // system prompt + pages + working memory combine to exceed provider limits.
-        const totalTokens = usedTokens + wmTokens;
-        const hardCap = wmBudget * 4; // absolute ceiling
+        let totalTokens = usedTokens + wmTokens;
         if (totalTokens > hardCap) {
-            Logger.warn(`[VM] Total context ${totalTokens} tokens exceeds hard cap ${hardCap} — trimming working memory`);
+            Logger.warn(`[VM] Total context ${totalTokens} tokens exceeds hard cap ${hardCap} (sys+pages=${usedTokens}, wm=${wmTokens}) — trimming`);
             const excess = totalTokens - wmBudget * 2; // trim back to 2x budget for safety
             let trimmed = 0;
             // Remove oldest working memory messages (from front of window, after system+pages).
             // Use tool-pair-safe removal: never remove a tool_result without its assistant tool_use,
             // and never remove an assistant tool_use without its subsequent tool_results.
-            const wmStart = result.length - window.length;
+            let wmStart = result.length - window.length;
             while (trimmed < excess && result.length > wmStart + this.cfg.minRecentPerLane * 4) {
                 const msg = result[wmStart];
                 // If this is an assistant message with tool_calls, remove it AND all following tool results
@@ -705,10 +710,23 @@ export class VirtualMemory extends AgentMemory {
                     trimmed += this.msgTokens(removed);
                 }
             }
+            // If still over hard cap after WM trimming (system+pages alone exceed cap),
+            // evict page messages from result to prevent death spiral.
+            totalTokens = this.msgTokens(result);
+            if (totalTokens > hardCap && wmStart > 1) {
+                Logger.warn(`[VM] Still over hard cap after WM trim (${totalTokens} > ${hardCap}) — evicting pages from context`);
+                // Remove pages from the end (most recently loaded) working backward toward index 1
+                while (totalTokens > hardCap * 0.8 && wmStart > 1) {
+                    wmStart--;
+                    const removed = result.splice(wmStart, 1);
+                    totalTokens -= this.msgTokens(removed);
+                }
+            }
         }
         return result;
     }
-    buildPageSlot() {
+    buildPageSlot(budgetOverride) {
+        const budget = budgetOverride ?? this.cfg.pageSlotTokens;
         const msgs = [];
         let slotTokens = 0;
         for (const id of this.loadOrder) {
@@ -719,7 +737,7 @@ export class VirtualMemory extends AgentMemory {
                 continue;
             const page = this.pages.get(id);
             const tokens = this.tokensFor(content);
-            if (slotTokens + tokens > this.cfg.pageSlotTokens)
+            if (slotTokens + tokens > budget)
                 continue;
             msgs.push({
                 role: "system",

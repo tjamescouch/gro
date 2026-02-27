@@ -513,7 +513,7 @@ function loadConfig(): GroConfig {
     systemPrompt,
     wakeNotes: flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH,
     wakeNotesEnabled: flags.noWakeNotes !== "true",
-    contextTokens: parseInt(flags.contextTokens || "8192"),
+    contextTokens: parseInt(flags.contextTokens || "32000"),
     maxTokens: parseInt(flags.maxTokens || "16384"),
     interactive: interactiveMode,
     print: printMode,
@@ -1490,6 +1490,7 @@ async function executeTurn(
          tokens = parseFloat(raw);
        }
        tokens = Math.round(tokens);
+       Logger.telemetry(`Stream marker: max-context raw='${marker.arg}' parsed=${tokens}`);
        if (!isNaN(tokens) && tokens >= 1024) {
          // Apply via hotReloadConfig (VirtualMemory) or tune (general)
          const innerMC = unwrapMemory(memory);
@@ -1500,7 +1501,7 @@ async function executeTurn(
            (innerMC as any).tune({ working: tokens });
            Logger.telemetry(`Stream marker: max-context('${marker.arg}') → ${tokens} tokens`);
          } else {
-           Logger.warn(`Stream marker: max-context — memory controller doesn't support resizing`);
+           Logger.warn(`Stream marker: max-context — memory controller doesn't support resizing (type=${innerMC.constructor.name})`);
          }
        } else {
          Logger.warn(`Stream marker: max-context('${marker.arg}') — invalid size (min 1024 tokens, got ${tokens})`);

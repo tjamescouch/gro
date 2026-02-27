@@ -1050,6 +1050,7 @@ async function executeTurn(
   }
 
   let brokeCleanly = false;
+  let sleepRequested = false;  // @@sleep@@/@@listening@@ → yield to user
   let idleNudges = 0;
   let consecutiveFailedRounds = 0;
   let pendingNarration = "";  // Buffer for plain text emitted between tool calls
@@ -1205,12 +1206,15 @@ async function executeTurn(
         Logger.telemetry(`Stream marker: relax → budget=${activeThinkingBudget.toFixed(2)}`);
         emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
       } else if (marker.name === "sleep" || marker.name === "listening") {
-        // 🧠 / 🧠 — agent declares it is in a blocking listen.
-        // Suppresses idle and same-tool-loop violation checks until a non-listen tool fires.
+        // Agent declares it is done / entering a blocking listen.
+        // In persistent mode: suppress violation checks until a non-listen tool fires.
+        // In all modes: signal the turn loop to yield control back to the caller.
+        sleepRequested = true;
         if (violations) {
           violations.setSleeping(true);
           Logger.telemetry(`Stream marker: ${marker.name} → violation checks suppressed (sleep mode ON)`);
         }
+        Logger.telemetry(`Stream marker: ${marker.name} → yield requested`);
       } else if (marker.name === "wake") {
         // 🧠 — explicitly exit sleep mode
         if (violations) {
@@ -1539,6 +1543,21 @@ async function executeTurn(
       runtimeState.recordTurnUsage(output.usage.inputTokens, output.usage.outputTokens);
       Logger.telemetry(spendMeter.format());
 
+      // Emit API usage event — ~4 chars/token approximation for kB display
+      const inKB = Math.round(output.usage.inputTokens * 4 / 1024);
+      const outKB = Math.round(output.usage.outputTokens * 4 / 1024);
+      if (cfg.outputFormat === "stream-json") {
+        process.stdout.write(JSON.stringify({
+          type: "api_usage",
+          input_tokens: output.usage.inputTokens,
+          output_tokens: output.usage.outputTokens,
+          input_kb: inKB,
+          output_kb: outKB,
+        }) + "\n");
+      } else if (!cfg.persistent) {
+        process.stderr.write(C.gray(`  [API ${inKB}kB/${outKB}kB]`) + "\n");
+      }
+
       // Check if budget exceeded
       const budgetErr = spendMeter.checkBudget(cfg.maxBudgetUsd);
       if (budgetErr) {
@@ -1573,6 +1592,14 @@ async function executeTurn(
     // If memory was swapped, update local reference
     if (directives.memorySwap) {
       memory = runtimeConfig.getCurrentMemory() || memory;
+    }
+
+    // @@sleep@@/@@listening@@ in interactive mode → yield control back to user prompt
+    // In persistent mode, sleep only suppresses violations (agent continues its tool loop)
+    if (sleepRequested && !cfg.persistent) {
+      Logger.telemetry("Sleep/listening marker → yielding turn (interactive mode)");
+      brokeCleanly = true;
+      break;
     }
 
     // Relay mid-loop text to AgentChat when model also made tool calls
@@ -1743,26 +1770,29 @@ async function executeTurn(
         _lastChatSendTarget = fnArgs.target;
       }
 
-      // Format tool call for readability
-      let toolCallDisplay: string;
-      if (fnName === "shell" && fnArgs.command) {
-        toolCallDisplay = `${fnName}(${fnArgs.command})`;
+      // Format tool call snippet for display
+      let toolSnippet: string;
+      if ((fnName === "shell" || fnName === "Bash") && fnArgs.command) {
+        const cmd = String(fnArgs.command);
+        toolSnippet = cmd.length > 60 ? cmd.slice(0, 57) + "..." : cmd;
       } else {
-        // For other tools, show args in key=value format
         const argPairs = Object.entries(fnArgs)
           .map(([k, v]) => {
             const valStr = typeof v === "string" ? v : JSON.stringify(v);
-            const truncated = valStr.length > 60 ? valStr.slice(0, 60) + "..." : valStr;
-            return `${k}=${truncated}`;
+            return valStr.length > 40 ? valStr.slice(0, 37) + "..." : valStr;
           })
           .join(", ");
-        toolCallDisplay = argPairs ? `${fnName}(${argPairs})` : `${fnName}()`;
+        toolSnippet = argPairs ? argPairs : "";
       }
-      if (Logger.isVerbose()) {
-        Logger.info(`${C.magenta("[Tool call]")} ${C.bold(fnName)}${toolCallDisplay.slice(fnName.length)}`);
+      const toolCallDisplay = toolSnippet ? `${fnName}('${toolSnippet}')` : `${fnName}()`;
+
+      // Emit tool call event to output stream
+      if (cfg.outputFormat === "stream-json") {
+        process.stdout.write(JSON.stringify({ type: "tool_call", name: fnName, snippet: toolSnippet }) + "\n");
       } else {
-        Logger.info(C.gray(`  → ${fnName}()`));
+        process.stderr.write(C.gray(`  → ${toolCallDisplay}`) + "\n");
       }
+      Logger.debug(`[Tool call] ${toolCallDisplay}`);
 
       let result: string;
       try {

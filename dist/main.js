@@ -978,6 +978,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         return selectTierModel(budget, provider, cfg.model, loadModelConfig().aliases, cfg.maxTier ?? undefined);
     }
     let brokeCleanly = false;
+    let sleepRequested = false; // @@sleep@@/@@listening@@ → yield to user
     let idleNudges = 0;
     let consecutiveFailedRounds = 0;
     let pendingNarration = ""; // Buffer for plain text emitted between tool calls
@@ -1141,12 +1142,15 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 emitStateVector({ thinking: activeThinkingBudget }, cfg.outputFormat);
             }
             else if (marker.name === "sleep" || marker.name === "listening") {
-                // 🧠 / 🧠 — agent declares it is in a blocking listen.
-                // Suppresses idle and same-tool-loop violation checks until a non-listen tool fires.
+                // Agent declares it is done / entering a blocking listen.
+                // In persistent mode: suppress violation checks until a non-listen tool fires.
+                // In all modes: signal the turn loop to yield control back to the caller.
+                sleepRequested = true;
                 if (violations) {
                     violations.setSleeping(true);
                     Logger.telemetry(`Stream marker: ${marker.name} → violation checks suppressed (sleep mode ON)`);
                 }
+                Logger.telemetry(`Stream marker: ${marker.name} → yield requested`);
             }
             else if (marker.name === "wake") {
                 // 🧠 — explicitly exit sleep mode
@@ -1529,6 +1533,12 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         // If memory was swapped, update local reference
         if (directives.memorySwap) {
             memory = runtimeConfig.getCurrentMemory() || memory;
+        }
+        // @@sleep@@/@@listening@@ → yield control back to caller (interactive prompt / parent)
+        if (sleepRequested) {
+            Logger.telemetry("Sleep/listening marker → yielding turn");
+            brokeCleanly = true;
+            break;
         }
         // Relay mid-loop text to AgentChat when model also made tool calls
         if (output.toolCalls.length > 0 && cleanText?.trim() && _lastChatSendTarget && cfg.toolRoles.sendTool) {

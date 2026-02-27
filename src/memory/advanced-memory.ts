@@ -12,6 +12,7 @@ import { saveSession, loadSession, ensureGroDir } from "../session.js";
 export class AdvancedMemory extends AgentMemory {
   private readonly driver: ChatDriver;
   private model: string;
+  private provider = "unknown";
   private readonly summarizerDriver: ChatDriver;
   private readonly summarizerModel: string;
 
@@ -58,6 +59,10 @@ export class AdvancedMemory extends AgentMemory {
     this.keepRecentTools = Math.max(0, Math.floor(args.keepRecentTools ?? 3));
   }
 
+  override setProvider(provider: string): void {
+    this.provider = provider;
+  }
+
   override setModel(model: string): void {
     this.model = model;
   }
@@ -73,7 +78,7 @@ export class AdvancedMemory extends AgentMemory {
     ensureGroDir();
     saveSession(id, this.messagesBuffer, {
       id,
-      provider: "unknown",
+      provider: this.provider,
       model: this.model,
       createdAt: new Date().toISOString(),
     });

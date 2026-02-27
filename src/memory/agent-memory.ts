@@ -79,6 +79,9 @@ export abstract class AgentMemory {
 
   protected abstract onAfterAdd(): Promise<void>;
 
+  /** Update the active provider (used for session metadata persistence). */
+  setProvider(_provider: string): void {}
+
   /** Update the active model (used by stream markers to persist model changes across turns). */
   setModel(_model: string): void {}
 

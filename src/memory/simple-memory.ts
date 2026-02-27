@@ -20,6 +20,10 @@ export class SimpleMemory extends AgentMemory {
     this.model = model;
   }
 
+  override setProvider(provider: string): void {
+    this.provider = provider;
+  }
+
   override setModel(model: string): void {
     this.model = model;
   }

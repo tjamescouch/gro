@@ -10,6 +10,7 @@ import { saveSession, loadSession, ensureGroDir } from "../session.js";
 export class AdvancedMemory extends AgentMemory {
     constructor(args) {
         super(args.systemPrompt);
+        this.provider = "unknown";
         this.driver = args.driver;
         this.model = args.model;
         this.summarizerDriver = args.summarizerDriver ?? args.driver;
@@ -24,6 +25,9 @@ export class AdvancedMemory extends AgentMemory {
         this.keepRecentPerLane = Math.max(1, Math.floor(args.keepRecentPerLane ?? 4));
         this.keepRecentTools = Math.max(0, Math.floor(args.keepRecentTools ?? 3));
     }
+    setProvider(provider) {
+        this.provider = provider;
+    }
     setModel(model) {
         this.model = model;
     }
@@ -37,7 +41,7 @@ export class AdvancedMemory extends AgentMemory {
         ensureGroDir();
         saveSession(id, this.messagesBuffer, {
             id,
-            provider: "unknown",
+            provider: this.provider,
             model: this.model,
             createdAt: new Date().toISOString(),
         });

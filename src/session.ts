@@ -174,11 +174,11 @@ function sanitizeToolPairs(messages: ChatMessage[]): ChatMessage[] {
   const result: ChatMessage[] = [];
   for (const m of messages) {
     if (m.role === "tool" && m.tool_call_id && !toolUseIds.has(m.tool_call_id)) {
-      Logger.warn(`Session repair: dropping orphaned tool_result for missing call ${m.tool_call_id}`);
+      Logger.debug(`Session repair: dropping orphaned tool_result for missing call ${m.tool_call_id}`);
       continue;
     }
     if (m.role === "tool" && m.tool_call_id && seenToolResults.has(m.tool_call_id)) {
-      Logger.warn(`Session repair: dropping duplicate tool_result for call ${m.tool_call_id}`);
+      Logger.debug(`Session repair: dropping duplicate tool_result for call ${m.tool_call_id}`);
       continue;
     }
     if (m.role === "tool" && m.tool_call_id) {

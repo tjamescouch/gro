@@ -65,6 +65,7 @@ export class VirtualMemory extends AgentMemory {
         /** Pinned pages — never evicted */
         this.pinnedPageIds = new Set();
         this.model = "unknown";
+        this.provider = "unknown";
         /** Summarization queue (if batch mode enabled) */
         this.summaryQueue = null;
         /** Batch worker manager (spawns background worker if batch mode enabled) */
@@ -128,6 +129,9 @@ export class VirtualMemory extends AgentMemory {
         const sessionId = process.env.GRO_SESSION_ID || `session-${Date.now()}`;
         const metricsPath = join(this.cfg.pagesDir, "memory-metrics.json");
         this.metricsCollector = new MemoryMetricsCollector(sessionId, metricsPath);
+    }
+    setProvider(provider) {
+        this.provider = provider;
     }
     setModel(model) {
         this.model = model;
@@ -291,7 +295,7 @@ export class VirtualMemory extends AgentMemory {
         ensureGroDir();
         saveSession(id, this.messagesBuffer, {
             id,
-            provider: "unknown",
+            provider: this.provider,
             model: this.model,
             createdAt: new Date().toISOString(),
         });

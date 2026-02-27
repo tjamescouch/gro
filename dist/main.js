@@ -744,6 +744,7 @@ async function createMemory(cfg, driver, requestedMode, sessionId) {
             systemPrompt: cfg.systemPrompt || undefined,
             workingMemoryTokens: cfg.contextTokens,
         });
+        fm.setProvider(cfg.provider);
         fm.setModel(cfg.model);
         return fm;
     }
@@ -757,6 +758,7 @@ async function createMemory(cfg, driver, requestedMode, sessionId) {
             systemPrompt: cfg.systemPrompt || undefined,
             workingMemoryTokens: cfg.contextTokens,
         });
+        hm.setProvider(cfg.provider);
         hm.setModel(cfg.model);
         return hm;
     }
@@ -771,6 +773,7 @@ async function createMemory(cfg, driver, requestedMode, sessionId) {
             workingMemoryTokens: cfg.contextTokens,
             enableBatchSummarization: cfg.batchSummarization,
         });
+        pm.setProvider(cfg.provider);
         pm.setModel(cfg.model);
         return pm;
     }
@@ -783,6 +786,7 @@ async function createMemory(cfg, driver, requestedMode, sessionId) {
         enableBatchSummarization: cfg.batchSummarization,
         sessionId,
     });
+    vm.setProvider(cfg.provider);
     vm.setModel(cfg.model);
     return vm;
 }
@@ -1151,6 +1155,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
                 activeModel = newModel;
                 cfg.model = newModel;
+                memory.setProvider(cfg.provider);
                 memory.setModel(newModel);
                 modelExplicitlySet = true;
                 runtimeState.setActiveModel(newModel);
@@ -2153,7 +2158,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
         // Restore the model (and provider for cross-provider hotswaps) from the previous session
         // if neither was explicitly passed. This ensures that 🔀 persists across session resume.
         if (sess && sess.meta.model) {
-            if (sess.meta.provider !== cfg.provider && !wasProviderExplicitlyPassed() && !wasModelExplicitlyPassed()) {
+            if (sess.meta.provider !== cfg.provider && sess.meta.provider !== "unknown" && !wasProviderExplicitlyPassed() && !wasModelExplicitlyPassed()) {
                 // Cross-provider hotswap: restore saved provider and reinitialize driver
                 Logger.telemetry(`Restoring cross-provider session: ${sess.meta.provider}/${sess.meta.model}`);
                 cfg.provider = sess.meta.provider;
@@ -2249,7 +2254,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
     // Resume existing session if requested
     if (cfg.continueSession || cfg.resumeSession) {
         const sess = loadSession(sessionId);
-        if (sess && sess.meta.provider !== cfg.provider) {
+        if (sess && sess.meta.provider !== cfg.provider && sess.meta.provider !== "unknown") {
             // Cross-provider mismatch: if neither --provider nor --model was explicitly passed,
             // restore the saved provider+model and reinitialize the driver so that hotswaps
             // (e.g. 🔀 to gpt-5.2) persist across session resumes.

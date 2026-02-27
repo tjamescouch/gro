@@ -24,6 +24,8 @@ export class AgentMemory {
             await this.onAfterAdd();
         }
     }
+    /** Update the active provider (used for session metadata persistence). */
+    setProvider(_provider) { }
     /** Update the active model (used by stream markers to persist model changes across turns). */
     setModel(_model) { }
     /** Update thinking budget — VirtualMemory uses this to scale compaction aggressiveness. */

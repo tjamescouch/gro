@@ -15,6 +15,9 @@ export class SimpleMemory extends AgentMemory {
         this.provider = provider;
         this.model = model;
     }
+    setProvider(provider) {
+        this.provider = provider;
+    }
     setModel(model) {
         this.model = model;
     }

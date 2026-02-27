@@ -252,3 +252,78 @@ export class SameToolLoopTracker {
     this.consecutiveCount = 0;
   }
 }
+
+/**
+ * Detect repetitive thinking loops where the model repeats the same phrase
+ * many times in its reasoning tokens. This wastes tokens and indicates
+ * degenerate behavior under context pressure.
+ *
+ * Feed thinking tokens via addToken(). Returns true when a loop is detected.
+ */
+export class ThinkingLoopDetector {
+  private buffer = "";
+  private readonly windowSize: number;
+  private readonly phraseLen: number;
+  private readonly repeatThreshold: number;
+  private readonly checkInterval: number;
+  private charsSinceCheck = 0;
+  private _detected = false;
+
+  constructor(opts?: {
+    windowSize?: number;
+    phraseLen?: number;
+    repeatThreshold?: number;
+    checkInterval?: number;
+  }) {
+    this.windowSize = opts?.windowSize ?? 2000;
+    this.phraseLen = opts?.phraseLen ?? 80;
+    this.repeatThreshold = opts?.repeatThreshold ?? 3;
+    this.checkInterval = opts?.checkInterval ?? 200;
+  }
+
+  /** Feed a thinking token. Returns true if a repetitive loop is detected. */
+  addToken(text: string): boolean {
+    if (this._detected) return true; // Already detected, keep returning true
+    this.buffer += text;
+    if (this.buffer.length > this.windowSize) {
+      this.buffer = this.buffer.slice(-this.windowSize);
+    }
+    this.charsSinceCheck += text.length;
+    if (this.charsSinceCheck >= this.checkInterval) {
+      this.charsSinceCheck = 0;
+      if (this.detectLoop()) {
+        this._detected = true;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Whether a loop was detected in this session. */
+  get detected(): boolean { return this._detected; }
+
+  /** Reset state for a new generation attempt. */
+  reset(): void {
+    this.buffer = "";
+    this.charsSinceCheck = 0;
+    this._detected = false;
+  }
+
+  private detectLoop(): boolean {
+    if (this.buffer.length < this.phraseLen * this.repeatThreshold) return false;
+
+    // Extract the last phraseLen chars as candidate phrase
+    const candidate = this.buffer.slice(-this.phraseLen);
+    // Count how many times this phrase appears in the buffer
+    let count = 0;
+    let pos = 0;
+    while (true) {
+      const idx = this.buffer.indexOf(candidate, pos);
+      if (idx === -1) break;
+      count++;
+      if (count >= this.repeatThreshold) return true;
+      pos = idx + 1;
+    }
+    return false;
+  }
+}

@@ -54,5 +54,7 @@ export interface ChatDriver {
     top_logprobs?: number;
     /** Called per token with logprob data when logprobs is enabled */
     onLogprobs?: (data: { token: string; logprob: number; top_logprobs?: Array<{ token: string; logprob: number }> }) => void;
+    /** AbortSignal for cancelling the stream (e.g. on thinking loop detection) */
+    signal?: AbortSignal;
   }): Promise<ChatOutput>;
 }

@@ -110,10 +110,10 @@ const DEFAULTS = {
   assistantWeight: parseInt(process.env.GRO_ASSISTANT_WEIGHT ?? "8"),
   userWeight: parseInt(process.env.GRO_USER_WEIGHT ?? "4"),
   systemWeight: parseInt(process.env.GRO_SYSTEM_WEIGHT ?? "3"),
-  toolWeight: parseInt(process.env.GRO_TOOL_WEIGHT ?? "1"),
+  toolWeight: parseInt(process.env.GRO_TOOL_WEIGHT ?? "3"),
   avgCharsPerToken: parseFloat(process.env.GRO_AVG_CHARS_PER_TOKEN ?? "2.8"),
   minRecentPerLane: parseInt(process.env.GRO_MIN_RECENT_PER_LANE ?? "4"),
-  highRatio: parseFloat(process.env.GRO_HIGH_RATIO ?? "0.75"),
+  highRatio: parseFloat(process.env.GRO_HIGH_RATIO ?? "0.65"),
   lowRatio: parseFloat(process.env.GRO_LOW_RATIO ?? "0.50"),
   systemPrompt: "",
   summarizerModel: "claude-haiku-4-5",
@@ -167,6 +167,9 @@ export class VirtualMemory extends AgentMemory {
 
   /** Callback fired when a new page is created. Set by SemanticRetrieval for auto-indexing. */
   onPageCreated?: (pageId: string, summary: string, label: string) => void;
+
+  /** Messages protected from compaction (current-turn tool results + their assistant messages) */
+  private protectedMessages = new Set<ChatMessage>();
 
   constructor(config: VirtualMemoryConfig = {}) {
     super(config.systemPrompt);
@@ -342,6 +345,49 @@ export class VirtualMemory extends AgentMemory {
       changes.push(`pageSlotTokens: ${old} → ${config.pageSlotTokens}`);
     }
     return changes.length > 0 ? changes.join("; ") : "No config changes";
+  }
+
+  // --- Protected Messages (current-turn tool results immune from compaction) ---
+
+  /** Mark a message as protected from compaction. */
+  protectMessage(msg: ChatMessage): void {
+    this.protectedMessages.add(msg);
+  }
+
+  /** Remove protection from a message. */
+  unprotectMessage(msg: ChatMessage): void {
+    this.protectedMessages.delete(msg);
+  }
+
+  /** Clear all message protections (call at start of each turn). */
+  clearProtectedMessages(): void {
+    this.protectedMessages.clear();
+  }
+
+  // --- Pre-Tool Compaction ---
+
+  /**
+   * Proactively compact if working memory usage exceeds a threshold.
+   * Call before tool execution to ensure tool results have room to land.
+   * Returns true if compaction was triggered.
+   */
+  async preToolCompact(threshold = 0.80): Promise<boolean> {
+    if (!this.cfg.driver) return false;
+    const usage = this.currentTokenUsage();
+    const budget = this.cfg.workingMemoryTokens;
+    if (usage / budget >= threshold) {
+      Logger.telemetry(`[VM] Pre-tool compaction: ${usage}/${budget} tokens (${((usage / budget) * 100).toFixed(0)}% >= ${(threshold * 100).toFixed(0)}%)`);
+      this.forceCompactPending = true;
+      await this.onAfterAdd();
+      return true;
+    }
+    return false;
+  }
+
+  /** Sum of tokens across all non-system working memory messages. */
+  currentTokenUsage(): number {
+    const nonSystem = this.messagesBuffer.filter(m => m.role !== "system" || m.from !== "System");
+    return this.msgTokens(nonSystem);
   }
 
   // --- Persistence ---
@@ -932,12 +978,12 @@ export class VirtualMemory extends AgentMemory {
     const candidatesForPaging = messages.slice(0, cutoff);
     const recentKeep = messages.slice(cutoff);
 
-    // Promote high-importance messages from the paging candidates
+    // Promote high-importance and protected messages from the paging candidates
     const older: ChatMessage[] = [];
     const promoted: ChatMessage[] = [];
     for (const m of candidatesForPaging) {
       const threshold = this.overrideImportanceThreshold ?? IMPORTANCE_KEEP_THRESHOLD;
-      if ((m.importance ?? 0) >= threshold) {
+      if (this.protectedMessages.has(m) || (m.importance ?? 0) >= threshold) {
         promoted.push(m);
       } else {
         older.push(m);
@@ -1196,11 +1242,14 @@ export class VirtualMemory extends AgentMemory {
     // Partition messages to check per-lane budgets
     const { assistant, user, system, tool } = this.partition();
 
-    // Calculate per-lane token usage
-    const assistantTokens = this.msgTokens(assistant);
+    // Calculate per-lane token usage, excluding protected messages from watermark
+    // Protected messages are current-turn tool results that must not trigger compaction
+    const unprotectedAssistant = assistant.filter(m => !this.protectedMessages.has(m));
+    const unprotectedTool = tool.filter(m => !this.protectedMessages.has(m));
+    const assistantTokens = this.msgTokens(unprotectedAssistant);
     const userTokens = this.msgTokens(user);
     const systemTokens = this.msgTokens(system.slice(1)); // Exclude system prompt
-    const toolTokens = this.msgTokens(tool);
+    const toolTokens = this.msgTokens(unprotectedTool);
 
     // Check if any lane exceeds its budget
     const assistantOverBudget = assistantTokens > budgets.assistant * this.cfg.highRatio;

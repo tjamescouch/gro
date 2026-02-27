@@ -57,7 +57,7 @@ import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
-import { ViolationTracker } from "./violations.js";
+import { ViolationTracker, ThinkingLoopDetector } from "./violations.js";
 import { thinkingTierModel as selectTierModel, selectMultiProviderTierModel } from "./tier-loader.js";
 import type { TierSelection } from "./tier-loader.js";
 import {
@@ -1080,6 +1080,7 @@ async function executeTurn(
   tools.push(globToolDefinition());
   tools.push(grepToolDefinition());
   runtimeState.beginTurn({ model: cfg.model, maxToolRounds: cfg.maxToolRounds });
+  memory.clearProtectedMessages();
 
   let finalText = "";
   let turnTokensIn = 0;
@@ -1634,22 +1635,78 @@ async function executeTurn(
       } : undefined,
     });
 
-    const output: ChatOutput = await activeDriver.chat(memory.messages(), {
-      model: activeModel,
-      tools: tools.length > 0 ? tools : undefined,
-      onToken: markerParser.onToken,
-      onReasoningToken: rawOnReasoningToken,
-      thinkingBudget: activeThinkingBudget,
-      temperature: activeTemperature,
-      top_k: activeTopK,
-      top_p: activeTopP,
-      logprobs: !!lfsExtractor,
-      top_logprobs: lfsExtractor ? 5 : undefined,
-      onLogprobs: lfsExtractor ? (lp: any) => {
-        const signals = lfsExtractor.extract(lp.token, lp);
-        if (lfsPoster) lfsPoster.postBatch(signals);
-      } : undefined,
-    });
+    // Thinking loop detection: abort generation if model repeats the same phrase
+    const thinkingDetector = new ThinkingLoopDetector();
+    const chatAbortController = new AbortController();
+    let thinkingLoopAborted = false;
+
+    const onReasoningTokenWithDetection = rawOnReasoningToken
+      ? (t: string) => {
+          rawOnReasoningToken(t);
+          if (thinkingDetector.addToken(t)) {
+            Logger.warn("[ThinkingLoop] Repetitive thinking detected, aborting generation");
+            thinkingLoopAborted = true;
+            chatAbortController.abort();
+          }
+        }
+      : (t: string) => {
+          if (thinkingDetector.addToken(t)) {
+            Logger.warn("[ThinkingLoop] Repetitive thinking detected, aborting generation");
+            thinkingLoopAborted = true;
+            chatAbortController.abort();
+          }
+        };
+
+    let output: ChatOutput;
+    try {
+      output = await activeDriver.chat(memory.messages(), {
+        model: activeModel,
+        tools: tools.length > 0 ? tools : undefined,
+        onToken: markerParser.onToken,
+        onReasoningToken: onReasoningTokenWithDetection,
+        thinkingBudget: activeThinkingBudget,
+        temperature: activeTemperature,
+        top_k: activeTopK,
+        top_p: activeTopP,
+        logprobs: !!lfsExtractor,
+        top_logprobs: lfsExtractor ? 5 : undefined,
+        onLogprobs: lfsExtractor ? (lp: any) => {
+          const signals = lfsExtractor.extract(lp.token, lp);
+          if (lfsPoster) lfsPoster.postBatch(signals);
+        } : undefined,
+        signal: chatAbortController.signal,
+      });
+    } catch (e: unknown) {
+      if (thinkingLoopAborted) {
+        // Retry once with reduced thinking budget
+        Logger.warn("[ThinkingLoop] Retrying with 50% thinking budget");
+        activeThinkingBudget = Math.max(0, activeThinkingBudget * 0.5);
+        memory.setThinkingBudget(activeThinkingBudget);
+        runtimeState.setThinkingBudget(activeThinkingBudget);
+
+        // Inject a system hint for the model
+        await memory.add({
+          role: "system",
+          from: "System",
+          content: "[Your previous response was interrupted due to repetitive thinking. Be concise and direct.]",
+        });
+
+        // Reset and retry without thinking loop detection (allow one clean attempt)
+        markerParser.flush();
+        output = await activeDriver.chat(memory.messages(), {
+          model: activeModel,
+          tools: tools.length > 0 ? tools : undefined,
+          onToken: markerParser.onToken,
+          onReasoningToken: rawOnReasoningToken,
+          thinkingBudget: activeThinkingBudget,
+          temperature: activeTemperature,
+          top_k: activeTopK,
+          top_p: activeTopP,
+        });
+      } else {
+        throw e; // Re-throw non-thinking-loop errors
+      }
+    }
 
     // Flush any remaining buffered tokens from the marker parser
     markerParser.flush();
@@ -1725,6 +1782,8 @@ async function executeTurn(
     }
     if (output.toolCalls.length > 0) {
       (assistantMsg as any).tool_calls = output.toolCalls;
+      // Protect assistant message with tool_calls from compaction until tools are processed
+      memory.protectMessage(assistantMsg);
     }
     await memory.add(assistantMsg);
 
@@ -1857,6 +1916,13 @@ async function executeTurn(
       pendingNarration = "";
     }
 
+    // Proactive pre-tool compaction: if context is already pressured,
+    // compact now so tool results have room to land without triggering
+    // compaction that could eat them before the model processes them.
+    if (output.toolCalls.length > 0) {
+      await memory.preToolCompact(0.80);
+    }
+
     // Process tool calls
     for (const tc of output.toolCalls) {
       const fnName = tc.function.name;
@@ -1985,14 +2051,16 @@ async function executeTurn(
         result = `Error: ${ge.message}${raw.stack ? '\nStack: ' + raw.stack : ''}`;
       }
 
-      // Feed tool result back into memory
-      await memory.add({
+      // Feed tool result back into memory (protected from compaction until model processes it)
+      const toolResultMsg: import("./drivers/types.js").ChatMessage = {
         role: "tool",
         from: fnName,
         content: result,
         tool_call_id: tc.id,
         name: fnName,
-      });
+      };
+      memory.protectMessage(toolResultMsg);
+      await memory.add(toolResultMsg);
     }
     spendMeter.recordToolCalls(output.toolCalls.length);
 

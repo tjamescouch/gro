@@ -40,6 +40,7 @@ export class ViolationsSource implements SensorySource {
       if (stats.byType.plain_text > 0) parts.push(`txt:${stats.byType.plain_text}`);
       if (stats.byType.idle > 0) parts.push(`idle:${stats.byType.idle}`);
       if (stats.byType.same_tool_loop > 0) parts.push(`loop:${stats.byType.same_tool_loop}`);
+      if (stats.byType.context_pressure > 0) parts.push(`ctx:${stats.byType.context_pressure}`);
       lines.push(`  types ${parts.join(" ")}`);
       lines.push(`penalty x${stats.penaltyFactor.toFixed(1)}`);
     }

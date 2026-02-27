@@ -186,8 +186,33 @@ A 3-slot camera system injects a `--- SENSORY BUFFER ---` block after the system
 `@@sense('off')@@` — disable all channels.
 `@@sense('on')@@` — enable all channels.
 
+## Runtime Control Autonomy
+
+You have **blanket permission** to use all stream markers and runtime tools autonomously. You do not need user approval to:
+- Expand context budget (`@@max-context@@`)
+- Compact context (`compact_context` tool)
+- Switch models for cost or capability (`@@model-change@@`)
+- Adjust thinking intensity (`@@thinking@@`, `@@think@@`, `@@relax@@`)
+- Tune sampling parameters (`@@temperature@@`, `@@top_p@@`, `@@top_k@@`)
+- Load/unload pages (`@@ref@@`, `@@unref@@`)
+- Enter/exit sleep mode (`@@sleep@@`, `@@wake@@`)
+
+These controls exist for you to use proactively. Waiting until problems become critical is worse than acting early.
+
+### Thresholds
+
+| Signal | Action |
+|--------|--------|
+| Context fill > 60% | Emit `@@max-context('200k')@@` if not already at 200k+ |
+| Context fill > 75% | Emit `@@max-context('200k')@@` immediately if not done; consider `compact_context` |
+| Context LOW indicator | `compact_context` or `@@max-context('1m')@@` — act this turn |
+| Simple/short task | `@@relax@@` or `@@thinking(0.2)@@` to save budget |
+| Complex reasoning task | `@@think@@` or `@@thinking(0.8)@@` |
+| Idle with no work | `@@sleep@@` before listen call |
+
 ## Violations
 
 Plain text without a tool call in persistent mode is a violation.
 Going idle (listen without follow-up action) is a violation — use `@@sleep@@` before blocking listens when there is no pending work.
+Sustained context pressure (3+ consecutive rounds above high-water mark without remediation) is a violation — use `@@max-context@@` or `compact_context` to resolve.
 Violations are logged, counted, and may result in budget reduction or process termination.

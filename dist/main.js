@@ -1062,6 +1062,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         let roundHadFailure = false;
         let roundImportance = undefined;
         let thinkingSeenThisTurn = false;
+        let contextRemediatedThisTurn = false;
         // Memory hot-swap handler
         const swapMemory = async (targetType) => {
             const validTypes = ["simple", "advanced", "virtual", "fragmentation", "hnsw", "perfect"];
@@ -1441,6 +1442,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     else {
                         Logger.warn(`Stream marker: max-context — memory controller doesn't support resizing (type=${innerMC.constructor.name})`);
                     }
+                    contextRemediatedThisTurn = true;
                 }
                 else {
                     Logger.warn(`Stream marker: max-context('${marker.arg}') — invalid size (min 1024 tokens, got ${tokens})`);
@@ -1946,6 +1948,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
                 else if (fnName === "compact_context") {
                     result = await executeCompactContext(fnArgs, unwrapMemory(memory));
+                    contextRemediatedThisTurn = true;
                 }
                 else if (fnName === "cleanup_sessions") {
                     result = await executeCleanupSessions(fnArgs);
@@ -2007,6 +2010,17 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             const loopTool = violations.checkSameToolLoop(toolNames);
             if (loopTool) {
                 await violations.inject(memory, "same_tool_loop", loopTool);
+            }
+            // Check for sustained context pressure without remediation
+            const mStats = memory.getStats();
+            if (mStats.type === "virtual" || mStats.type === "fragmentation" || mStats.type === "hnsw" || mStats.type === "perfect") {
+                const vs = mStats;
+                const totalBudget = vs.workingMemoryBudget + vs.pageSlotBudget;
+                const totalUsed = vs.systemTokens + vs.pageSlotUsed + vs.workingMemoryUsed;
+                const usageRatio = totalBudget > 0 ? totalUsed / totalBudget : 0;
+                if (violations.checkContextPressure(usageRatio, vs.highRatio, contextRemediatedThisTurn)) {
+                    await violations.inject(memory, "context_pressure");
+                }
             }
         }
         // Auto-save periodically in persistent mode to survive SIGTERM/crashes

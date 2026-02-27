@@ -100,7 +100,12 @@ export class ContextMapSource implements SensorySource {
     const totalUsed = sysTokens + pageTokens + wmUsed;
     const usePct = totalBudget > 0 ? totalUsed / totalBudget : 0;
     const isLow = (free / totalBudget) < 0.2 || stats.compactionActive || usePct > stats.highRatio;
-    lines.push(isLow ? `${freeLabel} ${freeBar}  ← LOW` : `${freeLabel} ${freeBar}`);
+    const isHigh = usePct > 0.75 && !stats.compactionActive;
+    lines.push(
+      isLow ? `${freeLabel} ${freeBar}  ← LOW` :
+      isHigh ? `${freeLabel} ${freeBar}  ⚠ expand budget or compact` :
+      `${freeLabel} ${freeBar}`
+    );
 
     // Stats line — one line of precision for when the model needs exact numbers
     const usedK = (totalUsed / 1000).toFixed(0);

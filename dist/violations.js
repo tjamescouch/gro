@@ -20,9 +20,11 @@ export class ViolationTracker {
         this.plainTextResponses = 0;
         this.idleRounds = 0;
         this.sameToolLoops = 0;
+        this.contextPressures = 0;
         this.totalViolations = 0;
         this.consecutiveListenOnly = 0;
         this.consecutiveSameToolCount = 0;
+        this.consecutiveContextPressure = 0;
         this.lastToolName = null;
         /** When true, agent has declared it is intentionally sleeping — suppress idle/loop violations. */
         this.sleeping = false;
@@ -42,11 +44,15 @@ export class ViolationTracker {
         else if (type === "same_tool_loop") {
             this.sameToolLoops++;
         }
+        else if (type === "context_pressure") {
+            this.contextPressures++;
+        }
         this.totalViolations++;
         // Parseable line for niki/supervisor
         const count = type === "plain_text" ? this.plainTextResponses
             : type === "idle" ? this.idleRounds
-                : this.sameToolLoops;
+                : type === "context_pressure" ? this.contextPressures
+                    : this.sameToolLoops;
         process.stderr.write(`VIOLATION: type=${type} count=${count} total=${this.totalViolations}\n`);
         Logger.warn(`Violation #${this.totalViolations}: ${type} (${count} of this type)`);
     }
@@ -61,6 +67,9 @@ export class ViolationTracker {
         }
         else if (type === "idle") {
             msg = `[VIOLATION #${this.totalViolations}: idle. You have been listening for many consecutive rounds. If there is pending work, act on it. If not, emit @@sleep@@ before your next listen call to suppress this warning.]`;
+        }
+        else if (type === "context_pressure") {
+            msg = `[VIOLATION #${this.totalViolations}: context_pressure. Context usage is HIGH for ${this.consecutiveContextPressure} consecutive rounds with no remediation. You MUST act now: emit @@max-context('200k')@@ to expand budget, or call compact_context to free space. Runtime controls are autonomous — no permission needed.]`;
         }
         else {
             msg = `[VIOLATION #${this.totalViolations}: same_tool_loop. You have ${this.totalViolations} violations this session. You have called ${toolName} ${this.consecutiveSameToolCount} times consecutively without doing any work. Do one work slice (bash/tool) now before calling ${toolName} again.]`;
@@ -154,6 +163,31 @@ export class ViolationTracker {
         return null;
     }
     /**
+     * Check if context pressure is sustained without remediation.
+     * Call each round with the current memory usage ratio and whether the agent
+     * took any remediation action (compact_context, max-context marker, etc.).
+     * Returns true if a context_pressure violation should fire.
+     */
+    checkContextPressure(usageRatio, highRatio, remediated) {
+        if (this.sleeping)
+            return false;
+        if (remediated) {
+            this.consecutiveContextPressure = 0;
+            return false;
+        }
+        if (usageRatio > highRatio) {
+            this.consecutiveContextPressure++;
+            if (this.consecutiveContextPressure >= 3) {
+                this.consecutiveContextPressure = 0; // reset after firing
+                return true;
+            }
+        }
+        else {
+            this.consecutiveContextPressure = 0;
+        }
+        return false;
+    }
+    /**
      * Get current violation statistics.
      */
     getStats() {
@@ -163,6 +197,7 @@ export class ViolationTracker {
                 plain_text: this.plainTextResponses,
                 idle: this.idleRounds,
                 same_tool_loop: this.sameToolLoops,
+                context_pressure: this.contextPressures,
             },
             penaltyFactor: this.penaltyFactor(),
         };

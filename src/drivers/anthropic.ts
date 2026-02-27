@@ -155,12 +155,12 @@ function convertMessages(messages: ChatMessage[]): { systemBlocks: SystemBlock[]
     if (m.role === "tool") {
       // Skip orphaned tool_results — their tool_use was truncated from history
       if (m.tool_call_id && !knownToolUseIds.has(m.tool_call_id)) {
-        Logger.warn(`Dropping orphaned tool_result for missing tool_use id=${m.tool_call_id}`);
+        Logger.debug(`Dropping orphaned tool_result for missing tool_use id=${m.tool_call_id}`);
         continue;
       }
       // Skip duplicate tool_results — can arise from session reload or memory merging
       if (m.tool_call_id && answeredToolUseIds.has(m.tool_call_id)) {
-        Logger.warn(`Dropping duplicate tool_result for tool_use id=${m.tool_call_id}`);
+        Logger.debug(`Dropping duplicate tool_result for tool_use id=${m.tool_call_id}`);
         continue;
       }
       if (m.tool_call_id) answeredToolUseIds.add(m.tool_call_id);

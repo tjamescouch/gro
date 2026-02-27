@@ -30,7 +30,7 @@ import "./memory/register-memory-types.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
 import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/types.js";
-import type { AgentMemory } from "./memory/agent-memory.js";
+import type { AgentMemory, VirtualMemoryStats } from "./memory/agent-memory.js";
 import { SensoryMemory } from "./memory/sensory-memory.js";
 import { ContextMapSource } from "./memory/context-map-source.js";
 import { TemporalSource } from "./memory/temporal-source.js";
@@ -1157,6 +1157,7 @@ async function executeTurn(
     let roundHadFailure = false;
     let roundImportance: number | undefined = undefined;
     let thinkingSeenThisTurn = false;
+    let contextRemediatedThisTurn = false;
 
     // Memory hot-swap handler
     const swapMemory = async (targetType: string): Promise<void> => {
@@ -1503,6 +1504,7 @@ async function executeTurn(
          } else {
            Logger.warn(`Stream marker: max-context — memory controller doesn't support resizing (type=${innerMC.constructor.name})`);
          }
+         contextRemediatedThisTurn = true;
        } else {
          Logger.warn(`Stream marker: max-context('${marker.arg}') — invalid size (min 1024 tokens, got ${tokens})`);
        }
@@ -2022,6 +2024,7 @@ async function executeTurn(
           result = await executeMemoryTune(fnArgs, { memoryConfig: unwrapMemory(memory) });
         } else if (fnName === "compact_context") {
           result = await executeCompactContext(fnArgs, unwrapMemory(memory));
+          contextRemediatedThisTurn = true;
         } else if (fnName === "cleanup_sessions") {
           result = await executeCleanupSessions(fnArgs);
         } else if (fnName === "Read") {
@@ -2078,6 +2081,18 @@ async function executeTurn(
       const loopTool = violations.checkSameToolLoop(toolNames);
       if (loopTool) {
         await violations.inject(memory, "same_tool_loop", loopTool);
+      }
+
+      // Check for sustained context pressure without remediation
+      const mStats = memory.getStats();
+      if (mStats.type === "virtual" || mStats.type === "fragmentation" || mStats.type === "hnsw" || mStats.type === "perfect") {
+        const vs = mStats as VirtualMemoryStats;
+        const totalBudget = vs.workingMemoryBudget + vs.pageSlotBudget;
+        const totalUsed = vs.systemTokens + vs.pageSlotUsed + vs.workingMemoryUsed;
+        const usageRatio = totalBudget > 0 ? totalUsed / totalBudget : 0;
+        if (violations.checkContextPressure(usageRatio, vs.highRatio, contextRemediatedThisTurn)) {
+          await violations.inject(memory, "context_pressure");
+        }
       }
     }
 

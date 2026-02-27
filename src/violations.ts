@@ -157,15 +157,23 @@ export class ViolationTracker {
 
     if (this.sleeping) return null;
 
-    // Only track single-tool rounds
-    if (toolNames.length !== 1) {
+    if (toolNames.length === 0) {
+      this.consecutiveSameToolCount = 0;
+      this.lastToolName = null;
+      return null;
+    }
+
+    // Check if all tools in this round are the same (handles both single and multi-call rounds)
+    const uniqueTools = new Set(toolNames);
+    if (uniqueTools.size > 1) {
+      // Mixed tool usage — not a loop
       this.consecutiveSameToolCount = 0;
       this.lastToolName = null;
       return null;
     }
 
     const currentTool = toolNames[0];
-    
+
     if (currentTool === this.lastToolName) {
       this.consecutiveSameToolCount++;
       if (this.consecutiveSameToolCount >= this.sameToolThreshold) {
@@ -177,7 +185,7 @@ export class ViolationTracker {
       this.consecutiveSameToolCount = 1;
       this.lastToolName = currentTool;
     }
-    
+
     return null;
   }
 

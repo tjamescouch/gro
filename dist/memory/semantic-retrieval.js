@@ -50,6 +50,8 @@ function buildQuery(messages) {
 export class SemanticRetrieval {
     constructor(config) {
         this.lastQueryHash = "";
+        /** Mutex: true while a batch re-summarization is running. Prevents concurrent backfill. */
+        this._batchRunning = false;
         this.memory = config.memory;
         this.searchIndex = config.searchIndex;
         this.autoEnabled = config.autoRetrievalEnabled ?? true;
@@ -61,6 +63,15 @@ export class SemanticRetrieval {
     get available() {
         return this.searchIndex.size > 0;
     }
+    get batchRunning() { return this._batchRunning; }
+    set batchRunning(v) { this._batchRunning = v; }
+    /** Atomically swap the live search index (used by BatchSummarizer after double-buffer build). */
+    swapIndex(newIndex) {
+        this.searchIndex = newIndex;
+        Logger.telemetry(`[SemanticRetrieval] Index swapped (${newIndex.size} entries)`);
+    }
+    /** Expose the current search index (for BatchSummarizer to clone). */
+    getSearchIndex() { return this.searchIndex; }
     // --- Auto-retrieval (called before each turn) ---
     async autoRetrieve(messages) {
         if (!this.autoEnabled || this.searchIndex.size === 0)
@@ -119,6 +130,10 @@ export class SemanticRetrieval {
     }
     // --- Backfill existing pages ---
     async backfill() {
+        if (this._batchRunning) {
+            Logger.telemetry("[SemanticRetrieval] Backfill skipped — batch re-summarization in progress");
+            return 0;
+        }
         const allPages = this.memory.getPages();
         const allIds = allPages.map(p => p.id);
         const missing = this.searchIndex.getMissingPageIds(allIds);

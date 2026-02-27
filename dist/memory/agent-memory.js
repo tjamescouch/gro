@@ -32,6 +32,14 @@ export class AgentMemory {
     async compactWithHints(_hints) {
         return "compact_context: this memory module does not support compaction.";
     }
+    /** Mark a message as protected from compaction (current-turn tool results). */
+    protectMessage(_msg) { }
+    /** Remove protection from a message. */
+    unprotectMessage(_msg) { }
+    /** Clear all message protections (call at start of each turn). */
+    clearProtectedMessages() { }
+    /** Proactively compact if usage exceeds threshold. Returns true if compaction ran. */
+    async preToolCompact(_threshold) { return false; }
     messages() {
         return [...this.messagesBuffer];
     }

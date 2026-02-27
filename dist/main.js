@@ -37,6 +37,7 @@ import { ViolationsSource } from "./memory/violations-source.js";
 import { tryCreateEmbeddingProvider } from "./memory/embedding-provider.js";
 import { PageSearchIndex } from "./memory/page-search-index.js";
 import { SemanticRetrieval } from "./memory/semantic-retrieval.js";
+import { BatchSummarizer } from "./memory/batch-summarizer.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
@@ -52,7 +53,7 @@ import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
-import { ViolationTracker } from "./violations.js";
+import { ViolationTracker, ThinkingLoopDetector } from "./violations.js";
 import { thinkingTierModel as selectTierModel, selectMultiProviderTierModel } from "./tier-loader.js";
 import { loadModelConfig, resolveModelAlias, isKnownAlias, defaultModel, modelIdPrefixPattern, inferProvider, } from "./model-config.js";
 import { parseDirectives, executeDirectives } from "./runtime/index.js";
@@ -876,6 +877,7 @@ function unwrapMemory(mem) {
 /**
  * Initialize semantic retrieval if an embedding API key is available.
  * Returns null if no key found or the memory type doesn't support pages.
+ * Also handles orphan shadow recovery and provides batch summarizer launch.
  */
 async function initSemanticRetrieval(mem) {
     const inner = unwrapMemory(mem);
@@ -888,6 +890,11 @@ async function initSemanticRetrieval(mem) {
     }
     const vm = inner;
     const indexPath = join(vm.getPagesDir(), "embeddings.json");
+    const shadowPath = join(dirname(indexPath), "embeddings.shadow.json");
+    // Recover orphaned shadow index from a previous crash
+    if (BatchSummarizer.recoverOrphanedShadow(indexPath, shadowPath)) {
+        Logger.telemetry("[BatchSummarizer] Recovered orphaned shadow index");
+    }
     const searchIndex = new PageSearchIndex({ indexPath, embeddingProvider });
     await searchIndex.load();
     const retrieval = new SemanticRetrieval({ memory: vm, searchIndex });
@@ -903,8 +910,34 @@ async function initSemanticRetrieval(mem) {
         Logger.telemetry(`[SemanticRetrieval] Backfilled ${backfilled} pages`);
     }
     Logger.telemetry(`[SemanticRetrieval] Enabled (${embeddingProvider.provider}/${embeddingProvider.model}, ${searchIndex.size} pages indexed)`);
-    return retrieval;
+    // Batch summarizer launcher — captures idle signaling closure
+    const startBatch = async (summarize, options) => {
+        const batch = new BatchSummarizer({
+            semanticRetrieval: retrieval,
+            embeddingProvider,
+            indexPath,
+            pagesDir: vm.getPagesDir(),
+            summarize,
+            shouldYield: () => _turnActive,
+            waitForIdle: () => new Promise(resolve => {
+                const check = () => {
+                    if (!_turnActive) {
+                        resolve();
+                        return;
+                    }
+                    setTimeout(check, 500);
+                };
+                check();
+            }),
+        });
+        Logger.telemetry("[BatchSummarizer] Starting batch re-summarization");
+        const result = await batch.run(options);
+        Logger.telemetry(`[BatchSummarizer] Done: ${result.summarized} summarized, ${result.skipped} skipped, ${result.failed} failed (${result.durationMs}ms)`);
+    };
+    return { retrieval, startBatch };
 }
+/** Module-level flag: true while a conversation turn is actively running. */
+let _turnActive = false;
 // ---------------------------------------------------------------------------
 // Output formatting
 // ---------------------------------------------------------------------------
@@ -960,6 +993,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     tools.push(globToolDefinition());
     tools.push(grepToolDefinition());
     runtimeState.beginTurn({ model: cfg.model, maxToolRounds: cfg.maxToolRounds });
+    memory.clearProtectedMessages();
     let finalText = "";
     let turnTokensIn = 0;
     let turnTokensOut = 0;
@@ -1013,7 +1047,8 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         return selectTierModel(budget, provider, cfg.model, loadModelConfig().aliases, cfg.maxTier ?? undefined);
     }
     // Semantic retrieval: auto-surface relevant pages by meaning
-    const semanticRetrieval = await initSemanticRetrieval(memory);
+    const semanticInit = await initSemanticRetrieval(memory);
+    const semanticRetrieval = semanticInit?.retrieval ?? null;
     let brokeCleanly = false;
     let sleepRequested = false; // @@sleep@@/@@listening@@ → yield to user
     let idleNudges = 0;
@@ -1021,6 +1056,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     let pendingNarration = ""; // Buffer for plain text emitted between tool calls
     let pendingEmotionState = {}; // Accumulates emotion dims for injection into send tool
     spendMeter.startTurn();
+    _turnActive = true;
     for (let round = 0; round < cfg.maxToolRounds; round++) {
         runtimeState.advanceRound();
         let roundHadFailure = false;
@@ -1446,6 +1482,23 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     }
                 }
             }
+            else if (marker.name === "resummarize") {
+                // Trigger batch re-summarization of all pages (background, yield-aware)
+                if (semanticInit) {
+                    const innerVM = unwrapMemory(memory);
+                    if (innerVM instanceof VirtualMemory) {
+                        const vm = innerVM;
+                        const force = marker.arg === "force";
+                        semanticInit.startBatch((content, label) => vm.summarizeText(content, label), { force }).catch(err => {
+                            Logger.warn(`[BatchSummarizer] Error: ${err}`);
+                        });
+                        Logger.telemetry(`Stream marker: resummarize${force ? "(force)" : ""} → batch started`);
+                    }
+                }
+                else {
+                    Logger.warn("Stream marker: resummarize — semantic retrieval not available");
+                }
+            }
         };
         // Select model tier based on current thinking budget (unless agent pinned a model explicitly)
         if (!modelExplicitlySet) {
@@ -1522,23 +1575,77 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 narrationClips = clips;
             } : undefined,
         });
-        const output = await activeDriver.chat(memory.messages(), {
-            model: activeModel,
-            tools: tools.length > 0 ? tools : undefined,
-            onToken: markerParser.onToken,
-            onReasoningToken: rawOnReasoningToken,
-            thinkingBudget: activeThinkingBudget,
-            temperature: activeTemperature,
-            top_k: activeTopK,
-            top_p: activeTopP,
-            logprobs: !!lfsExtractor,
-            top_logprobs: lfsExtractor ? 5 : undefined,
-            onLogprobs: lfsExtractor ? (lp) => {
-                const signals = lfsExtractor.extract(lp.token, lp);
-                if (lfsPoster)
-                    lfsPoster.postBatch(signals);
-            } : undefined,
-        });
+        // Thinking loop detection: abort generation if model repeats the same phrase
+        const thinkingDetector = new ThinkingLoopDetector();
+        const chatAbortController = new AbortController();
+        let thinkingLoopAborted = false;
+        const onReasoningTokenWithDetection = rawOnReasoningToken
+            ? (t) => {
+                rawOnReasoningToken(t);
+                if (thinkingDetector.addToken(t)) {
+                    Logger.warn("[ThinkingLoop] Repetitive thinking detected, aborting generation");
+                    thinkingLoopAborted = true;
+                    chatAbortController.abort();
+                }
+            }
+            : (t) => {
+                if (thinkingDetector.addToken(t)) {
+                    Logger.warn("[ThinkingLoop] Repetitive thinking detected, aborting generation");
+                    thinkingLoopAborted = true;
+                    chatAbortController.abort();
+                }
+            };
+        let output;
+        try {
+            output = await activeDriver.chat(memory.messages(), {
+                model: activeModel,
+                tools: tools.length > 0 ? tools : undefined,
+                onToken: markerParser.onToken,
+                onReasoningToken: onReasoningTokenWithDetection,
+                thinkingBudget: activeThinkingBudget,
+                temperature: activeTemperature,
+                top_k: activeTopK,
+                top_p: activeTopP,
+                logprobs: !!lfsExtractor,
+                top_logprobs: lfsExtractor ? 5 : undefined,
+                onLogprobs: lfsExtractor ? (lp) => {
+                    const signals = lfsExtractor.extract(lp.token, lp);
+                    if (lfsPoster)
+                        lfsPoster.postBatch(signals);
+                } : undefined,
+                signal: chatAbortController.signal,
+            });
+        }
+        catch (e) {
+            if (thinkingLoopAborted) {
+                // Retry once with reduced thinking budget
+                Logger.warn("[ThinkingLoop] Retrying with 50% thinking budget");
+                activeThinkingBudget = Math.max(0, activeThinkingBudget * 0.5);
+                memory.setThinkingBudget(activeThinkingBudget);
+                runtimeState.setThinkingBudget(activeThinkingBudget);
+                // Inject a system hint for the model
+                await memory.add({
+                    role: "system",
+                    from: "System",
+                    content: "[Your previous response was interrupted due to repetitive thinking. Be concise and direct.]",
+                });
+                // Reset and retry without thinking loop detection (allow one clean attempt)
+                markerParser.flush();
+                output = await activeDriver.chat(memory.messages(), {
+                    model: activeModel,
+                    tools: tools.length > 0 ? tools : undefined,
+                    onToken: markerParser.onToken,
+                    onReasoningToken: rawOnReasoningToken,
+                    thinkingBudget: activeThinkingBudget,
+                    temperature: activeTemperature,
+                    top_k: activeTopK,
+                    top_p: activeTopP,
+                });
+            }
+            else {
+                throw e; // Re-throw non-thinking-loop errors
+            }
+        }
         // Flush any remaining buffered tokens from the marker parser
         markerParser.flush();
         // Send accumulated narration segments and flush LFS
@@ -1607,6 +1714,8 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         }
         if (output.toolCalls.length > 0) {
             assistantMsg.tool_calls = output.toolCalls;
+            // Protect assistant message with tool_calls from compaction until tools are processed
+            memory.protectMessage(assistantMsg);
         }
         await memory.add(assistantMsg);
         // Execute directives after message is persisted
@@ -1727,6 +1836,12 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 Logger.debug(`Discarding ${pendingNarration.length} chars of orphaned narration (no send tool this round)`);
             }
             pendingNarration = "";
+        }
+        // Proactive pre-tool compaction: if context is already pressured,
+        // compact now so tool results have room to land without triggering
+        // compaction that could eat them before the model processes them.
+        if (output.toolCalls.length > 0) {
+            await memory.preToolCompact(0.80);
         }
         // Process tool calls
         for (const tc of output.toolCalls) {
@@ -1868,14 +1983,16 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     Logger.error(raw.stack);
                 result = `Error: ${ge.message}${raw.stack ? '\nStack: ' + raw.stack : ''}`;
             }
-            // Feed tool result back into memory
-            await memory.add({
+            // Feed tool result back into memory (protected from compaction until model processes it)
+            const toolResultMsg = {
                 role: "tool",
                 from: fnName,
                 content: result,
                 tool_call_id: tc.id,
                 name: fnName,
-            });
+            };
+            memory.protectMessage(toolResultMsg);
+            await memory.add(toolResultMsg);
         }
         spendMeter.recordToolCalls(output.toolCalls.length);
         // Check for violations (idle + same-tool-loop)
@@ -1967,6 +2084,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     if (semanticRetrieval) {
         semanticRetrieval.saveIndex();
     }
+    _turnActive = false;
     return { text: finalText, memory };
 }
 // ---------------------------------------------------------------------------

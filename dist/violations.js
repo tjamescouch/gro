@@ -218,3 +218,66 @@ export class SameToolLoopTracker {
         this.consecutiveCount = 0;
     }
 }
+/**
+ * Detect repetitive thinking loops where the model repeats the same phrase
+ * many times in its reasoning tokens. This wastes tokens and indicates
+ * degenerate behavior under context pressure.
+ *
+ * Feed thinking tokens via addToken(). Returns true when a loop is detected.
+ */
+export class ThinkingLoopDetector {
+    constructor(opts) {
+        this.buffer = "";
+        this.charsSinceCheck = 0;
+        this._detected = false;
+        this.windowSize = opts?.windowSize ?? 2000;
+        this.phraseLen = opts?.phraseLen ?? 80;
+        this.repeatThreshold = opts?.repeatThreshold ?? 3;
+        this.checkInterval = opts?.checkInterval ?? 200;
+    }
+    /** Feed a thinking token. Returns true if a repetitive loop is detected. */
+    addToken(text) {
+        if (this._detected)
+            return true; // Already detected, keep returning true
+        this.buffer += text;
+        if (this.buffer.length > this.windowSize) {
+            this.buffer = this.buffer.slice(-this.windowSize);
+        }
+        this.charsSinceCheck += text.length;
+        if (this.charsSinceCheck >= this.checkInterval) {
+            this.charsSinceCheck = 0;
+            if (this.detectLoop()) {
+                this._detected = true;
+                return true;
+            }
+        }
+        return false;
+    }
+    /** Whether a loop was detected in this session. */
+    get detected() { return this._detected; }
+    /** Reset state for a new generation attempt. */
+    reset() {
+        this.buffer = "";
+        this.charsSinceCheck = 0;
+        this._detected = false;
+    }
+    detectLoop() {
+        if (this.buffer.length < this.phraseLen * this.repeatThreshold)
+            return false;
+        // Extract the last phraseLen chars as candidate phrase
+        const candidate = this.buffer.slice(-this.phraseLen);
+        // Count how many times this phrase appears in the buffer
+        let count = 0;
+        let pos = 0;
+        while (true) {
+            const idx = this.buffer.indexOf(candidate, pos);
+            if (idx === -1)
+                break;
+            count++;
+            if (count >= this.repeatThreshold)
+                return true;
+            pos = idx + 1;
+        }
+        return false;
+    }
+}

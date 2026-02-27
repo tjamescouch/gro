@@ -952,7 +952,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     // Merge plugin-registered tools (must come after plugin loading above)
     tools.push(...toolRegistry.getToolDefinitions());
     const THINKING_MEAN = 0.5; // cruising altitude — mid-tier, not idle
-    const THINKING_REGRESSION_RATE = 0.4; // how fast we pull toward mean per idle round
+    const THINKING_REGRESSION_RATE = 0.2; // how fast we pull toward mean per idle round
     // Mutable model reference — stream markers can switch this mid-turn
     let activeModel = cfg.model;
     // Mutable driver reference — cross-provider hotswap replaces this mid-turn

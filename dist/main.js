@@ -1055,6 +1055,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     const semanticRetrieval = semanticInit?.retrieval ?? null;
     let brokeCleanly = false;
     let sleepRequested = false; // @@sleep@@/@@listening@@ → yield to user
+    let midTaskNudged = false; // One-shot continuation nudge after context resize
     let idleNudges = 0;
     let consecutiveFailedRounds = 0;
     let pendingNarration = ""; // Buffer for plain text emitted between tool calls
@@ -1751,6 +1752,18 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         // No tool calls — either we're done, or we need to nudge the model
         if (output.toolCalls.length === 0) {
             if (!cfg.persistent || tools.length === 0) {
+                // If we used tools earlier this turn (round > 0) and haven't already
+                // nudged, give the model one chance to continue before stopping.
+                if (round > 0 && !midTaskNudged) {
+                    midTaskNudged = true;
+                    Logger.debug(`Model stopped mid-task at round ${round} — injecting continuation nudge`);
+                    await memory.add({
+                        role: "system",
+                        from: "System",
+                        content: "[SYSTEM] You stopped mid-task. If you have more work to do, continue now. Use your tools to complete the task.",
+                    });
+                    continue;
+                }
                 brokeCleanly = true;
                 break;
             }
@@ -2304,37 +2317,51 @@ async function interactive(cfg, driver, mcp, sessionId) {
     }
     Logger.info(C.gray("type 'exit' or Ctrl+D to quit\n"));
     rl.prompt();
-    rl.on("line", async (line) => {
-        const input = line.trim();
-        if (!input) {
-            rl.prompt();
-            return;
-        }
-        if (input === "exit" || input === "quit") {
-            rl.close();
-            return;
-        }
-        try {
-            await memory.add({ role: "user", from: "User", content: input });
-            const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
-            memory = result.memory; // pick up any hot-swapped memory
-            _shutdownMemory = memory;
-        }
-        catch (e) {
-            const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
-            Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
-        }
-        // Auto-save after each turn
-        if (cfg.sessionPersistence) {
+    let pasteBuffer = [];
+    let pasteTimer = null;
+    let turnRunning = false;
+    rl.on("line", (line) => {
+        if (turnRunning)
+            return; // Drop input during turn execution
+        pasteBuffer.push(line);
+        if (pasteTimer)
+            clearTimeout(pasteTimer);
+        pasteTimer = setTimeout(async () => {
+            const input = pasteBuffer.join("\n").trim();
+            pasteBuffer = [];
+            pasteTimer = null;
+            if (!input) {
+                rl.prompt();
+                return;
+            }
+            if (input === "exit" || input === "quit") {
+                rl.close();
+                return;
+            }
+            turnRunning = true;
             try {
-                await memory.save(sessionId);
+                await memory.add({ role: "user", from: "User", content: input });
+                const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+                memory = result.memory; // pick up any hot-swapped memory
+                _shutdownMemory = memory;
             }
             catch (e) {
-                Logger.error(C.red(`session save failed: ${asError(e).message}`));
+                const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
+                Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
             }
-        }
-        process.stdout.write("\n");
-        rl.prompt();
+            // Auto-save after each turn
+            if (cfg.sessionPersistence) {
+                try {
+                    await memory.save(sessionId);
+                }
+                catch (e) {
+                    Logger.error(C.red(`session save failed: ${asError(e).message}`));
+                }
+            }
+            turnRunning = false;
+            process.stdout.write("\n");
+            rl.prompt();
+        }, 50);
     });
     rl.on("error", (e) => {
         Logger.error(C.red(`readline error: ${e.message}`));
@@ -2500,7 +2527,7 @@ async function main() {
     }
 }
 // Graceful shutdown on signals — save session before exiting
-for (const sig of ["SIGTERM", "SIGHUP"]) {
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(sig, async () => {
         Logger.info(C.gray(`\nreceived ${sig}, saving session and shutting down...`));
         if (_shutdownMemory && _shutdownSessionId && _shutdownSessionPersistence) {

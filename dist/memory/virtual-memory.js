@@ -884,7 +884,7 @@ export class VirtualMemory extends AgentMemory {
      * - Broken/missing pairs → flatten to summarized assistant + tool
      * - Dangling tool results (no matching tool_calls) → log warning, skip
      */
-    flattenCompactedToolCalls() {
+    flattenCompactedToolCalls(pagedToolCallIds) {
         const buf = this.messagesBuffer;
         // --- Pre-index ---
         // Map tool_call_id → tool result message
@@ -982,12 +982,36 @@ export class VirtualMemory extends AgentMemory {
                     const resultSnippet = rawResult
                         ? (rawResult.length > 2000 ? rawResult.slice(0, 2000) + "..." : rawResult)
                         : "[result truncated during compaction]";
+                    // Determine page ref: either from a lane page that contains this call/result,
+                    // or create a mini-page for large results being truncated
+                    let refTag = "";
+                    const existingPageId = pagedToolCallIds?.get(callId);
+                    if (existingPageId) {
+                        refTag = ` <ref id="${existingPageId}"/>`;
+                    }
+                    else if (rawResult.length > 2000) {
+                        // Result is large and being truncated — save full content to a retrievable page
+                        const miniContent = `[tool result from ${fnName}]:\n${rawResult}`;
+                        const miniPage = {
+                            id: this.generatePageId(miniContent),
+                            label: `tool result: ${fnName}`,
+                            content: miniContent,
+                            createdAt: new Date().toISOString(),
+                            messageCount: 1,
+                            tokens: this.tokensFor(miniContent),
+                        };
+                        this.savePage(miniPage);
+                        if (this.onPageCreated) {
+                            this.onPageCreated(miniPage.id, `Full result of ${fnName} call`, miniPage.label);
+                        }
+                        refTag = ` <ref id="${miniPage.id}"/>`;
+                    }
                     const argsSnippet = fnArgs.length > 200 ? fnArgs.slice(0, 200) + "..." : fnArgs;
                     // Summarized assistant message (no tool_calls field!)
                     const flatAssistant = {
                         role: "assistant",
                         from: msg.from || "VirtualMemory",
-                        content: `I called ${fnName}(${argsSnippet}) → returned ${resultSnippet}`,
+                        content: `I called ${fnName}(${argsSnippet}) → returned ${resultSnippet}${refTag}`,
                     };
                     let parsedArgs = {};
                     try {
@@ -1006,7 +1030,7 @@ export class VirtualMemory extends AgentMemory {
                     const flatTool = {
                         role: "tool",
                         from: fnName,
-                        content: resultSnippet,
+                        content: `${resultSnippet}${refTag}`,
                         tool_call_id: callId,
                         name: fnName,
                     };
@@ -1242,9 +1266,21 @@ export class VirtualMemory extends AgentMemory {
                     : keepAssistant;
                 // Create pages for each lane with older messages
                 const summaries = [];
+                // Track which tool_call_ids ended up in which pages so the flattener
+                // can embed <ref> pointers instead of discarding data
+                const pagedToolCallIds = new Map();
                 if (finalOlderAssistant.length >= 2) {
                     const label = `assistant lane ${new Date().toISOString().slice(0, 16)} (${finalOlderAssistant.length} msgs)`;
-                    const { summary } = await this.createPageFromMessages(finalOlderAssistant, label, "assistant");
+                    const { page, summary } = await this.createPageFromMessages(finalOlderAssistant, label, "assistant");
+                    for (const m of finalOlderAssistant) {
+                        const tc = m.tool_calls;
+                        if (Array.isArray(tc)) {
+                            for (const c of tc) {
+                                if (c?.id)
+                                    pagedToolCallIds.set(c.id, page.id);
+                            }
+                        }
+                    }
                     summaries.push({
                         role: "assistant",
                         from: "VirtualMemory",
@@ -1271,7 +1307,11 @@ export class VirtualMemory extends AgentMemory {
                 }
                 if (olderTool.length >= 2) {
                     const label = `tool lane ${new Date().toISOString().slice(0, 16)} (${olderTool.length} msgs)`;
-                    const { summary } = await this.createPageFromMessages(olderTool, label);
+                    const { page, summary } = await this.createPageFromMessages(olderTool, label);
+                    for (const m of olderTool) {
+                        if (m.tool_call_id)
+                            pagedToolCallIds.set(m.tool_call_id, page.id);
+                    }
                     summaries.push({
                         role: "system",
                         from: "VirtualMemory",
@@ -1307,7 +1347,7 @@ export class VirtualMemory extends AgentMemory {
                 // Flatten broken tool call/result pairs into summarized assistant+tool messages.
                 // This eliminates tool_calls from compacted messages so OpenAI's strict
                 // pairing validation cannot fail regardless of paging fragmentation order.
-                this.flattenCompactedToolCalls();
+                this.flattenCompactedToolCalls(pagedToolCallIds);
                 // Calculate metrics after cleanup
                 const afterNonSys = this.messagesBuffer.filter(m => m.role !== "system");
                 const afterTokens = this.msgTokens(afterNonSys);

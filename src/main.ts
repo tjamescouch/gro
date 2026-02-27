@@ -1150,6 +1150,7 @@ async function executeTurn(
 
   let brokeCleanly = false;
   let sleepRequested = false;  // @@sleep@@/@@listening@@ → yield to user
+  let midTaskNudged = false;   // One-shot continuation nudge after context resize
   let idleNudges = 0;
   let consecutiveFailedRounds = 0;
   let pendingNarration = "";  // Buffer for plain text emitted between tool calls
@@ -1824,6 +1825,18 @@ async function executeTurn(
     // No tool calls — either we're done, or we need to nudge the model
     if (output.toolCalls.length === 0) {
       if (!cfg.persistent || tools.length === 0) {
+        // If we used tools earlier this turn (round > 0) and haven't already
+        // nudged, give the model one chance to continue before stopping.
+        if (round > 0 && !midTaskNudged) {
+          midTaskNudged = true;
+          Logger.debug(`Model stopped mid-task at round ${round} — injecting continuation nudge`);
+          await memory.add({
+            role: "system",
+            from: "System",
+            content: "[SYSTEM] You stopped mid-task. If you have more work to do, continue now. Use your tools to complete the task.",
+          });
+          continue;
+        }
         brokeCleanly = true;
         break;
       }

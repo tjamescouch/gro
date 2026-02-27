@@ -361,8 +361,20 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
     // (e.g. all its tool_use blocks were stripped, leaving only text).
     const lastApiMsg = apiMessages[apiMessages.length - 1];
     if (lastApiMsg && lastApiMsg.role === "assistant") {
-      Logger.warn("Conversation ends with assistant message after conversion — appending user continuation");
-      apiMessages.push({ role: "user", content: "(continue)" });
+      // Check if we're in a (continue) loop: if recent messages alternate between
+      // (continue) user messages and thin assistant responses, we're in a death spiral.
+      let continueCount = 0;
+      for (let i = apiMessages.length - 1; i >= Math.max(0, apiMessages.length - 10); i--) {
+        const m = apiMessages[i];
+        if (m.role === "user" && m.content === "(continue)") continueCount++;
+      }
+      if (continueCount >= 3) {
+        Logger.warn("Detected (continue) loop — stripping trailing assistant message instead of appending another continuation");
+        apiMessages.pop();
+      } else {
+        Logger.debug("Conversation ends with assistant message after conversion — appending user continuation");
+        apiMessages.push({ role: "user", content: "(continue)" });
+      }
     }
 
     const thinkingBudget: number = opts?.thinkingBudget ?? 0;

@@ -913,6 +913,19 @@ export class VirtualMemory extends AgentMemory {
             const tc = msg.tool_calls;
             if (msg.role !== "assistant" || !Array.isArray(tc) || tc.length === 0)
                 continue;
+            // CRITICAL: Never flatten protected messages — they are in-flight current-turn
+            // messages whose tool results may not have arrived yet. Flattening them would
+            // destroy the tool_calls field, orphaning tool results added later.
+            if (this.protectedMessages.has(msg)) {
+                properlySplitIndices.add(i);
+                const expectedIds = tc.map((c) => c?.id).filter(Boolean);
+                for (let j = i + 1; j < buf.length && buf[j].role === "tool"; j++) {
+                    if (buf[j].tool_call_id && expectedIds.includes(buf[j].tool_call_id)) {
+                        properlySplitToolIndices.add(j);
+                    }
+                }
+                continue;
+            }
             const expectedIds = tc.map((c) => c?.id).filter(Boolean);
             // Check: are ALL matching tool results consecutively after this assistant?
             const followingTools = [];
@@ -1008,9 +1021,14 @@ export class VirtualMemory extends AgentMemory {
                 if (consumedToolCallIds.has(msg.tool_call_id)) {
                     continue;
                 }
+                // Protected tool results are in-flight — their assistant may not have tool_calls yet
+                if (this.protectedMessages.has(msg)) {
+                    output.push(msg);
+                    continue;
+                }
                 // Dangling tool result — no matching assistant tool_calls anywhere. Drop it.
                 if (!allCallIds.has(msg.tool_call_id)) {
-                    Logger.warn(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — converting to text`);
+                    Logger.debug(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — dropped`);
                     continue;
                 }
                 // Belongs to a properly-split pair not yet reached, or other valid state

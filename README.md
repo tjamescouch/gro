@@ -32,15 +32,15 @@ gro "explain the CAP theorem in two sentences"
 # Interactive conversation with virtual memory
 gro -i
 
+# Resume last session (like `claude --continue`)
+gro -c
+
 # Use a specific model (provider auto-inferred)
 export OPENAI_API_KEY=sk-...
 gro -m gpt-4.1 "hello"
 
-# Pipe mode
+# Pipe mode (like `claude -p`)
 echo "summarize this" | gro -p
-
-# Resume last session
-gro -i -c
 ```
 
 ---
@@ -195,10 +195,12 @@ brew tap tjamescouch/thesystem && brew install thesystem
 thesystem init && thesystem keys set anthropic sk-ant-...
 thesystem start
 
-# Drop into an interactive gro session inside a pod
+# Drop into an interactive gro session inside a pod (resumes last session)
 thesystem gro
 thesystem gro -P openai -m gpt-4.1
-thesystem gro --no-continue   # fresh session
+
+# Fresh session (no resume) — equivalent to `claude -p` behavior
+thesystem gro --no-continue
 ```
 
 See the [thesystem README](https://github.com/tjamescouch/thesystem) for full setup and multi-agent swarm configuration.

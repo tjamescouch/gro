@@ -2408,32 +2408,48 @@ async function interactive(
   Logger.info(C.gray("type 'exit' or Ctrl+D to quit\n"));
   rl.prompt();
 
-  rl.on("line", async (line: string) => {
-    const input = line.trim();
-    if (!input) { rl.prompt(); return; }
-    if (input === "exit" || input === "quit") { rl.close(); return; }
+  let pasteBuffer: string[] = [];
+  let pasteTimer: ReturnType<typeof setTimeout> | null = null;
+  let turnRunning = false;
 
-    try {
-      await memory.add({ role: "user", from: "User", content: input });
-      const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
-      memory = result.memory; // pick up any hot-swapped memory
-      _shutdownMemory = memory;
-    } catch (e: unknown) {
-      const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
-      Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
-    }
+  rl.on("line", (line: string) => {
+    if (turnRunning) return; // Drop input during turn execution
 
-    // Auto-save after each turn
-    if (cfg.sessionPersistence) {
+    pasteBuffer.push(line);
+    if (pasteTimer) clearTimeout(pasteTimer);
+    pasteTimer = setTimeout(async () => {
+      const input = pasteBuffer.join("\n").trim();
+      pasteBuffer = [];
+      pasteTimer = null;
+      if (!input) { rl.prompt(); return; }
+      if (input === "exit" || input === "quit") { rl.close(); return; }
+
+      turnRunning = true;
+      rl.pause();
       try {
-        await memory.save(sessionId);
+        await memory.add({ role: "user", from: "User", content: input });
+        const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+        memory = result.memory; // pick up any hot-swapped memory
+        _shutdownMemory = memory;
       } catch (e: unknown) {
-        Logger.error(C.red(`session save failed: ${asError(e).message}`));
+        const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
+        Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
       }
-    }
 
-    process.stdout.write("\n");
-    rl.prompt();
+      // Auto-save after each turn
+      if (cfg.sessionPersistence) {
+        try {
+          await memory.save(sessionId);
+        } catch (e: unknown) {
+          Logger.error(C.red(`session save failed: ${asError(e).message}`));
+        }
+      }
+
+      turnRunning = false;
+      rl.resume();
+      process.stdout.write("\n");
+      rl.prompt();
+    }, 50);
   });
 
   rl.on("error", (e: Error) => {

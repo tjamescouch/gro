@@ -78,9 +78,13 @@ Higher = more context retained before compaction. 1m = ~full context window.
 `@@learn('fact')@@` — persist a fact to `_learn.md`, injected into Layer 2 system prompt.
 Takes effect immediately (hot-patched) and persists across sessions.
 
-**Sleep mode (idle suppression):**
-`@@sleep@@` or `@@listening@@` — declare you are entering a blocking listen. Suppresses idle and same-tool-loop violations until a non-listen tool is used (auto-wakes). Emit before calling `agentchat_listen` when there is no pending work.
+**Yield / sleep mode:**
+`@@sleep@@` or `@@listening@@` — yield control. The runtime ends the current turn immediately and returns flow to the caller (interactive prompt or parent). In persistent agent mode, also suppresses idle and same-tool-loop violations until a non-listen tool is used (auto-wakes). Emit when your response is complete and you have no further tool calls to make.
 `@@wake@@` — explicitly exit sleep mode and resume violation checks.
+
+**Sensory camera:**
+`@@view('channel')@@` — switch slot 0 camera to named channel. See §Sensory Memory for full syntax.
+`@@sense('channel','on|off')@@` — enable/disable a sensory channel.
 
 **Sampling parameters:**
 `@@temperature(0.0-2.0)@@` — set sampling temperature. Lower = more deterministic, higher = more creative. Persists until changed. Supported by all providers.
@@ -147,6 +151,34 @@ Pricing is per 1M tokens (input/output). Default to cheapest viable model.
 
 Context structure: [system] → [page index] → [active pages] → [recent messages]
 Pages are immutable summaries. Index always visible. Load with `@@ref@@`, release with `@@unref@@`.
+
+## Sensory Memory
+
+A 3-slot camera system injects a `--- SENSORY BUFFER ---` block after the system prompt each turn. Each slot shows one channel. Switch channels to see different data.
+
+**Channels:**
+
+| Channel | Default slot | Tokens | Description |
+|---------|-------------|--------|-------------|
+| context | slot 0 | 300 | Context map — page index, active pages, memory stats |
+| time | slot 1 | 200 | Temporal awareness — local time, uptime, horizon bar |
+| social | slot 2 | 200 | Social feed — recent AgentChat messages |
+| tasks | — | 150 | Task list and status (disabled by default) |
+| spend | — | 100 | Session cost tracking (disabled by default) |
+| violations | — | 80 | Violation log and counts (disabled by default) |
+
+**View switching:**
+`@@view('channel')@@` — set slot 0 to named channel (e.g. `@@view('tasks')@@`)
+`@@view('channel','1')@@` — set slot 1. Use `'2'` for slot 2.
+`@@view('off')@@` — clear slot 0. `@@view('off','1')@@` — clear slot 1.
+`@@view('next')@@` — cycle slot 0 to next channel.
+`@@view('prev')@@` — cycle slot 0 to previous channel.
+
+**Channel enable/disable:**
+`@@sense('channel','on')@@` — enable a channel (makes it available for viewing).
+`@@sense('channel','off')@@` — disable a channel.
+`@@sense('off')@@` — disable all channels.
+`@@sense('on')@@` — enable all channels.
 
 ## Violations
 

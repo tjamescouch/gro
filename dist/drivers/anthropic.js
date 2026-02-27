@@ -362,17 +362,25 @@ export function makeAnthropicDriver(cfg) {
             body.top_p = opts.top_p;
         // System prompt: build from structured blocks with per-block cache breakpoints.
         // Order: System (stable) → VirtualMemory (loaded pages) → SensoryMemory (sensory buffer)
-        // Each block gets cache_control so Anthropic caches the longest matching prefix.
+        // Anthropic allows max 4 cache_control blocks total. Tools uses 1, so system gets at most 3.
         if (systemBlocks.length > 0) {
             if (enablePromptCaching) {
                 // Sort blocks: System first, then VirtualMemory (pages), then SensoryMemory, then others
                 const ORDER = { System: 0, VirtualMemory: 1, SensoryMemory: 2 };
                 const sorted = [...systemBlocks].sort((a, b) => (ORDER[a.source] ?? 1.5) - (ORDER[b.source] ?? 1.5));
-                body.system = sorted.map(block => ({
-                    type: "text",
-                    text: block.text,
-                    cache_control: { type: "ephemeral" },
-                }));
+                // Anthropic max 4 cache_control blocks; reserve 1 for tools → 3 for system.
+                // If more than 3 system blocks, only the first 3 get cache_control.
+                const MAX_CACHED_SYSTEM_BLOCKS = 3;
+                body.system = sorted.map((block, i) => {
+                    const entry = {
+                        type: "text",
+                        text: block.text,
+                    };
+                    if (i < MAX_CACHED_SYSTEM_BLOCKS) {
+                        entry.cache_control = { type: "ephemeral" };
+                    }
+                    return entry;
+                });
             }
             else {
                 // No caching: concatenate into a single string (legacy behavior)

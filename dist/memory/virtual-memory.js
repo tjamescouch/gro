@@ -480,6 +480,13 @@ export class VirtualMemory extends AgentMemory {
             // Fallback: simple label + ref without LLM
             summary = `[Summary of ${messages.length} messages: ${label}] `;
         }
+        // Store summary on page for semantic indexing and re-save
+        page.summary = summary;
+        this.savePage(page);
+        // Notify semantic retrieval (if connected)
+        if (this.onPageCreated) {
+            this.onPageCreated(page.id, summary, label);
+        }
         return { page, summary };
     }
     async summarizeWithRef(messages, pageId, label, lane) {
@@ -1297,6 +1304,7 @@ export class VirtualMemory extends AgentMemory {
     getActivePageIds() { return Array.from(this.activePageIds); }
     getPageCount() { return this.pages.size; }
     hasPage(id) { return this.pages.has(id); }
+    getPagesDir() { return this.cfg.pagesDir; }
     getStats() {
         // System prompt tokens (first message if system role)
         const sysMsg = this.messagesBuffer.length > 0 && this.messagesBuffer[0].role === "system"

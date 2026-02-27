@@ -34,6 +34,9 @@ import { TaskSource } from "./memory/task-source.js";
 import { SocialSource } from "./memory/social-source.js";
 import { SpendSource } from "./memory/spend-source.js";
 import { ViolationsSource } from "./memory/violations-source.js";
+import { tryCreateEmbeddingProvider } from "./memory/embedding-provider.js";
+import { PageSearchIndex } from "./memory/page-search-index.js";
+import { SemanticRetrieval } from "./memory/semantic-retrieval.js";
 import { bashToolDefinition, executeBash } from "./tools/bash.js";
 import { yieldToolDefinition, executeYield } from "./tools/yield.js";
 import { agentpatchToolDefinition, executeAgentpatch, enableShowDiffs } from "./tools/agentpatch.js";
@@ -870,6 +873,38 @@ function wrapWithSensory(inner) {
 function unwrapMemory(mem) {
     return mem instanceof SensoryMemory ? mem.getInner() : mem;
 }
+/**
+ * Initialize semantic retrieval if an embedding API key is available.
+ * Returns null if no key found or the memory type doesn't support pages.
+ */
+async function initSemanticRetrieval(mem) {
+    const inner = unwrapMemory(mem);
+    if (!(inner instanceof VirtualMemory))
+        return null;
+    const embeddingProvider = tryCreateEmbeddingProvider();
+    if (!embeddingProvider) {
+        Logger.telemetry("[SemanticRetrieval] Disabled (no embedding API key)");
+        return null;
+    }
+    const vm = inner;
+    const indexPath = join(vm.getPagesDir(), "embeddings.json");
+    const searchIndex = new PageSearchIndex({ indexPath, embeddingProvider });
+    await searchIndex.load();
+    const retrieval = new SemanticRetrieval({ memory: vm, searchIndex });
+    // Wire page creation hook for live indexing
+    vm.onPageCreated = (pageId, summary, label) => {
+        retrieval.onPageCreated(pageId, summary, label).catch((err) => {
+            Logger.warn(`[SemanticRetrieval] Index error: ${err}`);
+        });
+    };
+    // Backfill existing un-indexed pages
+    const backfilled = await retrieval.backfill();
+    if (backfilled > 0) {
+        Logger.telemetry(`[SemanticRetrieval] Backfilled ${backfilled} pages`);
+    }
+    Logger.telemetry(`[SemanticRetrieval] Enabled (${embeddingProvider.provider}/${embeddingProvider.model}, ${searchIndex.size} pages indexed)`);
+    return retrieval;
+}
 // ---------------------------------------------------------------------------
 // Output formatting
 // ---------------------------------------------------------------------------
@@ -977,6 +1012,8 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         const provider = inferProvider(cfg.provider, cfg.model);
         return selectTierModel(budget, provider, cfg.model, loadModelConfig().aliases, cfg.maxTier ?? undefined);
     }
+    // Semantic retrieval: auto-surface relevant pages by meaning
+    const semanticRetrieval = await initSemanticRetrieval(memory);
     let brokeCleanly = false;
     let sleepRequested = false; // @@sleep@@/@@listening@@ → yield to user
     let idleNudges = 0;
@@ -1083,11 +1120,28 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 runtimeState.setModelExplicitlySet(true);
             }
             else if (marker.name === "ref" && marker.arg) {
-                // VirtualMemory page ref — load a page into context for next turn
-                const inner = unwrapMemory(memory);
-                if ("ref" in inner && typeof inner.ref === "function") {
-                    inner.ref(marker.arg);
-                    Logger.telemetry(`Stream marker: ref('${marker.arg}') — page will load next turn`);
+                if (marker.arg.startsWith("?") && semanticRetrieval) {
+                    // Semantic search: @@ref('?query')@@ — find pages by meaning
+                    const query = marker.arg.slice(1);
+                    semanticRetrieval.search(query).then(results => {
+                        if (results.length > 0) {
+                            const lines = results.map(r => `  - ${r.pageId} (${r.label}, score=${r.score.toFixed(3)})`).join("\n");
+                            Logger.telemetry(`Stream marker: ref('?${query}') found ${results.length} pages:\n${lines}`);
+                        }
+                        else {
+                            Logger.telemetry(`Stream marker: ref('?${query}') → no matches`);
+                        }
+                    }).catch(err => {
+                        Logger.warn(`Stream marker: ref('?${query}') FAILED: ${err}`);
+                    });
+                }
+                else {
+                    // VirtualMemory page ref — load a page into context for next turn
+                    const inner = unwrapMemory(memory);
+                    if ("ref" in inner && typeof inner.ref === "function") {
+                        inner.ref(marker.arg);
+                        Logger.telemetry(`Stream marker: ref('${marker.arg}') — page will load next turn`);
+                    }
                 }
             }
             else if (marker.name === "unref" && marker.arg) {
@@ -1431,6 +1485,18 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         }
         // Sync thinking budget to memory — scales compaction aggressiveness
         memory.setThinkingBudget(activeThinkingBudget);
+        // Semantic auto-retrieval: find and load relevant pages before the turn
+        if (semanticRetrieval) {
+            try {
+                const autoPage = await semanticRetrieval.autoRetrieve(memory.messages());
+                if (autoPage) {
+                    Logger.telemetry(`[SemanticRetrieval] Auto-loaded page: ${autoPage}`);
+                }
+            }
+            catch (err) {
+                Logger.warn(`[SemanticRetrieval] Auto-retrieval error: ${err}`);
+            }
+        }
         // Poll sensory sources (renders fresh context map)
         if (memory instanceof SensoryMemory) {
             await memory.pollSources();
@@ -1896,6 +1962,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         catch (e) {
             Logger.debug(`AgentChat relay failed: ${asError(e).message}`);
         }
+    }
+    // Persist semantic index on turn completion
+    if (semanticRetrieval) {
+        semanticRetrieval.saveIndex();
     }
     return { text: finalText, memory };
 }

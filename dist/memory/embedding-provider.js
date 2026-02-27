@@ -136,7 +136,7 @@ export function createEmbeddingProvider(config) {
  */
 export function tryCreateEmbeddingProvider() {
     const openaiKey = resolveKey("openai");
-    if (openaiKey) {
+    if (openaiKey && !openaiKey.toLowerCase().includes("proxy")) {
         return createEmbeddingProvider({ provider: "openai", apiKey: openaiKey });
     }
     const googleKey = resolveKey("google");

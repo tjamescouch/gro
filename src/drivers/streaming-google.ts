@@ -7,7 +7,8 @@
  * Message format: contents[] with role (user/model) and parts[{text}]
  * Tool format: tools[{functionDeclarations}]
  */
-import { Logger } from "../logger.js";
+import { Logger, C } from "../logger.js";
+import { spendMeter } from "../spend-meter.js";
 import { asError } from "../errors.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
@@ -338,7 +339,16 @@ export function makeGoogleDriver(cfg: GoogleDriverConfig): ChatDriver {
         } : undefined;
 
         const responseSize = JSON.stringify({ text: content, toolCalls, usage }).length;
-        Logger.telemetry(`[API ←] ${(responseSize / (1024 * 1024)).toFixed(2)} MB`);
+        const respMB = (responseSize / (1024 * 1024)).toFixed(2);
+        let costInfo = "";
+        if (usage) {
+          spendMeter.record(usage.inputTokens, usage.outputTokens);
+          const reqCost = spendMeter.lastRequestCost;
+          const sessCost = spendMeter.cost();
+          const color = reqCost < 0.01 ? C.green : reqCost < 0.05 ? C.yellow : C.red;
+          costInfo = ` ${color(`[$${reqCost.toFixed(4)} / $${sessCost.toFixed(4)}]`)}`;
+        }
+        Logger.telemetry(`[API ←] ${respMB} MB${costInfo}`);
 
         return { text: content, toolCalls, usage };
       }
@@ -469,7 +479,16 @@ export function makeGoogleDriver(cfg: GoogleDriverConfig): ChatDriver {
 
       // Log response
       const responseSize = JSON.stringify({ text: fullText, toolCalls: toolCallsAccum, usage: streamUsage }).length;
-      Logger.telemetry(`[API ←] ${(responseSize / (1024 * 1024)).toFixed(2)} MB`);
+      const respMB = (responseSize / (1024 * 1024)).toFixed(2);
+      let costInfo = "";
+      if (streamUsage) {
+        spendMeter.record(streamUsage.inputTokens, streamUsage.outputTokens);
+        const reqCost = spendMeter.lastRequestCost;
+        const sessCost = spendMeter.cost();
+        const color = reqCost < 0.01 ? C.green : reqCost < 0.05 ? C.yellow : C.red;
+        costInfo = ` ${color(`[$${reqCost.toFixed(4)} / $${sessCost.toFixed(4)}]`)}`;
+      }
+      Logger.telemetry(`[API ←] ${respMB} MB${costInfo}`);
 
       return {
         text: fullText,

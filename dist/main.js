@@ -327,9 +327,9 @@ function loadConfig() {
         else if (arg === "--max-thinking-tokens") {
             flags.maxThinkingTokens = args[++i];
         } // accepted, not used yet
-        else if (arg === "--max-budget-usd") {
+        else if (arg === "--max-budget-usd" || arg === "--max-cost") {
             flags.maxBudgetUsd = args[++i];
-        } // accepted, not used yet
+        }
         else if (arg === "--max-tier") {
             flags.maxTier = args[++i];
         }
@@ -344,6 +344,9 @@ function loadConfig() {
         }
         else if (arg === "--batch-summarization") {
             flags.batchSummarization = "true";
+        }
+        else if (arg === "--no-cache") {
+            flags.noCache = "true";
         }
         else if (arg === "--mcp-config") {
             mcpConfigPaths.push(args[++i]);
@@ -510,6 +513,7 @@ function loadConfig() {
         providers: (flags.providers || process.env.GRO_PROVIDERS || "").split(",").filter(Boolean),
         // toolRoles auto-detected after MCP connect — placeholder here
         toolRoles: { idleTool: null, idleToolDefaultArgs: {}, idleToolArgStrategy: "last-call", sendTool: null, sendToolMessageField: "message" },
+        enablePromptCaching: flags.noCache !== "true",
     };
 }
 function defaultBaseUrl(provider) {
@@ -558,6 +562,8 @@ options:
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string
+  --max-cost             alias for --max-budget-usd
+  --no-cache             disable Anthropic prompt caching
   --no-mcp               disable MCP server connections
   --no-session-persistence  don't save sessions to .gro/
   -p, --print            print response and exit (non-interactive)
@@ -637,7 +643,7 @@ function readLineHidden() {
 // ---------------------------------------------------------------------------
 // Driver factory
 // ---------------------------------------------------------------------------
-function createDriverForModel(provider, model, apiKey, baseUrl, maxTokens) {
+function createDriverForModel(provider, model, apiKey, baseUrl, maxTokens, enablePromptCaching) {
     // Prefer agentauth proxy when available — centralised key management for agent
     // deployments. Discovered via well-known hostnames (host.lima.internal,
     // host.containers.internal, localhost).  Skipped when the user has explicitly
@@ -659,7 +665,7 @@ function createDriverForModel(provider, model, apiKey, baseUrl, maxTokens) {
                 Logger.error(`gro: no API key for anthropic — run: gro --set-key anthropic`);
                 process.exit(1);
             }
-            return makeAnthropicDriver({ apiKey: apiKey || "proxy-managed", model, baseUrl, maxTokens });
+            return makeAnthropicDriver({ apiKey: apiKey || "proxy-managed", model, baseUrl, maxTokens, enablePromptCaching });
         case "openai":
             if (!apiKey && baseUrl === "https://api.openai.com") {
                 Logger.error(`gro: no API key for openai — run: gro --set-key openai`);
@@ -693,7 +699,7 @@ function createDriverForModel(provider, model, apiKey, baseUrl, maxTokens) {
     throw new Error("unreachable");
 }
 function createDriver(cfg) {
-    return createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens);
+    return createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens, cfg.enablePromptCaching);
 }
 // ---------------------------------------------------------------------------
 // Memory factory
@@ -976,6 +982,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     let consecutiveFailedRounds = 0;
     let pendingNarration = ""; // Buffer for plain text emitted between tool calls
     let pendingEmotionState = {}; // Accumulates emotion dims for injection into send tool
+    spendMeter.startTurn();
     for (let round = 0; round < cfg.maxToolRounds; round++) {
         runtimeState.advanceRound();
         let roundHadFailure = false;
@@ -1055,7 +1062,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     const newApiKey = resolveApiKey(newProvider);
                     const newBaseUrl = defaultBaseUrl(newProvider);
                     try {
-                        const newDriver = createDriverForModel(newProvider, newModel, newApiKey, newBaseUrl, cfg.maxTokens);
+                        const newDriver = createDriverForModel(newProvider, newModel, newApiKey, newBaseUrl, cfg.maxTokens, cfg.enablePromptCaching);
                         activeDriver = newDriver;
                         cfg.provider = newProvider;
                         cfg.apiKey = newApiKey;
@@ -1403,7 +1410,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                         const newApiKey = resolveApiKey(tierResult.provider);
                         const newBaseUrl = defaultBaseUrl(tierResult.provider);
                         try {
-                            activeDriver = createDriverForModel(tierResult.provider, tierResult.model, newApiKey, newBaseUrl, cfg.maxTokens);
+                            activeDriver = createDriverForModel(tierResult.provider, tierResult.model, newApiKey, newBaseUrl, cfg.maxTokens, cfg.enablePromptCaching);
                             cfg.provider = tierResult.provider;
                             cfg.apiKey = newApiKey;
                             cfg.baseUrl = newBaseUrl;
@@ -1490,7 +1497,6 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             // Log cumulative usage to stderr — niki parses these patterns for budget enforcement
             process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
             spendMeter.setModel(activeModel);
-            spendMeter.record(output.usage.inputTokens, output.usage.outputTokens);
             runtimeState.recordTurnUsage(output.usage.inputTokens, output.usage.outputTokens);
             Logger.telemetry(spendMeter.format());
             // Check if budget exceeded
@@ -1777,6 +1783,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 name: fnName,
             });
         }
+        spendMeter.recordToolCalls(output.toolCalls.length);
         // Check for violations (idle + same-tool-loop)
         if (violations) {
             const toolNames = output.toolCalls.map(tc => tc.function.name);
@@ -1813,6 +1820,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             runtimeState.setConsecutiveFailedRounds(0);
         }
     }
+    spendMeter.endTurn();
     // If we exhausted maxToolRounds (loop didn't break via no-tool-calls),
     // give the model one final turn with no tools so it can produce a closing response.
     if (!brokeCleanly && tools.length > 0) {
@@ -1830,7 +1838,6 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             turnTokensOut += finalOutput.usage.outputTokens;
             process.stderr.write(`"input_tokens": ${turnTokensIn}, "output_tokens": ${turnTokensOut}\n`);
             spendMeter.setModel(activeModel);
-            spendMeter.record(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
             runtimeState.recordTurnUsage(finalOutput.usage.inputTokens, finalOutput.usage.outputTokens);
             if (Logger.isVerbose()) {
                 Logger.info(spendMeter.format());
@@ -1922,7 +1929,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
                 cfg.model = sess.meta.model;
                 cfg.apiKey = resolveApiKey(cfg.provider);
                 cfg.baseUrl = defaultBaseUrl(cfg.provider);
-                driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens);
+                driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens, cfg.enablePromptCaching);
                 memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
                 await memory.load(sessionId);
             }
@@ -1973,6 +1980,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     // Exit with non-zero code on fatal API errors so the supervisor
     // can distinguish "finished cleanly" from "crashed on API call"
     if (fatalError) {
+        Logger.info(spendMeter.formatSummary());
         process.exit(1);
     }
     if (text) {
@@ -1983,6 +1991,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
             process.stdout.write("\n");
         }
     }
+    Logger.info(spendMeter.formatSummary());
 }
 async function interactive(cfg, driver, mcp, sessionId) {
     let memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
@@ -2019,7 +2028,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
                 cfg.model = sess.meta.model;
                 cfg.apiKey = resolveApiKey(cfg.provider);
                 cfg.baseUrl = defaultBaseUrl(cfg.provider);
-                driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens);
+                driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens, cfg.enablePromptCaching);
                 memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
                 await memory.load(sessionId);
                 const msgCount = sess.messages.filter((m) => m.role !== "system").length;
@@ -2104,6 +2113,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
             }
         }
         await mcp.disconnectAll();
+        Logger.info(spendMeter.formatSummary());
         Logger.info(C.gray(`\ngoodbye. session: ${sessionId}`));
         process.exit(0);
     });
@@ -2194,7 +2204,7 @@ async function main() {
         "--system-prompt", "--system-prompt-file",
         "--append-system-prompt", "--append-system-prompt-file",
         "--context-tokens", "--max-tokens", "--max-tool-rounds", "--max-turns",
-        "--max-thinking-tokens", "--max-budget-usd",
+        "--max-thinking-tokens", "--max-budget-usd", "--max-cost",
         "--summarizer-model", "--output-format", "--mcp-config",
         "--resume", "-r",
         "--max-retries", "--retry-base-ms",
@@ -2266,6 +2276,7 @@ for (const sig of ["SIGTERM", "SIGHUP"]) {
                 Logger.error(C.red(`session save on ${sig} failed: ${asError(e).message}`));
             }
         }
+        Logger.info(spendMeter.formatSummary());
         process.exit(0);
     });
 }

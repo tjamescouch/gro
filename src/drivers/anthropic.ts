@@ -3,6 +3,7 @@
  * Direct HTTP — no SDK dependency.
  */
 import { Logger, C } from "../logger.js";
+import { spendMeter } from "../spend-meter.js";
 import { rateLimiter } from "../utils/rate-limiter.js";
 import { timedFetch } from "../utils/timed-fetch.js";
 import { getMaxRetries, isRetryable, retryDelay, sleep } from "../utils/retry.js";
@@ -73,8 +74,13 @@ function convertToolDefs(tools: any[]): any[] {
  * - Tool result messages become user messages with type "tool_result" content blocks
  * - Anthropic requires strictly alternating user/assistant roles
  */
-function convertMessages(messages: ChatMessage[]): { system: string | undefined; apiMessages: any[] } {
-  let systemPrompt: string | undefined;
+interface SystemBlock {
+  text: string;
+  source: string; // "System" | "SensoryMemory" | "VirtualMemory" | other
+}
+
+function convertMessages(messages: ChatMessage[]): { systemBlocks: SystemBlock[]; apiMessages: any[] } {
+  const systemBlocks: SystemBlock[] = [];
   const apiMessages: any[] = [];
 
   // Pre-scan: collect all tool_use IDs and all tool_result IDs for cross-referencing.
@@ -99,7 +105,16 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
 
   for (const m of messages) {
     if (m.role === "system") {
-      systemPrompt = systemPrompt ? systemPrompt + "\n" + m.content : m.content;
+      // Preserve system messages as separate blocks with source metadata
+      // so the caller can apply cache_control breakpoints per-block.
+      const source = m.from || "System";
+      // Merge consecutive blocks from the same source
+      const last = systemBlocks[systemBlocks.length - 1];
+      if (last && last.source === source) {
+        last.text += "\n" + m.content;
+      } else {
+        systemBlocks.push({ text: m.content, source });
+      }
       continue;
     }
 
@@ -232,7 +247,7 @@ function convertMessages(messages: ChatMessage[]): { system: string | undefined;
     }
   }
 
-  return { system: systemPrompt, apiMessages };
+  return { systemBlocks, apiMessages };
 }
 
 /** Pattern matching transient network errors that should be retried */
@@ -284,7 +299,15 @@ function parseResponseContent(data: any, onToken?: (t: string) => void, onReason
     if (usage.cacheReadInputTokens) parts.push(C.green(`read:${usage.cacheReadInputTokens}`));
     cacheInfo = ` ${C.cyan(`[cache ${parts.join(", ")}]`)}`;
   }
-  Logger.telemetry(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}`);
+  let costInfo = "";
+  if (usage) {
+    spendMeter.record(usage.inputTokens, usage.outputTokens, usage.cacheCreationInputTokens, usage.cacheReadInputTokens);
+    const reqCost = spendMeter.lastRequestCost;
+    const sessCost = spendMeter.cost();
+    const color = reqCost < 0.01 ? C.green : reqCost < 0.05 ? C.yellow : C.red;
+    costInfo = ` ${color(`[$${reqCost.toFixed(4)} / $${sessCost.toFixed(4)}]`)}`;
+  }
+  Logger.telemetry(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}${costInfo}`);
 
   return { text, toolCalls, reasoning: reasoning || undefined, usage };
 }
@@ -324,7 +347,7 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
     const onToolCallDelta: ((t: ChatToolCall) => void) | undefined = opts?.onToolCallDelta;
     const resolvedModel = opts?.model ?? model;
 
-    const { system: systemPrompt, apiMessages } = convertMessages(messages);
+    const { systemBlocks, apiMessages } = convertMessages(messages);
 
     // Guard: if all non-system messages were dropped (e.g. orphaned tool_results),
     // inject a minimal user message so the API call doesn't fail with "at least one message required"
@@ -367,16 +390,24 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
     if (opts?.temperature !== undefined) body.temperature = opts.temperature;
     if (opts?.top_k !== undefined) body.top_k = opts.top_k;
     if (opts?.top_p !== undefined) body.top_p = opts.top_p;
-    // Prompt caching: wrap system prompt in content block with cache_control
-    if (systemPrompt) {
+    // System prompt: build from structured blocks with per-block cache breakpoints.
+    // Order: System (stable) → VirtualMemory (loaded pages) → SensoryMemory (sensory buffer)
+    // Each block gets cache_control so Anthropic caches the longest matching prefix.
+    if (systemBlocks.length > 0) {
       if (enablePromptCaching) {
-        body.system = [{
-          type: "text",
-          text: systemPrompt,
-          cache_control: { type: "ephemeral" }
-        }];
+        // Sort blocks: System first, then VirtualMemory (pages), then SensoryMemory, then others
+        const ORDER: Record<string, number> = { System: 0, VirtualMemory: 1, SensoryMemory: 2 };
+        const sorted = [...systemBlocks].sort(
+          (a, b) => (ORDER[a.source] ?? 1.5) - (ORDER[b.source] ?? 1.5)
+        );
+        body.system = sorted.map(block => ({
+          type: "text" as const,
+          text: block.text,
+          cache_control: { type: "ephemeral" },
+        }));
       } else {
-        body.system = systemPrompt;
+        // No caching: concatenate into a single string (legacy behavior)
+        body.system = systemBlocks.map(b => b.text).join("\n");
       }
     }
 
@@ -685,7 +716,15 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
         if (streamUsage.cacheReadInputTokens) parts.push(C.green(`read:${streamUsage.cacheReadInputTokens}`));
         cacheInfo = ` ${C.cyan(`[cache ${parts.join(", ")}]`)}`;
       }
-      Logger.telemetry(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}`);
+      let costInfo = "";
+      if (streamUsage) {
+        spendMeter.record(streamUsage.inputTokens, streamUsage.outputTokens, streamUsage.cacheCreationInputTokens, streamUsage.cacheReadInputTokens);
+        const reqCost = spendMeter.lastRequestCost;
+        const sessCost = spendMeter.cost();
+        const color = reqCost < 0.01 ? C.green : reqCost < 0.05 ? C.yellow : C.red;
+        costInfo = ` ${color(`[$${reqCost.toFixed(4)} / $${sessCost.toFixed(4)}]`)}`;
+      }
+      Logger.telemetry(`${C.blue("[API ←]")} ${respMB} MB${cacheInfo}${costInfo}`);
 
       return { text: fullText, toolCalls, reasoning: fullReasoning || undefined, usage: streamUsage };
     } catch (e: unknown) {

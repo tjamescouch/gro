@@ -6,12 +6,12 @@ import { C } from "./logger.js";
 // Pricing per million tokens (input / output) in USD
 const PRICING = {
     // Anthropic
-    "claude-haiku-4-5": { in: 0.80, out: 4.00 },
-    "claude-haiku-4-5-20251001": { in: 0.80, out: 4.00 },
-    "claude-sonnet-4-5": { in: 3.00, out: 15.00 },
-    "claude-sonnet-4-5-20250929": { in: 3.00, out: 15.00 },
-    "claude-sonnet-4-20250514": { in: 3.00, out: 15.00 },
-    "claude-opus-4-6": { in: 15.00, out: 75.00 },
+    "claude-haiku-4-5": { in: 0.80, out: 4.00, cacheWrite: 1.00, cacheRead: 0.08 },
+    "claude-haiku-4-5-20251001": { in: 0.80, out: 4.00, cacheWrite: 1.00, cacheRead: 0.08 },
+    "claude-sonnet-4-5": { in: 3.00, out: 15.00, cacheWrite: 3.75, cacheRead: 0.30 },
+    "claude-sonnet-4-5-20250929": { in: 3.00, out: 15.00, cacheWrite: 3.75, cacheRead: 0.30 },
+    "claude-sonnet-4-20250514": { in: 3.00, out: 15.00, cacheWrite: 3.75, cacheRead: 0.30 },
+    "claude-opus-4-6": { in: 15.00, out: 75.00, cacheWrite: 18.75, cacheRead: 1.50 },
     // OpenAI
     "gpt-4o": { in: 5.00, out: 15.00 },
     "gpt-4o-mini": { in: 0.15, out: 0.60 },
@@ -87,18 +87,35 @@ export class SpendMeter {
         this.startMs = null;
         this.totalIn = 0;
         this.totalOut = 0;
+        this.totalCacheWrite = 0;
+        this.totalCacheRead = 0;
+        this._lastRequestCost = 0;
         this.model = "";
         this.lastPostMs = null;
         this.lastCumulativeCost = 0;
+        // Turn timing
+        this._turnStartMs = 0;
+        this._lastTurnMs = 0;
+        this._longestTurnMs = 0;
+        this._totalTurnMs = 0;
+        this._totalTurns = 0;
+        // Tool horizon tracking
+        this._turnToolCalls = 0;
+        this._maxHorizon = 0;
     }
     setModel(model) { this.model = model; }
-    record(inputTokens, outputTokens) {
+    record(inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens) {
         if (this.startMs === null)
             this.startMs = Date.now();
+        const prevCost = this.cost();
         this.totalIn += inputTokens;
         this.totalOut += outputTokens;
+        this.totalCacheWrite += cacheWriteTokens ?? 0;
+        this.totalCacheRead += cacheReadTokens ?? 0;
+        this._lastRequestCost = this.cost() - prevCost;
         this.maybePostToChat();
     }
+    get lastRequestCost() { return this._lastRequestCost; }
     /** Check if cost exceeds a budget limit. Returns error message if exceeded, null if OK. */
     checkBudget(maxUsd) {
         if (!maxUsd || maxUsd <= 0)
@@ -142,7 +159,11 @@ export class SpendMeter {
     }
     cost() {
         const p = priceFor(this.model);
-        return (this.totalIn * p.in + this.totalOut * p.out) / 1_000_000;
+        const nonCachedIn = this.totalIn - this.totalCacheRead;
+        return (nonCachedIn * p.in +
+            this.totalOut * p.out +
+            this.totalCacheWrite * (p.cacheWrite ?? p.in) +
+            this.totalCacheRead * (p.cacheRead ?? p.in)) / 1_000_000;
     }
     elapsedHours() {
         if (this.startMs === null)
@@ -170,6 +191,42 @@ export class SpendMeter {
         const cost = this.cost();
         const tokOut = this.totalOut;
         return C.gray(`$${cost.toFixed(4)} · ${tokOut} tokens`);
+    }
+    // --- Turn timing ---
+    startTurn() { this._turnStartMs = Date.now(); }
+    recordToolCalls(count) { this._turnToolCalls += count; }
+    endTurn() {
+        const elapsed = this._turnStartMs > 0 ? Date.now() - this._turnStartMs : 0;
+        this._lastTurnMs = elapsed;
+        if (elapsed > this._longestTurnMs)
+            this._longestTurnMs = elapsed;
+        this._totalTurnMs += elapsed;
+        if (this._turnToolCalls > this._maxHorizon)
+            this._maxHorizon = this._turnToolCalls;
+        this._totalTurns++;
+        this._turnToolCalls = 0;
+        this._turnStartMs = 0;
+    }
+    get lastTurnMs() { return this._lastTurnMs; }
+    get longestTurnMs() { return this._longestTurnMs; }
+    get avgTurnMs() { return this._totalTurns > 0 ? this._totalTurnMs / this._totalTurns : 0; }
+    get sessionMs() { return this.startMs ? Date.now() - this.startMs : 0; }
+    get maxHorizon() { return this._maxHorizon; }
+    get currentHorizon() { return this._turnToolCalls; }
+    get totalTurns() { return this._totalTurns; }
+    // --- Session summary ---
+    formatSummary() {
+        return `[Session] ${this._totalTurns} turns, ${this.fmtDuration(this.sessionMs)}, ` +
+            `longest turn ${this.fmtDuration(this._longestTurnMs)}, max horizon ${this._maxHorizon}, ` +
+            `$${this.cost().toFixed(4)} total`;
+    }
+    fmtDuration(ms) {
+        if (ms < 1000)
+            return `${ms}ms`;
+        const s = ms / 1000;
+        if (s < 60)
+            return `${s.toFixed(1)}s`;
+        return `${Math.floor(s / 60)}m${Math.round(s % 60)}s`;
     }
     get tokens() { return { in: this.totalIn, out: this.totalOut }; }
 }

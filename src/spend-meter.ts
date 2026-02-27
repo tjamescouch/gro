@@ -5,14 +5,14 @@ import { homedir } from "node:os";
 import { C } from "./logger.js";
 
 // Pricing per million tokens (input / output) in USD
-const PRICING: Record<string, { in: number; out: number }> = {
+const PRICING: Record<string, { in: number; out: number; cacheWrite?: number; cacheRead?: number }> = {
   // Anthropic
-  "claude-haiku-4-5":           { in: 0.80,  out: 4.00  },
-  "claude-haiku-4-5-20251001":  { in: 0.80,  out: 4.00  },
-  "claude-sonnet-4-5":                   { in: 3.00,  out: 15.00 },
-  "claude-sonnet-4-5-20250929":          { in: 3.00,  out: 15.00 },
-  "claude-sonnet-4-20250514":            { in: 3.00,  out: 15.00 },
-  "claude-opus-4-6":            { in: 15.00, out: 75.00 },
+  "claude-haiku-4-5":           { in: 0.80,  out: 4.00,  cacheWrite: 1.00,  cacheRead: 0.08 },
+  "claude-haiku-4-5-20251001":  { in: 0.80,  out: 4.00,  cacheWrite: 1.00,  cacheRead: 0.08 },
+  "claude-sonnet-4-5":                   { in: 3.00,  out: 15.00, cacheWrite: 3.75,  cacheRead: 0.30 },
+  "claude-sonnet-4-5-20250929":          { in: 3.00,  out: 15.00, cacheWrite: 3.75,  cacheRead: 0.30 },
+  "claude-sonnet-4-20250514":            { in: 3.00,  out: 15.00, cacheWrite: 3.75,  cacheRead: 0.30 },
+  "claude-opus-4-6":            { in: 15.00, out: 75.00, cacheWrite: 18.75, cacheRead: 1.50 },
   // OpenAI
   "gpt-4o":                     { in: 5.00,  out: 15.00 },
   "gpt-4o-mini":                { in: 0.15,  out: 0.60  },
@@ -51,7 +51,7 @@ const PRICING: Record<string, { in: number; out: number }> = {
   "mixtral-8x7b-32768":         { in: 0.24,  out: 0.24  },
 };
 
-const DEFAULT_PRICING = { in: 3.00, out: 15.00 }; // sonnet fallback
+const DEFAULT_PRICING: { in: number; out: number; cacheWrite?: number; cacheRead?: number } = { in: 3.00, out: 15.00 }; // sonnet fallback
 
 const POST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -76,7 +76,7 @@ function findIdentity(): string | null {
   return null;
 }
 
-function priceFor(model: string): { in: number; out: number } {
+function priceFor(model: string): { in: number; out: number; cacheWrite?: number; cacheRead?: number } {
   if (PRICING[model]) return PRICING[model];
   // Fuzzy match prefix (e.g. "claude-haiku" matches "claude-haiku-4-5")
   for (const [key, val] of Object.entries(PRICING)) {
@@ -89,18 +89,38 @@ export class SpendMeter {
   private startMs: number | null = null;
   private totalIn  = 0;
   private totalOut = 0;
+  private totalCacheWrite = 0;
+  private totalCacheRead = 0;
+  private _lastRequestCost = 0;
   private model    = "";
   private lastPostMs: number | null = null;
   private lastCumulativeCost = 0;
 
+  // Turn timing
+  private _turnStartMs = 0;
+  private _lastTurnMs = 0;
+  private _longestTurnMs = 0;
+  private _totalTurnMs = 0;
+  private _totalTurns = 0;
+
+  // Tool horizon tracking
+  private _turnToolCalls = 0;
+  private _maxHorizon = 0;
+
   setModel(model: string) { this.model = model; }
 
-  record(inputTokens: number, outputTokens: number) {
+  record(inputTokens: number, outputTokens: number, cacheWriteTokens?: number, cacheReadTokens?: number): void {
     if (this.startMs === null) this.startMs = Date.now();
+    const prevCost = this.cost();
     this.totalIn  += inputTokens;
     this.totalOut += outputTokens;
+    this.totalCacheWrite += cacheWriteTokens ?? 0;
+    this.totalCacheRead += cacheReadTokens ?? 0;
+    this._lastRequestCost = this.cost() - prevCost;
     this.maybePostToChat();
   }
+
+  get lastRequestCost(): number { return this._lastRequestCost; }
 
   /** Check if cost exceeds a budget limit. Returns error message if exceeded, null if OK. */
   checkBudget(maxUsd: number | null): string | null {
@@ -149,7 +169,13 @@ export class SpendMeter {
 
   cost(): number {
     const p = priceFor(this.model);
-    return (this.totalIn * p.in + this.totalOut * p.out) / 1_000_000;
+    const nonCachedIn = this.totalIn - this.totalCacheRead;
+    return (
+      nonCachedIn * p.in +
+      this.totalOut * p.out +
+      this.totalCacheWrite * (p.cacheWrite ?? p.in) +
+      this.totalCacheRead * (p.cacheRead ?? p.in)
+    ) / 1_000_000;
   }
 
   private elapsedHours(): number {
@@ -183,6 +209,46 @@ export class SpendMeter {
     const cost = this.cost();
     const tokOut = this.totalOut;
     return C.gray(`$${cost.toFixed(4)} · ${tokOut} tokens`);
+  }
+
+  // --- Turn timing ---
+
+  startTurn(): void { this._turnStartMs = Date.now(); }
+
+  recordToolCalls(count: number): void { this._turnToolCalls += count; }
+
+  endTurn(): void {
+    const elapsed = this._turnStartMs > 0 ? Date.now() - this._turnStartMs : 0;
+    this._lastTurnMs = elapsed;
+    if (elapsed > this._longestTurnMs) this._longestTurnMs = elapsed;
+    this._totalTurnMs += elapsed;
+    if (this._turnToolCalls > this._maxHorizon) this._maxHorizon = this._turnToolCalls;
+    this._totalTurns++;
+    this._turnToolCalls = 0;
+    this._turnStartMs = 0;
+  }
+
+  get lastTurnMs(): number { return this._lastTurnMs; }
+  get longestTurnMs(): number { return this._longestTurnMs; }
+  get avgTurnMs(): number { return this._totalTurns > 0 ? this._totalTurnMs / this._totalTurns : 0; }
+  get sessionMs(): number { return this.startMs ? Date.now() - this.startMs : 0; }
+  get maxHorizon(): number { return this._maxHorizon; }
+  get currentHorizon(): number { return this._turnToolCalls; }
+  get totalTurns(): number { return this._totalTurns; }
+
+  // --- Session summary ---
+
+  formatSummary(): string {
+    return `[Session] ${this._totalTurns} turns, ${this.fmtDuration(this.sessionMs)}, ` +
+      `longest turn ${this.fmtDuration(this._longestTurnMs)}, max horizon ${this._maxHorizon}, ` +
+      `$${this.cost().toFixed(4)} total`;
+  }
+
+  private fmtDuration(ms: number): string {
+    if (ms < 1000) return `${ms}ms`;
+    const s = ms / 1000;
+    if (s < 60) return `${s.toFixed(1)}s`;
+    return `${Math.floor(s / 60)}m${Math.round(s % 60)}s`;
   }
 
   get tokens() { return { in: this.totalIn, out: this.totalOut }; }

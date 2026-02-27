@@ -7,7 +7,7 @@
  */
 
 import { timedFetch } from "../utils/timed-fetch.js";
-import { resolveKey } from "../keychain.js";
+import { resolveKey, resolveProxy } from "../keychain.js";
 import { Logger } from "../logger.js";
 
 // ---------------------------------------------------------------------------
@@ -195,9 +195,32 @@ export function createEmbeddingProvider(config: EmbeddingProviderConfig): Embedd
 
 /**
  * Auto-detect an embedding provider from available API keys.
- * Probes OpenAI first, then Google. Returns null if no key is available.
+ * Checks agentauth proxy first (same key injection as the main LLM driver),
+ * then falls back to direct keys. Probes OpenAI first, then Google.
+ * Returns null if no key is available.
  */
 export function tryCreateEmbeddingProvider(): EmbeddingProvider | null {
+  // Probe agentauth proxy — routes embedding requests through the same
+  // proxy that handles chat completions, with real keys injected server-side.
+  const openaiProxy = resolveProxy("openai");
+  if (openaiProxy) {
+    return createEmbeddingProvider({
+      provider: "openai",
+      apiKey: openaiProxy.apiKey,
+      baseUrl: openaiProxy.baseUrl,
+    });
+  }
+
+  const googleProxy = resolveProxy("google");
+  if (googleProxy) {
+    return createEmbeddingProvider({
+      provider: "google",
+      apiKey: googleProxy.apiKey,
+      baseUrl: googleProxy.baseUrl,
+    });
+  }
+
+  // Fall back to direct keys (Keychain or env vars)
   const openaiKey = resolveKey("openai");
   if (openaiKey && !openaiKey.toLowerCase().includes("proxy")) {
     return createEmbeddingProvider({ provider: "openai", apiKey: openaiKey });

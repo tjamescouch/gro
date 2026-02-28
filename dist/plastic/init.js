@@ -7,7 +7,7 @@
  *
  * Training-only infrastructure — never active in production.
  */
-import { existsSync, mkdirSync, readdirSync, copyFileSync, writeFileSync, readFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, copyFileSync, writeFileSync, readFileSync, symlinkSync, unlinkSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,18 @@ function getStockDistDir() {
     // Stock dist is one level up: dist/
     const thisFile = fileURLToPath(import.meta.url);
     return resolve(dirname(thisFile), "..");
+}
+/** Safely copy a file, removing any existing read-only destination first. */
+function safeCopy(src, dest) {
+    if (existsSync(dest)) {
+        try {
+            unlinkSync(dest);
+        }
+        catch { /* can't remove — skip */
+            return;
+        }
+    }
+    copyFileSync(src, dest);
 }
 /** Recursively mirror a directory tree with file copies (not symlinks).
  *  Copies are used instead of symlinks because Node's ESM loader resolves
@@ -148,7 +160,7 @@ export async function init() {
     // falls back to join(__dirname, "..", "_base.md") = ~/.gro/plastic/_base.md.
     const baseDoc = join(dirname(stockDir), "_base.md");
     if (existsSync(baseDoc)) {
-        copyFileSync(baseDoc, join(PLASTIC_DIR, "_base.md"));
+        safeCopy(baseDoc, join(PLASTIC_DIR, "_base.md"));
     }
     // Copy providers/ to plastic dir so tier-loader.js can find provider configs.
     // tier-loader resolves join(__dirname, "..", "providers") = ~/.gro/plastic/providers/

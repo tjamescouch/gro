@@ -37,10 +37,12 @@ export function loadTierConfigs() {
 /** Tier rank for clamping */
 const TIER_RANK = { low: 0, mid: 1, high: 2 };
 /** Select model tier based on thinking budget and provider config.
- *  maxTier ("low" | "mid" | "high") caps the tier selection — useful when
- *  the runtime proxy only supports a subset of models.
+ *  maxTier ("low" | "mid" | "high") caps the tier selection (ceiling).
+ *  minTier ("low" | "mid" | "high") floors the tier selection — the ladder
+ *  can promote above this but never demote below it. Used when -m is
+ *  explicitly passed so the user's model choice is respected as a floor.
  */
-export function thinkingTierModel(budget, provider, fallbackModel, modelAliases, maxTier) {
+export function thinkingTierModel(budget, provider, fallbackModel, modelAliases, maxTier, minTier) {
     const tierConfigs = loadTierConfigs();
     const tierConfig = tierConfigs.get(provider);
     // Determine the raw tier from budget
@@ -63,9 +65,13 @@ export function thinkingTierModel(budget, provider, fallbackModel, modelAliases,
         else
             selectedTier = "high";
     }
-    // Clamp to maxTier if specified
+    // Clamp to maxTier ceiling if specified
     if (maxTier && TIER_RANK[selectedTier] > TIER_RANK[maxTier]) {
         selectedTier = maxTier;
+    }
+    // Clamp to minTier floor if specified (user's explicit -m choice)
+    if (minTier && TIER_RANK[selectedTier] < TIER_RANK[minTier]) {
+        selectedTier = minTier;
     }
     // Resolve model from tier
     if (!tierConfig) {
@@ -75,12 +81,47 @@ export function thinkingTierModel(budget, provider, fallbackModel, modelAliases,
     return tierConfig.tiers[selectedTier] ?? fallbackModel;
 }
 /**
+ * Infer the tier of a model name by checking which tier slot it occupies
+ * in the provider's config. Returns null if not recognized.
+ */
+export function inferModelTier(model, provider, modelAliases) {
+    const tierConfigs = loadTierConfigs();
+    const tierConfig = tierConfigs.get(provider);
+    if (tierConfig) {
+        for (const tier of ["high", "mid", "low"]) {
+            if (tierConfig.tiers[tier] === model)
+                return tier;
+        }
+    }
+    // Check aliases: "opus" → high, "sonnet" → mid, "haiku" → low
+    const aliasToTier = { haiku: "low", sonnet: "mid", opus: "high" };
+    for (const [alias, tier] of Object.entries(aliasToTier)) {
+        if (modelAliases[alias] === model)
+            return tier;
+    }
+    // Pattern-based fallback for common model names
+    const m = model.toLowerCase();
+    if (/opus/.test(m))
+        return "high";
+    if (/sonnet/.test(m))
+        return "mid";
+    if (/haiku/.test(m))
+        return "low";
+    if (/gpt-4[.-]?1(?!-mini)/.test(m) || /o3(?!-mini)/.test(m) || /grok-4/.test(m))
+        return "high";
+    if (/gpt-4[.-]?1-mini|o4-mini|grok-3/.test(m))
+        return "mid";
+    if (/gpt-4o-mini|grok-2/.test(m))
+        return "low";
+    return null;
+}
+/**
  * Select model tier across multiple providers.
  * Iterates providers in preference order, returning the first that has a
  * non-null model at the computed tier level. Falls back to the first
  * provider's default model if nothing matches.
  */
-export function selectMultiProviderTierModel(budget, providers, fallbackModel, modelAliases, maxTier) {
+export function selectMultiProviderTierModel(budget, providers, fallbackModel, modelAliases, maxTier, minTier) {
     const tierConfigs = loadTierConfigs();
     // Determine the raw tier from budget (use default thresholds)
     let selectedTier;
@@ -103,9 +144,13 @@ export function selectMultiProviderTierModel(budget, providers, fallbackModel, m
         else
             selectedTier = "high";
     }
-    // Clamp to maxTier if specified
+    // Clamp to maxTier ceiling if specified
     if (maxTier && TIER_RANK[selectedTier] > TIER_RANK[maxTier]) {
         selectedTier = maxTier;
+    }
+    // Clamp to minTier floor if specified
+    if (minTier && TIER_RANK[selectedTier] < TIER_RANK[minTier]) {
+        selectedTier = minTier;
     }
     // Iterate providers in preference order — first with a non-null model wins
     for (const provider of providers) {

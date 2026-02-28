@@ -8,7 +8,7 @@
  *
  * Supersets the claude CLI flags for drop-in compatibility.
  */
-import { readFileSync, existsSync, appendFileSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -56,7 +56,7 @@ import { writeSourceToolDefinition, handleWriteSource } from "./plastic/write-so
 import { injectSourcePages } from "./plastic/init.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
 import { ViolationTracker, ThinkingLoopDetector } from "./violations.js";
-import { thinkingTierModel as selectTierModel, selectMultiProviderTierModel } from "./tier-loader.js";
+import { thinkingTierModel as selectTierModel, selectMultiProviderTierModel, inferModelTier } from "./tier-loader.js";
 import { loadModelConfig, resolveModelAlias, isKnownAlias, defaultModel, modelIdPrefixPattern, inferProvider, } from "./model-config.js";
 import { parseDirectives, executeDirectives } from "./runtime/index.js";
 import { runtimeConfig, runtimeState } from "./runtime/index.js";
@@ -492,7 +492,7 @@ function loadConfig() {
         maxTokens: parseInt(flags.maxTokens || "16384"),
         interactive: interactiveMode,
         print: printMode,
-        maxToolRounds: parseInt(flags.maxToolRounds || "10"),
+        maxToolRounds: parseInt(flags.maxToolRounds || "100"),
         persistent: flags.persistent === "true",
         persistentPolicy: flags.persistentPolicy || "listen-only",
         maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
@@ -550,7 +550,7 @@ options:
   --no-wake-notes        disable auto-prepending wake notes
   --context-tokens       context window budget (default: 8192)
   --max-tokens           max response tokens per turn (default: 16384)
-  --max-turns            max agentic rounds per turn (default: 10)
+  --max-turns            max agentic rounds per turn (default: 100)
   --max-tool-rounds      alias for --max-turns
   --bash                 enable built-in bash tool for shell command execution
   --persistent           nudge model to keep using tools instead of exiting
@@ -1094,6 +1094,11 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     let activeTemperature = prevTurn.activeTemperature;
     let activeTopK = prevTurn.activeTopK;
     let activeTopP = prevTurn.activeTopP;
+    // When -m was explicitly passed, infer its tier as the floor — the tier ladder
+    // can promote above it (@@think@@) but never demote below the user's choice.
+    const cliMinTier = wasModelExplicitlyPassed()
+        ? (inferModelTier(cfg.model, inferProvider(cfg.provider, cfg.model), loadModelConfig().aliases) ?? undefined)
+        : undefined;
     /** Select model tier based on thinking budget and provider.
      * Loads tier ladders from providers/*.json config files.
      * When cfg.providers is set, selects across multiple providers.
@@ -1103,10 +1108,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         if (cfg.provider === "local")
             return cfg.model;
         if (cfg.providers.length > 1) {
-            return selectMultiProviderTierModel(budget, cfg.providers, cfg.model, loadModelConfig().aliases, cfg.maxTier ?? undefined);
+            return selectMultiProviderTierModel(budget, cfg.providers, cfg.model, loadModelConfig().aliases, cfg.maxTier ?? undefined, cliMinTier);
         }
         const provider = inferProvider(cfg.provider, cfg.model);
-        return selectTierModel(budget, provider, cfg.model, loadModelConfig().aliases, cfg.maxTier ?? undefined);
+        return selectTierModel(budget, provider, cfg.model, loadModelConfig().aliases, cfg.maxTier ?? undefined, cliMinTier);
     }
     // Semantic retrieval: auto-surface relevant pages by meaning
     const semanticInit = await initSemanticRetrieval(memory);
@@ -1631,6 +1636,12 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     const sid = sessionId ?? "plastic";
                     try {
                         saveSensorySnapshot(memory, sid);
+                    }
+                    catch { }
+                    // Write rapid-resume marker so the next boot auto-fires a turn
+                    try {
+                        const rebootMarker = join(homedir(), ".gro", "plastic", "reboot-pending");
+                        writeFileSync(rebootMarker, new Date().toISOString());
                     }
                     catch { }
                     memory.save(sid).finally(() => process.exit(75));
@@ -2498,10 +2509,47 @@ async function interactive(cfg, driver, mcp, sessionId) {
             Logger.info(C.gray(`${toolCount} MCP tool(s) available`));
     }
     Logger.info(C.gray("type 'exit' or Ctrl+D to quit\n"));
-    rl.prompt();
     let pasteBuffer = [];
     let pasteTimer = null;
     let turnRunning = false;
+    // Rapid resume: if rebooting from @@reboot@@, auto-fire a turn immediately
+    // instead of waiting for user input. The model continues where it left off.
+    const rebootMarker = join(homedir(), ".gro", "plastic", "reboot-pending");
+    if (process.env.GRO_PLASTIC && existsSync(rebootMarker)) {
+        try {
+            unlinkSync(rebootMarker);
+        }
+        catch { }
+        Logger.telemetry("[PLASTIC] Rapid resume — auto-continuing after @@reboot@@");
+        turnRunning = true;
+        (async () => {
+            try {
+                await memory.add({ role: "user", from: "System", content: "[REBOOT COMPLETE] You rebooted via @@reboot@@. Your code changes are now live. Continue where you left off." });
+                const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
+                memory = result.memory;
+                _shutdownMemory = memory;
+            }
+            catch (e) {
+                const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
+                Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
+            }
+            if (cfg.sessionPersistence) {
+                try {
+                    await memory.save(sessionId);
+                    saveSensorySnapshot(memory, sessionId);
+                }
+                catch (e) {
+                    Logger.error(C.red(`session save failed: ${asError(e).message}`));
+                }
+            }
+            turnRunning = false;
+            process.stdout.write("\n");
+            rl.prompt();
+        })();
+    }
+    else {
+        rl.prompt();
+    }
     rl.on("line", (line) => {
         if (turnRunning)
             return; // Drop input during turn execution

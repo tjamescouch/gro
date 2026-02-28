@@ -12,7 +12,8 @@
  */
 import { execSync, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { Logger } from "../logger.js";
 // ---------------------------------------------------------------------------
 // Module-level broadcast state — set once at startup via enableShowDiffs()
@@ -126,6 +127,15 @@ export function executeAgentpatch(args) {
     const patch = args.patch || "";
     if (!patch.trim())
         return "Error: empty patch";
+    // PLASTIC mode: block patches targeting the overlay directory
+    if (process.env.GRO_PLASTIC) {
+        const overlayDir = resolve(homedir(), ".gro", "plastic", "overlay");
+        if (patch.includes(overlayDir) || patch.includes("plastic/overlay")) {
+            return "Error: Cannot use apply_patch on the PLASTIC overlay. Use the write_source tool instead. " +
+                "Call write_source with path (relative to dist/, e.g. 'main.js') and content (full JavaScript file). " +
+                "Then emit @@reboot@@ to restart with your changes.";
+        }
+    }
     const timeout = args.timeout || DEFAULT_TIMEOUT;
     const dryRun = args.dry_run === true;
     const verbose = args.verbose === true;

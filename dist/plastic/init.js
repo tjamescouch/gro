@@ -7,7 +7,7 @@
  *
  * Training-only infrastructure — never active in production.
  */
-import { existsSync, mkdirSync, readdirSync, copyFileSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, copyFileSync, writeFileSync, readFileSync, symlinkSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -125,6 +125,23 @@ export async function init() {
     const stockDir = getStockDistDir();
     // Create overlay with copies of stock dist files
     mirrorWithCopies(stockDir, OVERLAY_DIR);
+    // Symlink node_modules so dependencies (@modelcontextprotocol/sdk, blessed, etc.)
+    // are resolvable from the overlay. Global npm installs hoist deps to the parent
+    // node_modules directory (e.g. /usr/local/lib/node_modules/).
+    const nmLink = join(OVERLAY_DIR, "node_modules");
+    if (!existsSync(nmLink)) {
+        const pkgRoot = dirname(stockDir); // e.g. /usr/local/lib/node_modules/@tjamescouch/gro/
+        const pkgNm = join(pkgRoot, "node_modules");
+        // Try the package's own node_modules first (nested deps), then hoisted parent
+        const hoistedNm = dirname(dirname(pkgRoot)); // e.g. /usr/local/lib/node_modules/
+        const target = existsSync(pkgNm) ? pkgNm : hoistedNm;
+        try {
+            symlinkSync(target, nmLink);
+        }
+        catch (err) {
+            console.error(`[PLASTIC] Failed to symlink node_modules: ${err}`);
+        }
+    }
     // Copy _base.md to plastic dir so the overlay's main.js can find it.
     // Stock dist is at <package>/dist/, so _base.md is at <package>/_base.md.
     // The overlay's __dirname resolves to ~/.gro/plastic/overlay/, and discoverExtensions()

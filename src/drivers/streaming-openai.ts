@@ -197,10 +197,10 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
       payload.tool_choice = "auto";
     }
 
-    // Sampling parameters (optional runtime overrides)
-    if (opts?.temperature !== undefined) payload.temperature = opts.temperature;
-    if (opts?.top_p !== undefined) payload.top_p = opts.top_p;
-    // Note: OpenAI doesn't support top_k directly (Anthropic extension)
+    // Sampling parameters (optional runtime overrides) — clamped to OpenAI ranges
+    if (opts?.temperature !== undefined) payload.temperature = Math.max(0, Math.min(2, opts.temperature));
+    if (opts?.top_p !== undefined) payload.top_p = Math.max(0, Math.min(1, opts.top_p));
+    // Note: OpenAI doesn't support top_k directly
 
     // LFS: enable logprobs for face signal extraction
     if (opts?.logprobs) {

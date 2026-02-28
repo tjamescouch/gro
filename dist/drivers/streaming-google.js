@@ -216,14 +216,14 @@ export function makeGoogleDriver(cfg) {
         if (geminiTools) {
             payload.tools = geminiTools;
         }
-        // Generation config
+        // Generation config — clamped to Google ranges
         const generationConfig = {};
         if (opts?.temperature !== undefined)
-            generationConfig.temperature = opts.temperature;
+            generationConfig.temperature = Math.max(0, Math.min(2, opts.temperature));
         if (opts?.top_p !== undefined)
-            generationConfig.topP = opts.top_p;
+            generationConfig.topP = Math.max(0, Math.min(1, opts.top_p));
         if (opts?.top_k !== undefined)
-            generationConfig.topK = opts.top_k;
+            generationConfig.topK = Math.max(1, Math.round(opts.top_k));
         if (Object.keys(generationConfig).length > 0) {
             payload.generationConfig = generationConfig;
         }

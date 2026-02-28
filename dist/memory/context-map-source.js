@@ -161,7 +161,7 @@ export class ContextMapSource {
      * Strip boilerplate prefixes from page summaries and truncate for compact display.
      * Removes "[Summary of N messages: ...]", "[Pending summary: ...]", timestamps in labels.
      */
-    compactSummary(summary, label, maxLen = 50) {
+    compactSummary(summary, label, maxLen = 80) {
         let s = summary;
         // Strip "[Summary of N messages: label] content" → keep content
         s = s.replace(/^\[Summary of \d+ messages:[^\]]*\]\s*/i, "");
@@ -250,19 +250,19 @@ export class ContextMapSource {
                 }
             }
             else {
-                // Normal mode: expand most recent bucket only (up to 3 entries)
+                // Normal mode: expand most recent bucket only (up to 5 entries)
                 let firstBucketExpanded = false;
                 for (const bucket of bucketOrder) {
                     const items = buckets.get(bucket);
                     if (!firstBucketExpanded) {
                         firstBucketExpanded = true;
                         lines.push(`  ${bucket} (${items.length}):`);
-                        const shown = items.slice(0, 3);
+                        const shown = items.slice(0, 5);
                         for (const p of shown) {
                             lines.push(`    · ${p.id} (${(p.tokens / 1000).toFixed(1)}K) ${this.compactSummary(p.summary, p.label)}`);
                         }
-                        if (items.length > 3)
-                            lines.push(`    +${items.length - 3} more`);
+                        if (items.length > 5)
+                            lines.push(`    +${items.length - 5} more`);
                     }
                     else {
                         lines.push(`  ${bucket} (${items.length})`);

@@ -398,10 +398,10 @@ export function makeAnthropicDriver(cfg: AnthropicDriverConfig): ChatDriver {
     }
     
 
-    // Sampling parameters (optional runtime overrides)
-    if (opts?.temperature !== undefined) body.temperature = opts.temperature;
-    if (opts?.top_k !== undefined) body.top_k = opts.top_k;
-    if (opts?.top_p !== undefined) body.top_p = opts.top_p;
+    // Sampling parameters (optional runtime overrides) — clamped to Anthropic ranges
+    if (opts?.temperature !== undefined) body.temperature = Math.max(0, Math.min(1, opts.temperature));
+    if (opts?.top_k !== undefined) body.top_k = Math.max(0, Math.round(opts.top_k));
+    if (opts?.top_p !== undefined) body.top_p = Math.max(0, Math.min(1, opts.top_p));
     // System prompt: build from structured blocks with per-block cache breakpoints.
     // Order: System (stable) → VirtualMemory (loaded pages) → SensoryMemory (sensory buffer)
     // Anthropic allows max 4 cache_control blocks total. Tools uses 1, so system gets at most 3.

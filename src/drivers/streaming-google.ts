@@ -262,11 +262,11 @@ export function makeGoogleDriver(cfg: GoogleDriverConfig): ChatDriver {
       payload.tools = geminiTools;
     }
 
-    // Generation config
+    // Generation config — clamped to Google ranges
     const generationConfig: any = {};
-    if (opts?.temperature !== undefined) generationConfig.temperature = opts.temperature;
-    if (opts?.top_p !== undefined) generationConfig.topP = opts.top_p;
-    if (opts?.top_k !== undefined) generationConfig.topK = opts.top_k;
+    if (opts?.temperature !== undefined) generationConfig.temperature = Math.max(0, Math.min(2, opts.temperature));
+    if (opts?.top_p !== undefined) generationConfig.topP = Math.max(0, Math.min(1, opts.top_p));
+    if (opts?.top_k !== undefined) generationConfig.topK = Math.max(1, Math.round(opts.top_k));
     if (Object.keys(generationConfig).length > 0) {
       payload.generationConfig = generationConfig;
     }

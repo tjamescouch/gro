@@ -383,10 +383,13 @@ export class ContextMapSource implements SensorySource {
     lines.push(`  status: ${page.loaded ? "loaded ★" : page.pinned ? "pinned 📌" : "unloaded"}`);
     lines.push(`  created: ${page.createdAt}`);
     lines.push(`  summary: ${page.summary}`);
+    // Use plain text hints (no @@ markers) — markers in the sensory buffer
+    // get consumed by the stream parser when the LLM echoes buffer content,
+    // triggering unintended actions and stripping the hint from visible output.
     if (page.loaded) {
-      lines.push(`  unload: @@unref('${page.id}')@@  back: @@view('context')@@`);
+      lines.push(`  unload: unref('${page.id}')  back: view('context')`);
     } else {
-      lines.push(`  load: @@ref('${page.id}')@@  back: @@view('context')@@`);
+      lines.push(`  load: ref('${page.id}')  back: view('context')`);
     }
     return lines.join("\n");
   }

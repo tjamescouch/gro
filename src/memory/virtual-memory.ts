@@ -1851,6 +1851,16 @@ export class VirtualMemory extends AgentMemory {
   hasPage(id: string): boolean { return this.pages.has(id); }
   getPagesDir(): string { return this.cfg.pagesDir; }
 
+  /**
+   * Import an external page into the index without activating it.
+   * Used by PLASTIC mode to inject source pages.
+   */
+  importPage(page: ContextPage): void {
+    if (this.pages.has(page.id)) return; // Already known
+    this.savePage(page);
+    this.savePageIndex();
+  }
+
   /** Remaining token budget in the page slot (total - currently loaded). */
   getPageSlotBudgetRemaining(): number {
     let used = 0;

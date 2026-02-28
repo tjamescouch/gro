@@ -11,6 +11,7 @@
 import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 import { makeGoogleDriver } from "./drivers/streaming-google.js";
 import { fileURLToPath } from "node:url";
 import { getKey, setKey, resolveKey, resolveProxy } from "./keychain.js";
@@ -51,6 +52,8 @@ import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { writeSelfToolDefinition, executeWriteSelf } from "./tools/write-self.js";
+import { writeSourceToolDefinition, handleWriteSource } from "./plastic/write-source.js";
+import { injectSourcePages } from "./plastic/init.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
 import { ViolationTracker, ThinkingLoopDetector } from "./violations.js";
 import { thinkingTierModel as selectTierModel, selectMultiProviderTierModel } from "./tier-loader.js";
@@ -811,6 +814,17 @@ function wrapWithSensory(inner) {
 function unwrapMemory(mem) {
     return mem instanceof SensoryMemory ? mem.getInner() : mem;
 }
+/** In PLASTIC mode, inject source pages into VirtualMemory so the agent can @@ref@@ them. */
+function injectPlasticSourcePages(mem) {
+    if (!process.env.GRO_PLASTIC)
+        return;
+    const inner = unwrapMemory(mem);
+    if (inner instanceof VirtualMemory) {
+        const count = injectSourcePages(inner);
+        if (count > 0)
+            Logger.telemetry(`[PLASTIC] Injected ${count} source pages into virtual memory`);
+    }
+}
 /** Capture and save sensory channel state alongside session data. */
 function saveSensorySnapshot(mem, sessionId) {
     if (!(mem instanceof SensoryMemory))
@@ -1004,6 +1018,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         : undefined;
     if (selfSource)
         tools.push(writeSelfToolDefinition);
+    // PLASTIC mode: register write_source tool for self-modification
+    if (process.env.GRO_PLASTIC) {
+        tools.push(writeSourceToolDefinition);
+    }
     runtimeState.beginTurn({ model: cfg.model, maxToolRounds: cfg.maxToolRounds });
     memory.clearProtectedMessages();
     let finalText = "";
@@ -1578,6 +1596,12 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     Logger.warn("Stream marker: resummarize — semantic retrieval not available");
                 }
             }
+            else if (marker.name === "reboot" && process.env.GRO_PLASTIC) {
+                Logger.telemetry("Stream marker: @@reboot@@ — saving state and exiting for restart");
+                const sid = sessionId ?? "plastic";
+                saveSensorySnapshot(memory, sid);
+                memory.save(sid).then(() => process.exit(75)).catch(() => process.exit(75));
+            }
         };
         // Select model tier based on current thinking budget.
         // Skip if: @@model-change@@ this round (one-shot override).
@@ -2074,6 +2098,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 else if (fnName === "write_self" && selfSource) {
                     result = executeWriteSelf(fnArgs, selfSource);
                 }
+                else if (fnName === "write_source" && process.env.GRO_PLASTIC) {
+                    result = handleWriteSource(fnArgs);
+                }
                 else {
                     const pluginResult = await toolRegistry.callTool(fnName, fnArgs);
                     if (pluginResult !== undefined) {
@@ -2257,6 +2284,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
         process.exit(1);
     }
     let memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
+    injectPlasticSourcePages(memory);
     // Initialize runtime control system
     runtimeConfig.setDriver(driver);
     runtimeConfig.setMemory(memory);
@@ -2350,6 +2378,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
 }
 async function interactive(cfg, driver, mcp, sessionId) {
     let memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
+    injectPlasticSourcePages(memory);
     const readline = await import("readline");
     // Violation tracker for persistent mode
     const tracker = cfg.persistent ? new ViolationTracker() : undefined;
@@ -2495,7 +2524,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
-async function main() {
+export async function main() {
     // Handle --set-key before loadConfig so we never construct a partial config
     const setKeyIdx = process.argv.indexOf("--set-key");
     if (setKeyIdx !== -1) {
@@ -2520,6 +2549,14 @@ async function main() {
             "Use varied gestures; don't repeat the same one. Match gesture to tone.",
         ].join("\n");
         cfg.systemPrompt = (cfg.systemPrompt || "") + lfsPrompt;
+    }
+    // PLASTIC mode: inject source map into system prompt
+    if (process.env.GRO_PLASTIC) {
+        const sourceMapPath = join(homedir(), ".gro", "plastic", "source-map.txt");
+        if (existsSync(sourceMapPath)) {
+            const sourceMap = readFileSync(sourceMapPath, "utf-8");
+            cfg.systemPrompt = (cfg.systemPrompt || "") + "\n\n" + sourceMap;
+        }
     }
     if (cfg.verbose) {
         process.env.GRO_LOG_LEVEL = "debug";
@@ -2661,10 +2698,19 @@ process.on("unhandledRejection", (reason) => {
     if (err.stack)
         Logger.error(C.red(err.stack));
 });
-main().catch((e) => {
+const _mainError = (e) => {
     const err = asError(e);
     Logger.error("gro:", err.message);
     if (err.stack)
         Logger.error(err.stack);
     process.exit(1);
-});
+};
+if (process.env.GRO_PLASTIC) {
+    import("./plastic/bootstrap.js").then(m => m.boot()).catch(e => {
+        console.error("[PLASTIC] Bootstrap failed, falling back to stock:", e);
+        main().catch(_mainError);
+    });
+}
+else {
+    main().catch(_mainError);
+}

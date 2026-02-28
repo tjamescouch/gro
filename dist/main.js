@@ -782,7 +782,7 @@ async function createMemory(cfg, driver, requestedMode, sessionId) {
  */
 function wrapWithSensory(inner) {
     try {
-        const sensory = new SensoryMemory(inner, { totalBudget: 700 });
+        const sensory = new SensoryMemory(inner, { totalBudget: 900 });
         const contextMap = new ContextMapSource(inner, {
             barWidth: 32,
             showLanes: true,
@@ -790,7 +790,7 @@ function wrapWithSensory(inner) {
         });
         sensory.addChannel({
             name: "context",
-            maxTokens: 350,
+            maxTokens: 500,
             updateMode: "every_turn",
             content: "",
             enabled: true,

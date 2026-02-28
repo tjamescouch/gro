@@ -837,7 +837,7 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
  */
 function wrapWithSensory(inner: AgentMemory): AgentMemory {
   try {
-    const sensory = new SensoryMemory(inner, { totalBudget: 700 });
+    const sensory = new SensoryMemory(inner, { totalBudget: 900 });
     const contextMap = new ContextMapSource(inner, {
       barWidth: 32,
       showLanes: true,
@@ -845,7 +845,7 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
     });
     sensory.addChannel({
       name: "context",
-      maxTokens: 350,
+      maxTokens: 500,
       updateMode: "every_turn",
       content: "",
       enabled: true,

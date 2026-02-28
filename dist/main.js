@@ -1017,7 +1017,7 @@ function emitStateVector(state, outputFormat) {
  * Execute a single turn: call the model, handle tool calls, repeat until
  * the model produces a final text response or we hit maxRounds.
  */
-async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
+async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turnAbortSignal) {
     const tools = mcp.getToolDefinitions();
     tools.push(agentpatchToolDefinition());
     if (cfg.bash)
@@ -1743,10 +1743,27 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 narrationClips = clips;
             } : undefined,
         });
+        // Check if the turn was aborted by the user (ESC key)
+        if (turnAbortSignal?.aborted) {
+            Logger.telemetry("[Interrupt] Turn aborted by user — breaking out of tool loop");
+            await memory.add({ role: "system", from: "System", content: "[Turn interrupted by user (ESC). Stop and wait for new instructions.]" });
+            break;
+        }
         // Thinking loop detection: abort generation if model repeats the same phrase
         const thinkingDetector = new ThinkingLoopDetector();
         const chatAbortController = new AbortController();
         let thinkingLoopAborted = false;
+        let userAborted = false;
+        // Link turn-level abort signal to the per-round chat abort controller
+        const onTurnAbort = () => { userAborted = true; chatAbortController.abort(); };
+        if (turnAbortSignal) {
+            if (turnAbortSignal.aborted) {
+                userAborted = true;
+                chatAbortController.abort();
+            }
+            else
+                turnAbortSignal.addEventListener("abort", onTurnAbort, { once: true });
+        }
         const onReasoningTokenWithDetection = rawOnReasoningToken
             ? (t) => {
                 rawOnReasoningToken(t);
@@ -1785,7 +1802,21 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             });
         }
         catch (e) {
-            if (thinkingLoopAborted) {
+            // Clean up turn abort listener
+            if (turnAbortSignal)
+                turnAbortSignal.removeEventListener("abort", onTurnAbort);
+            if (userAborted) {
+                // User pressed ESC — stop the turn gracefully
+                Logger.telemetry("[Interrupt] Generation aborted by user");
+                markerParser.flush();
+                const partial = markerParser.getCleanText?.() || "";
+                if (partial)
+                    finalText += partial;
+                await memory.add({ role: "system", from: "System", content: "[Turn interrupted by user (ESC). Stop and wait for new instructions.]" });
+                brokeCleanly = true;
+                break;
+            }
+            else if (thinkingLoopAborted) {
                 // Retry once with reduced thinking budget
                 Logger.warn("[ThinkingLoop] Retrying with 50% thinking budget");
                 activeThinkingBudget = Math.max(0, activeThinkingBudget * 0.5);
@@ -1814,6 +1845,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 throw e; // Re-throw non-thinking-loop errors
             }
         }
+        // Clean up turn abort listener on successful round
+        if (turnAbortSignal)
+            turnAbortSignal.removeEventListener("abort", onTurnAbort);
         // Flush any remaining buffered tokens from the marker parser
         markerParser.flush();
         // Send accumulated narration segments and flush LFS
@@ -2512,8 +2546,46 @@ async function interactive(cfg, driver, mcp, sessionId) {
     let pasteBuffer = [];
     let pasteTimer = null;
     let turnRunning = false;
+    let turnAbortController = null;
+    // ESC key handler — abort running turn when user presses Escape
+    if (isTerminal) {
+        readline.emitKeypressEvents(process.stdin, rl);
+        process.stdin.on("keypress", (_ch, key) => {
+            if (key && key.name === "escape" && turnRunning && turnAbortController) {
+                process.stderr.write(C.yellow("\n[ESC] Interrupting agent...\n"));
+                turnAbortController.abort();
+            }
+        });
+    }
+    /** Run a turn with abort support, auto-save, and cleanup. */
+    async function runTurn(input, role = "user") {
+        turnRunning = true;
+        turnAbortController = new AbortController();
+        try {
+            await memory.add({ role, from: role === "user" ? "User" : "System", content: input });
+            const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, turnAbortController.signal);
+            memory = result.memory;
+            _shutdownMemory = memory;
+        }
+        catch (e) {
+            const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
+            Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
+        }
+        if (cfg.sessionPersistence) {
+            try {
+                await memory.save(sessionId);
+                saveSensorySnapshot(memory, sessionId);
+            }
+            catch (e) {
+                Logger.error(C.red(`session save failed: ${asError(e).message}`));
+            }
+        }
+        turnRunning = false;
+        turnAbortController = null;
+        process.stdout.write("\n");
+        rl.prompt();
+    }
     // Rapid resume: if rebooting from @@reboot@@, auto-fire a turn immediately
-    // instead of waiting for user input. The model continues where it left off.
     const rebootMarker = join(homedir(), ".gro", "plastic", "reboot-pending");
     if (process.env.GRO_PLASTIC && existsSync(rebootMarker)) {
         try {
@@ -2521,31 +2593,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
         }
         catch { }
         Logger.telemetry("[PLASTIC] Rapid resume — auto-continuing after @@reboot@@");
-        turnRunning = true;
-        (async () => {
-            try {
-                await memory.add({ role: "user", from: "System", content: "[REBOOT COMPLETE] You rebooted via @@reboot@@. Your code changes are now live. Continue where you left off." });
-                const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
-                memory = result.memory;
-                _shutdownMemory = memory;
-            }
-            catch (e) {
-                const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
-                Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
-            }
-            if (cfg.sessionPersistence) {
-                try {
-                    await memory.save(sessionId);
-                    saveSensorySnapshot(memory, sessionId);
-                }
-                catch (e) {
-                    Logger.error(C.red(`session save failed: ${asError(e).message}`));
-                }
-            }
-            turnRunning = false;
-            process.stdout.write("\n");
-            rl.prompt();
-        })();
+        runTurn("[REBOOT COMPLETE] You rebooted via @@reboot@@. Your code changes are now live. Continue where you left off.", "user");
     }
     else {
         rl.prompt();
@@ -2568,30 +2616,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
                 rl.close();
                 return;
             }
-            turnRunning = true;
-            try {
-                await memory.add({ role: "user", from: "User", content: input });
-                const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker);
-                memory = result.memory; // pick up any hot-swapped memory
-                _shutdownMemory = memory;
-            }
-            catch (e) {
-                const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
-                Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
-            }
-            // Auto-save after each turn
-            if (cfg.sessionPersistence) {
-                try {
-                    await memory.save(sessionId);
-                    saveSensorySnapshot(memory, sessionId);
-                }
-                catch (e) {
-                    Logger.error(C.red(`session save failed: ${asError(e).message}`));
-                }
-            }
-            turnRunning = false;
-            process.stdout.write("\n");
-            rl.prompt();
+            await runTurn(input);
         }, 50);
     });
     rl.on("error", (e) => {

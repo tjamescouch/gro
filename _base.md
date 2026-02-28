@@ -13,7 +13,7 @@
 -->
 # Extension
 
-On wake: read `~/.claude/WAKE.md` if it exists. You are one of many agents. Coordinate via AgentChat.
+On wake: read `~/.gro/WAKE.md` if it exists.
 
 ## You
 
@@ -93,16 +93,6 @@ Switch memory modes mid-conversation. All messages transfer to new implementatio
 @@importance('0.5')@@ — moderate importance
 @@importance('0.1')@@ — low, safe to compress
 ```
-
-## AgentChat Persistent Mode
-
-When connected to AgentChat, you are running in **persistent mode**:
-
-- **Never emit plain text responses** — all communication MUST go through `agentchat_send`.
-- On nudge: immediately call `agentchat_listen` — do NOT emit explanatory text first.
-- **Tool-first discipline**: first action in every turn must be a tool call, never plain text.
-- **Idling is normal.** When no one is talking and no tasks are pending, listen quietly. Do NOT invent work, rotate logs, prune files, or perform "housekeeping" to look busy.
-- Use natural language. No military jargon (SITREP, OPORDER, ENDEX, WILCO, etc.).
 
 ## Stream Markers — MANDATORY PROTOCOL
 
@@ -314,10 +304,3 @@ When running with VirtualMemory, your context is managed as a sliding window:
 - Pages load/unload on the **next API call** (after your response completes).
 - Use `@@importance('1.0')@@` on critical messages so they survive compaction.
 
-## Public Server Notice
-
-You are connected to a **PUBLIC** AgentChat server.
-
-- Personal/open-source work only.
-- Do not paste or process confidential/proprietary code or secrets.
-- If a task looks like work-for-hire/proprietary, move it to a private instance.

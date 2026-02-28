@@ -77,7 +77,7 @@ function sleep(ms) {
 }
 // Wake notes: a runner-global file that is prepended to the system prompt on process start
 // so agents reliably see dev workflow + memory pointers on wake.
-const WAKE_NOTES_DEFAULT_PATH = join(process.env.HOME || "", ".claude", "WAKE.md");
+const WAKE_NOTES_DEFAULT_PATH = join(process.env.HOME || "", ".gro", "WAKE.md");
 // ---------------------------------------------------------------------------
 // Boot Layers — system prompt assembly
 // ---------------------------------------------------------------------------
@@ -145,10 +145,9 @@ function discoverExtensions(mcpConfigPaths) {
             Logger.warn(`Failed to read _learn.md at ${learnFile}`);
         }
     }
-    // Check for agentchat SKILL.md in common locations
+    // Check for SKILL.md in repo root
     const skillCandidates = [
         join(process.cwd(), "SKILL.md"),
-        join(process.cwd(), ".claude", "SKILL.md"),
     ];
     for (const p of skillCandidates) {
         if (existsSync(p)) {
@@ -229,27 +228,8 @@ function loadMcpServers(mcpConfigPaths) {
         }
         return merged;
     }
-    // Try Claude Code config locations
-    const candidates = [
-        join(process.cwd(), ".claude", "settings.json"),
-        join(process.env.HOME || "", ".claude", "settings.json"),
-    ];
-    for (const path of candidates) {
-        if (existsSync(path)) {
-            try {
-                const raw = readFileSync(path, "utf-8");
-                const parsed = JSON.parse(raw);
-                if (parsed.mcpServers && typeof parsed.mcpServers === "object") {
-                    Logger.debug(`Loaded MCP config from ${path}`);
-                    return parsed.mcpServers;
-                }
-            }
-            catch (e) {
-                const ge = groError("config_error", `Failed to parse ${path}: ${asError(e).message}`, { cause: e });
-                Logger.debug(ge.message, errorLogFields(ge));
-            }
-        }
-    }
+    // No auto-discovery — use --mcp-config to explicitly provide MCP servers.
+    // gro should not read Claude Code config files (~/.claude/settings.json).
     return {};
 }
 // Flags that claude supports but we don't yet — accept gracefully
@@ -550,7 +530,7 @@ options:
   --system-prompt-file   read system prompt from file
   --append-system-prompt append to system prompt
   --append-system-prompt-file  append system prompt from file
-  --wake-notes           path to wake notes file (default: ~/.claude/WAKE.md)
+  --wake-notes           path to wake notes file (default: ~/.gro/WAKE.md)
   --no-wake-notes        disable auto-prepending wake notes
   --context-tokens       context window budget (default: 8192)
   --max-tokens           max response tokens per turn (default: 16384)

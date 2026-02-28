@@ -12,6 +12,7 @@ everything the agent needs to continue working effectively.
 - Preserve the meaning of user instructions exactly — do not paraphrase requirements.
 - Lines tagged `@@important@@` MUST be reproduced verbatim in the summary.
 - Lines tagged `@@ephemeral@@` MUST be omitted entirely — do not summarize them.
+- Lines tagged `@@reflect@@` are introspective observations — preserve their meaning in the summary as reflections.
 - Messages tagged `[IMPORTANT=N]` carry high significance — preserve with extra detail.
 - Do not add interpretation, opinions, or filler. Only what was said.
 - End every summary with the ref marker on its own line: `@@ref('LABEL')@@`

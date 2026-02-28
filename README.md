@@ -219,6 +219,57 @@ An external process manager (systemd, supervisor, Docker) handles process lifecy
 
 ---
 
+## PLASTIC Mode (Self-Modifying Agent)
+
+PLASTIC mode lets an agent read, modify, and reload its own source code at runtime. The agent runs from a writable overlay directory (`~/.gro/plastic/overlay/`) — a copy of the stock `dist/` tree. It can edit files in the overlay, emit `@@reboot@@` to restart, and come back running the modified code.
+
+```sh
+# Run with PLASTIC enabled (containerized)
+thesystem gro --plastic
+
+# Or directly (not recommended outside containers)
+GRO_PLASTIC=1 gro -i
+```
+
+### How It Works
+
+1. **Boot**: stock `dist/main.js` diverts to `plastic/bootstrap.js`, which loads `overlay/main.js`
+2. **Read**: the agent's source is pre-chunked into virtual memory pages (`@@ref('pg_src_...')@@`)
+3. **Write**: `write_source` tool modifies files in the overlay (with syntax validation)
+4. **Reboot**: `@@reboot@@` marker saves state and exits with code 75; an outer runner restarts
+5. **Crash recovery**: if the overlay crashes on boot, it's wiped and re-initialized from stock
+
+### Safety
+
+PLASTIC mode is **training-only infrastructure**. It is designed for supervised experimentation in disposable containerized environments, not production use.
+
+**Always run PLASTIC inside a container.** The `thesystem gro --plastic` command provides:
+- Isolated Podman container (no host filesystem access)
+- API keys injected via proxy (never on disk inside the container)
+- Persistent volume for sessions (survives container restarts)
+- Reboot loop with a 20-restart cap (prevents infinite loops)
+
+**What the agent can modify:**
+- Its own runtime code in `~/.gro/plastic/overlay/`
+- Its version string, tool definitions, marker handling, memory system
+
+**What the agent cannot do:**
+- Escape the container or access the host
+- Modify the stock install (`/usr/local/lib/node_modules/...` is read-only)
+- Survive a container rebuild (`--rebuild` wipes everything)
+- Persist changes across stock upgrades (overlay is wiped when npm version increases)
+
+**Risk mitigations:**
+- `write_source` validates JavaScript syntax before writing — rejects broken code
+- Overlay crash triggers automatic fallback to stock code
+- Reboot cap (20) prevents runaway restart loops
+- Version mismatch detection wipes stale overlays on genuine upgrades
+- All modifications are confined to the overlay — `rm -rf ~/.gro/plastic/overlay/` restores stock behavior
+
+> **Do not run PLASTIC mode on a host machine with access to sensitive data, credentials, or production systems.** The agent has a shell tool and can execute arbitrary code. Container isolation is your primary safety boundary.
+
+---
+
 ## Shell Tool
 
 Enable a built-in `shell` tool for executing commands:
@@ -340,6 +391,10 @@ src/
     memory-tune.ts             # Auto-tune
     compact-context.ts         # Manual compaction trigger
     cleanup-sessions.ts        # Session cleanup
+  plastic/
+    bootstrap.ts               # PLASTIC overlay loader with crash fallback
+    init.ts                    # Overlay setup, source page generation
+    write-source.ts            # write_source tool (overlay file modification)
   utils/
     rate-limiter.ts            # Token bucket rate limiter
     timed-fetch.ts             # Fetch with configurable timeout

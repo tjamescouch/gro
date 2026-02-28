@@ -239,49 +239,15 @@ export function saveSensoryState(id, state) {
         Logger.warn(`Failed to save sensory state for session ${id}: ${asError(e).message}`);
     }
 }
-/** Channels that are valid camera slot targets (excludes canvas-only channels like 'self'). */
-const VALID_SLOT_CHANNELS = new Set([
-    "context", "time", "config", "tasks", "spend", "violations", "social",
-]);
-/** Default slot assignments. */
-const DEFAULT_SLOTS = ["context", "time", "config"];
 /**
  * Load sensory channel state for a session. Returns null if not found.
- * Validates and heals slot assignments — invalid or null slots are replaced with defaults.
  */
 export function loadSensoryState(id) {
     const path = join(sessionDir(id), "sensory-state.json");
     if (!existsSync(path))
         return null;
     try {
-        const state = JSON.parse(readFileSync(path, "utf-8"));
-        // Validate and heal slots
-        if (state.slots && Array.isArray(state.slots)) {
-            const seen = new Set();
-            for (let i = 0; i < 3; i++) {
-                const name = state.slots[i];
-                if (name === null || name === undefined || !VALID_SLOT_CHANNELS.has(name) || seen.has(name)) {
-                    state.slots[i] = null;
-                }
-                else {
-                    seen.add(name);
-                }
-            }
-            // Backfill nulls from defaults
-            for (let i = 0; i < 3; i++) {
-                if (state.slots[i] === null) {
-                    const fallback = DEFAULT_SLOTS[i];
-                    if (!seen.has(fallback)) {
-                        state.slots[i] = fallback;
-                        seen.add(fallback);
-                    }
-                }
-            }
-        }
-        else {
-            state.slots = [...DEFAULT_SLOTS];
-        }
-        return state;
+        return JSON.parse(readFileSync(path, "utf-8"));
     }
     catch (e) {
         Logger.warn(`Failed to load sensory state for session ${id}: ${asError(e).message}`);

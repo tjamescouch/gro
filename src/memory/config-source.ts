@@ -41,7 +41,7 @@ export class ConfigSource implements SensorySource {
 
   destroy(): void {}
 
-  private render(): string {
+  render(): string {
     const snap = runtimeState.snapshot();
     const turn = snap.turn;
     const lines: string[] = [];

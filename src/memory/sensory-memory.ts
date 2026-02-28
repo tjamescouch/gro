@@ -45,6 +45,8 @@ export interface SensoryChannel {
   width?: number;
   /** Fixed grid height in lines (default: 12). */
   height?: number;
+  /** Whether this channel can be assigned to camera slots. false = canvas-only. Default: true. */
+  viewable?: boolean;
 }
 
 export interface SensoryMemoryConfig {
@@ -176,8 +178,11 @@ export class SensoryMemory extends AgentMemory {
     return this.slots[slot];
   }
 
-  /** Channels that cannot be assigned to camera slots (canvas-only). */
-  private static readonly NON_VIEWABLE = new Set(["self"]);
+  /** Check if a channel is non-viewable (canvas-only, not slot-assignable). */
+  private isNonViewable(name: string): boolean {
+    const ch = this.channels.get(name);
+    return ch?.viewable === false;
+  }
 
   /** Switch a camera slot. If channelName exists and is viewable, activate it. */
   switchView(channelName: string, slot: 0 | 1 | 2 = 0): void {
@@ -185,7 +190,7 @@ export class SensoryMemory extends AgentMemory {
       Logger.warn(`[Sensory] switchView: unknown channel '${channelName}'`);
       return;
     }
-    if (SensoryMemory.NON_VIEWABLE.has(channelName)) {
+    if (this.isNonViewable(channelName)) {
       Logger.warn(`[Sensory] switchView: '${channelName}' is canvas-only, not slot-assignable`);
       return;
     }
@@ -236,48 +241,9 @@ export class SensoryMemory extends AgentMemory {
     }
   }
 
-  /** Get current slot assignments (for persistence). */
-  getSlots(): [string | null, string | null, string | null] {
-    return [...this.slots] as [string | null, string | null, string | null];
-  }
-
-  /** Default slot assignments — used as fallback when restoring corrupted state. */
-  private static readonly DEFAULT_SLOTS: [string, string, string] = ["context", "time", "config"];
-
-  /** Restore slot assignments (from persistence). Rejects non-viewable or duplicate entries,
-   *  backfills null/empty slots from defaults. */
-  restoreSlots(slots: [string | null, string | null, string | null]): void {
-    const validated = [...slots] as [string | null, string | null, string | null];
-    const seen = new Set<string>();
-    // Pass 1: strip invalid entries
-    for (let i = 0; i < 3; i++) {
-      const name = validated[i];
-      if (name === null) continue;
-      if (!this.channels.has(name) || SensoryMemory.NON_VIEWABLE.has(name) || seen.has(name)) {
-        validated[i] = null;
-      } else {
-        seen.add(name);
-      }
-    }
-    // Pass 2: backfill any null slot from defaults
-    for (let i = 0; i < 3; i++) {
-      if (validated[i] === null) {
-        const fallback = SensoryMemory.DEFAULT_SLOTS[i];
-        if (this.channels.has(fallback) && !seen.has(fallback)) {
-          validated[i] = fallback;
-          seen.add(fallback);
-        }
-      }
-    }
-    if (JSON.stringify(validated) !== JSON.stringify(slots)) {
-      Logger.warn(`[Sensory] restoreSlots: healed ${JSON.stringify(slots)} → ${JSON.stringify(validated)}`);
-    }
-    this.slots = validated;
-  }
-
   /** Cycle slot0 to the next/previous viewable channel in registration order. */
   cycleSlot0(direction: "next" | "prev"): void {
-    const names = this.getChannelNames().filter(n => !SensoryMemory.NON_VIEWABLE.has(n));
+    const names = this.getChannelNames().filter(n => !this.isNonViewable(n));
     if (names.length === 0) return;
     const current = this.slots[0];
     let idx = current ? names.indexOf(current) : -1;

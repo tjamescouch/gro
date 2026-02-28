@@ -31,7 +31,7 @@ export class SelfSource implements SensorySource {
 
   destroy(): void {}
 
-  private render(): string {
+  render(): string {
     const lines: string[] = [];
 
     // Header

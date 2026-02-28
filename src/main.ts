@@ -34,12 +34,10 @@ import type { AgentMemory, VirtualMemoryStats } from "./memory/agent-memory.js";
 import { SensoryMemory } from "./memory/sensory-memory.js";
 import { ContextMapSource } from "./memory/context-map-source.js";
 import { TemporalSource } from "./memory/temporal-source.js";
-import { TaskSource } from "./memory/task-source.js";
-import { SocialSource } from "./memory/social-source.js";
-import { SpendSource } from "./memory/spend-source.js";
-import { ViolationsSource } from "./memory/violations-source.js";
 import { ConfigSource } from "./memory/config-source.js";
 import { SelfSource } from "./memory/self-source.js";
+import { ViolationsSource } from "./memory/violations-source.js";
+import { createDefaultFactory } from "./memory/sensory-view-factory.js";
 import { tryCreateEmbeddingProvider } from "./memory/embedding-provider.js";
 import { PageSearchIndex } from "./memory/page-search-index.js";
 import { SemanticRetrieval } from "./memory/semantic-retrieval.js";
@@ -839,96 +837,24 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
 function wrapWithSensory(inner: AgentMemory): AgentMemory {
   try {
     const sensory = new SensoryMemory(inner, { totalBudget: 900 });
-    const contextMaxTokens = 800;
-    const contextMap = new ContextMapSource(inner, {
-      maxChars: Math.floor(contextMaxTokens * 2.8),
-    });
-    sensory.addChannel({
-      name: "context",
-      maxTokens: contextMaxTokens,
-      updateMode: "every_turn",
-      content: "",
-      enabled: true,
-      source: contextMap,
-      width: 80,
-      height: 40,
-    });
-    const temporal = new TemporalSource();
-    sensory.addChannel({
-      name: "time",
-      maxTokens: 200,
-      updateMode: "every_turn",
-      content: "",
-      enabled: true,
-      source: temporal,
-      width: 80,
-      height: 22,
-    });
-    // "tasks" channel — agent-switchable via <view:tasks>
-    const taskSource = new TaskSource();
-    sensory.addChannel({
-      name: "tasks",
-      maxTokens: 150,
-      updateMode: "every_turn",
-      content: "",
-      enabled: false,
-      source: taskSource,
-    });
-    // "social" channel — reads ~/.gro/social-feed.jsonl from AgentChat MCP
-    const socialSource = new SocialSource();
-    sensory.addChannel({
-      name: "social",
-      maxTokens: 200,
-      updateMode: "every_turn",
-      content: "",
-      enabled: true,
-      source: socialSource,
-    });
-    // "spend" channel — session cost awareness
-    const spendSource = new SpendSource(spendMeter);
-    sensory.addChannel({
-      name: "spend",
-      maxTokens: 100,
-      updateMode: "every_turn",
-      content: "",
-      enabled: false,
-      source: spendSource,
-    });
-    // "violations" channel — violation tracking (tracker wired later via setTracker)
-    const violationsSource = new ViolationsSource(null);
-    sensory.addChannel({
-      name: "violations",
-      maxTokens: 80,
-      updateMode: "every_turn",
-      content: "",
-      enabled: false,
-      source: violationsSource,
-    });
-    // "config" channel — runtime state: model, sampling params, thinking, violations summary
-    const configSource = new ConfigSource();
-    sensory.addChannel({
-      name: "config",
-      maxTokens: 120,
-      updateMode: "every_turn",
-      content: "",
-      enabled: true,
-      source: configSource,
-      width: 80,
-      height: 17,
-    });
-    // "self" channel — model-writable canvas (via write_self tool)
-    const selfSource = new SelfSource();
-    sensory.addChannel({
-      name: "self",
-      maxTokens: 200,
-      updateMode: "every_turn",
-      content: "",
-      enabled: false, // model activates with @@view('self')@@ or @@sense('self','on')@@
-      source: selfSource,
-      width: 80,
-      height: 20,
-    });
-    // Configure default camera slots
+    const factory = createDefaultFactory();
+    const deps = { memory: inner, spendMeter };
+
+    for (const spec of factory.specs()) {
+      sensory.addChannel({
+        name: spec.name,
+        maxTokens: spec.maxTokens,
+        updateMode: spec.updateMode,
+        content: "",
+        enabled: spec.enabled,
+        source: factory.create(spec.name, deps),
+        width: spec.width,
+        height: spec.height,
+        viewable: spec.viewable,
+      });
+    }
+
+    // Default camera slots
     sensory.setSlot(0, "context");
     sensory.setSlot(1, "time");
     sensory.setSlot(2, "config");
@@ -955,7 +881,6 @@ function saveSensorySnapshot(mem: AgentMemory, sessionId: string): void {
   saveSensoryState(sessionId, {
     selfContent,
     channelDimensions: sensory.getChannelDimensions(),
-    slots: [null, null, null], // slots are ephemeral UI state — always boot from defaults
   });
 }
 
@@ -976,8 +901,6 @@ function restoreSensorySnapshot(mem: AgentMemory, sessionId: string): void {
   if (state.channelDimensions) {
     sensory.restoreChannelDimensions(state.channelDimensions);
   }
-  // Slots are ephemeral UI state — always boot from defaults set in wrapWithSensory().
-  // Persisted slots were the root cause of slot corruption (e.g. @@view('self')@@ persisted).
   Logger.debug(`Restored sensory state for session ${sessionId}`);
 }
 

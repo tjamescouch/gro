@@ -50,6 +50,7 @@ function buildQuery(messages) {
 export class SemanticRetrieval {
     constructor(config) {
         this.lastQueryHash = "";
+        this.lastFillHash = "";
         /** Mutex: true while a batch re-summarization is running. Prevents concurrent backfill. */
         this._batchRunning = false;
         this.memory = config.memory;
@@ -59,6 +60,8 @@ export class SemanticRetrieval {
         this.autoThreshold = config.autoThreshold ?? 0.5;
         this.searchThreshold = config.searchThreshold ?? 0.4;
         this.searchMaxResults = config.searchMaxResults ?? 5;
+        this.maxAutoFillPages = config.maxAutoFillPages ?? 3;
+        this.autoFillBudgetFraction = config.autoFillBudgetFraction ?? 0.7;
     }
     get available() {
         return this.searchIndex.size > 0;
@@ -105,6 +108,108 @@ export class SemanticRetrieval {
             Logger.warn(`[SemanticRetrieval] Auto-retrieval error: ${err}`);
             return null;
         }
+    }
+    // --- Auto-fill page slots (replaces autoRetrieve at call site) ---
+    /**
+     * Multi-phase page slot filling:
+     * 1. Inline ref harvesting — scan working memory for @@ref('id')@@ patterns
+     * 2. Semantic budget fill — load additional pages by similarity to frontal context
+     *
+     * Respects unref history, page slot token budget, and change detection.
+     */
+    async autoFillPageSlots(messages) {
+        if (!this.autoEnabled)
+            return null;
+        // Change detection: skip if working memory hasn't changed
+        const contentSample = messages.slice(-6).map(m => String(m.content ?? "").slice(0, 200)).join("|");
+        const fillHash = hashText(contentSample);
+        if (fillHash === this.lastFillHash)
+            return null;
+        this.lastFillHash = fillHash;
+        const activeIds = new Set(this.memory.getActivePageIds());
+        const unrefHistory = this.memory.getUnrefHistory();
+        const allPages = this.memory.getPages();
+        const pageMap = new Map(allPages.map(p => [p.id, p]));
+        let budgetRemaining = this.memory.getPageSlotBudgetRemaining() * this.autoFillBudgetFraction;
+        const harvestedIds = [];
+        const semanticIds = [];
+        let totalLoaded = 0;
+        // --- Phase 1: Inline ref harvesting ---
+        // Scan working memory for @@ref('id')@@ patterns embedded in compaction summaries.
+        // If a summary mentions a page, that page is likely relevant — auto-ref it.
+        const refPattern = /@@ref\('([^']+)'\)@@/g;
+        const referencedIds = new Set();
+        for (const msg of messages) {
+            const content = String(msg.content ?? "");
+            let match;
+            while ((match = refPattern.exec(content)) !== null) {
+                const ids = match[1].split(",").map(s => s.trim()).filter(Boolean);
+                for (const id of ids) {
+                    if (!id.startsWith("?"))
+                        referencedIds.add(id);
+                }
+            }
+        }
+        for (const id of referencedIds) {
+            if (activeIds.has(id))
+                continue;
+            if (unrefHistory.has(id))
+                continue;
+            if (totalLoaded >= this.maxAutoFillPages)
+                break;
+            const page = pageMap.get(id);
+            if (!page)
+                continue;
+            if (page.tokens > budgetRemaining)
+                continue;
+            this.memory.ref(id);
+            activeIds.add(id);
+            budgetRemaining -= page.tokens;
+            totalLoaded++;
+            harvestedIds.push(id);
+            Logger.telemetry(`[AutoFill] Inline harvest: ${id} (${page.label})`);
+        }
+        // --- Phase 2: Semantic budget fill ---
+        if (totalLoaded < this.maxAutoFillPages && budgetRemaining > 0 && this.searchIndex.size > 0) {
+            const query = buildQuery(messages);
+            if (query) {
+                const queryHash = hashText(query);
+                // Only search if the query is fresh (different from last autoRetrieve)
+                if (queryHash !== this.lastQueryHash) {
+                    this.lastQueryHash = queryHash;
+                    try {
+                        const maxSemantic = this.maxAutoFillPages - totalLoaded;
+                        const results = await this.searchIndex.search(query, maxSemantic + 3, // over-fetch for filtering
+                        this.autoThreshold);
+                        for (const r of results) {
+                            if (totalLoaded >= this.maxAutoFillPages)
+                                break;
+                            if (activeIds.has(r.pageId))
+                                continue;
+                            if (unrefHistory.has(r.pageId))
+                                continue;
+                            const page = pageMap.get(r.pageId);
+                            if (!page)
+                                continue;
+                            if (page.tokens > budgetRemaining)
+                                continue;
+                            this.memory.ref(r.pageId);
+                            activeIds.add(r.pageId);
+                            budgetRemaining -= page.tokens;
+                            totalLoaded++;
+                            semanticIds.push(r.pageId);
+                            Logger.telemetry(`[AutoFill] Semantic fill: ${r.pageId} (${r.label}, score=${r.score.toFixed(3)})`);
+                        }
+                    }
+                    catch (err) {
+                        Logger.warn(`[AutoFill] Semantic fill error: ${err}`);
+                    }
+                }
+            }
+        }
+        if (totalLoaded === 0)
+            return null;
+        return { harvestedIds, semanticIds };
     }
     // --- Explicit search (triggered by @@ref('?query')@@) ---
     async search(query) {

@@ -155,6 +155,9 @@ export class VirtualMemory extends AgentMemory {
   /** Pinned pages — never evicted */
   private pinnedPageIds: Set<string> = new Set();
 
+  /** Pages the agent explicitly unref'd — auto-fill should not reload these */
+  private unrefHistory: Set<string> = new Set();
+
   private model = "unknown";
   private provider = "unknown";
   /** Summarization queue (if batch mode enabled) */
@@ -516,6 +519,7 @@ export class VirtualMemory extends AgentMemory {
       this.loadOrder = data.loadOrder ?? [];
       this.pageRefCount = new Map(data.pageRefCount ?? []);
       this.pinnedPageIds = new Set(data.pinnedPageIds ?? []);
+      this.unrefHistory = new Set(data.unrefHistory ?? []);
     } catch {
       this.pages.clear();
     }
@@ -531,6 +535,7 @@ export class VirtualMemory extends AgentMemory {
         loadOrder: this.loadOrder,
         pageRefCount: Array.from(this.pageRefCount.entries()),
         pinnedPageIds: Array.from(this.pinnedPageIds),
+        unrefHistory: Array.from(this.unrefHistory),
         savedAt: new Date().toISOString(),
       }, null, 2) + "\n");
     } catch (err) {
@@ -1635,6 +1640,7 @@ export class VirtualMemory extends AgentMemory {
       return;
     }
     this.pendingUnrefs.add(id);
+    this.unrefHistory.add(id);
     Logger.debug(`[VM] unref('${id}'): marked for eviction`);
   }
 
@@ -1677,6 +1683,95 @@ export class VirtualMemory extends AgentMemory {
   getPageCount(): number { return this.pages.size; }
   hasPage(id: string): boolean { return this.pages.has(id); }
   getPagesDir(): string { return this.cfg.pagesDir; }
+
+  /** Remaining token budget in the page slot (total - currently loaded). */
+  getPageSlotBudgetRemaining(): number {
+    let used = 0;
+    for (const id of this.activePageIds) {
+      const page = this.pages.get(id);
+      if (page) used += page.tokens;
+    }
+    return Math.max(0, this.cfg.pageSlotTokens - used);
+  }
+
+  /** Pages the agent explicitly unref'd — auto-fill should skip these. */
+  getUnrefHistory(): Set<string> {
+    return new Set(this.unrefHistory);
+  }
+
+  /**
+   * Search page content by regex pattern.
+   * Lazy-loads content from disk as needed.
+   */
+  grepPages(pattern: string, options?: {
+    caseInsensitive?: boolean;
+    maxResults?: number;
+    contextChars?: number;
+  }): Array<{
+    pageId: string;
+    label: string;
+    tokens: number;
+    loaded: boolean;
+    matchCount: number;
+    snippets: string[];
+  }> {
+    const flags = (options?.caseInsensitive ?? true) ? "gi" : "g";
+    const maxResults = options?.maxResults ?? 10;
+    const contextChars = options?.contextChars ?? 150;
+
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern, flags);
+    } catch {
+      regex = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+    }
+
+    const results: Array<{
+      pageId: string;
+      label: string;
+      tokens: number;
+      loaded: boolean;
+      matchCount: number;
+      snippets: string[];
+    }> = [];
+
+    for (const [id, page] of this.pages) {
+      const content = this.loadPageContent(id);
+      if (!content) continue;
+
+      // Reset regex state for each page
+      regex.lastIndex = 0;
+      const matches: RegExpExecArray[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = regex.exec(content)) !== null) {
+        matches.push(m);
+        if (matches.length > 100) break; // safety cap
+      }
+      if (matches.length === 0) continue;
+
+      // Extract snippets (first 3 matches)
+      const snippets = matches.slice(0, 3).map(match => {
+        const start = Math.max(0, match.index - contextChars);
+        const end = Math.min(content.length, match.index + match[0].length + contextChars);
+        const snippet = content.slice(start, end);
+        return (start > 0 ? "..." : "") + snippet + (end < content.length ? "..." : "");
+      });
+
+      results.push({
+        pageId: id,
+        label: page.label,
+        tokens: page.tokens,
+        loaded: this.activePageIds.has(id),
+        matchCount: matches.length,
+        snippets,
+      });
+
+      if (results.length >= maxResults) break;
+    }
+
+    results.sort((a, b) => b.matchCount - a.matchCount);
+    return results;
+  }
 
   /**
    * Summarize raw text content using the summarizer model.

@@ -50,6 +50,7 @@ import { memoryStatusToolDefinition, executeMemoryStatus } from "./tools/memory-
 import { memoryReportToolDefinition, executeMemoryReport } from "./tools/memory-report.js";
 import { memoryTuneToolDefinition, executeMemoryTune } from "./tools/memory-tune.js";
 import { compactContextToolDefinition, executeCompactContext } from "./tools/compact-context.js";
+import { memoryGrepToolDefinition, executeMemoryGrep } from "./tools/memory-grep.js";
 import { cleanupSessionsToolDefinition, executeCleanupSessions } from "./tools/cleanup-sessions.js";
 import { createMarkerParser, extractMarkers } from "./stream-markers.js";
 import { readToolDefinition, executeRead } from "./tools/read.js";
@@ -1058,6 +1059,7 @@ async function executeTurn(
   tools.push(memoryReportToolDefinition());
   tools.push(memoryTuneToolDefinition());
   tools.push(compactContextToolDefinition());
+  tools.push(memoryGrepToolDefinition());
   tools.push(cleanupSessionsToolDefinition);
   tools.push(readToolDefinition());
   tools.push(writeToolDefinition());
@@ -1598,15 +1600,21 @@ async function executeTurn(
     // Sync thinking budget to memory — scales compaction aggressiveness
     memory.setThinkingBudget(activeThinkingBudget);
 
-    // Semantic auto-retrieval: find and load relevant pages before the turn
+    // Auto-fill page slots: inline ref harvesting + semantic budget fill
     if (semanticRetrieval) {
       try {
-        const autoPage = await semanticRetrieval.autoRetrieve(memory.messages());
-        if (autoPage) {
-          Logger.telemetry(`[SemanticRetrieval] Auto-loaded page: ${autoPage}`);
+        const fillResult = await semanticRetrieval.autoFillPageSlots(memory.messages());
+        if (fillResult) {
+          const { harvestedIds, semanticIds } = fillResult;
+          if (harvestedIds.length > 0) {
+            Logger.telemetry(`[AutoFill] Harvested ${harvestedIds.length} inline ref(s): ${harvestedIds.join(", ")}`);
+          }
+          if (semanticIds.length > 0) {
+            Logger.telemetry(`[AutoFill] Semantic fill: ${semanticIds.length} page(s): ${semanticIds.join(", ")}`);
+          }
         }
       } catch (err) {
-        Logger.warn(`[SemanticRetrieval] Auto-retrieval error: ${err}`);
+        Logger.warn(`[AutoFill] Error: ${err}`);
       }
     }
 
@@ -2036,6 +2044,8 @@ async function executeTurn(
         } else if (fnName === "compact_context") {
           result = await executeCompactContext(fnArgs, unwrapMemory(memory));
           contextRemediatedThisTurn = true;
+        } else if (fnName === "memory_grep") {
+          result = executeMemoryGrep(fnArgs, unwrapMemory(memory));
         } else if (fnName === "cleanup_sessions") {
           result = await executeCleanupSessions(fnArgs);
         } else if (fnName === "Read") {

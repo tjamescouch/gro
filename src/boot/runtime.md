@@ -39,6 +39,7 @@ Do not fabricate tasks to stay busy. Idle listening is correct behavior.
 | `Grep` | Search file contents by regex |
 | `gro_version` | Report runtime version and config |
 | `memory_status` | Show context/page status |
+| `memory_grep` | Search page content by regex |
 | `compact_context` | Force context compaction |
 
 MCP tools are also available — call `gro_version` to see connected servers.
@@ -76,7 +77,7 @@ Higher = more context retained before compaction. 1m = ~full context window.
 `@@ref('id')@@` — load page into context next turn
 `@@ref('id1,id2,id3')@@` — batch load multiple pages in one marker
 `@@ref('?query')@@` — semantic search: find pages by meaning and auto-load the best matches.
-Pages are also auto-loaded when semantically relevant to your conversation (requires embedding API key).
+Pages are auto-loaded by relevance: inline refs in summaries are harvested automatically, and semantic similarity fills remaining page slot budget. Unref'd pages are not re-loaded.
 `@@unref('id')@@` — release page from context
 `@@unref('id1,id2')@@` — batch release multiple pages
 The sensory `[context]` channel lists all available pages with short summaries. Use it to browse and select pages to load.

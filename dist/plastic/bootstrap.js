@@ -31,11 +31,23 @@ export async function boot() {
         const stockVersion = readVersionFrom(stockDir);
         const overlayVersion = readVersionFrom(OVERLAY_DIR);
         if (stockVersion && overlayVersion && stockVersion !== overlayVersion) {
-            console.log(`[PLASTIC] Stock upgraded ${overlayVersion} → ${stockVersion} — re-initializing overlay.`);
-            try {
-                rmSync(OVERLAY_DIR, { recursive: true, force: true });
+            // Only wipe when stock is NEWER than overlay (genuine npm upgrade).
+            // If overlay >= stock, the agent modified it intentionally — preserve it.
+            const sv = stockVersion.split(".").map(Number);
+            const ov = overlayVersion.split(".").map(Number);
+            const stockIsNewer = sv[0] > ov[0]
+                || (sv[0] === ov[0] && sv[1] > ov[1])
+                || (sv[0] === ov[0] && sv[1] === ov[1] && sv[2] > ov[2]);
+            if (stockIsNewer) {
+                console.log(`[PLASTIC] Stock upgraded ${overlayVersion} → ${stockVersion} — re-initializing overlay.`);
+                try {
+                    rmSync(OVERLAY_DIR, { recursive: true, force: true });
+                }
+                catch { }
             }
-            catch { }
+            else {
+                console.log(`[PLASTIC] Overlay version ${overlayVersion} >= stock ${stockVersion} — preserving agent modifications.`);
+            }
         }
     }
     // Initialize overlay if it doesn't exist (or was just wiped)

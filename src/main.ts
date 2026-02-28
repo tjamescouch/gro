@@ -76,6 +76,9 @@ import {
 } from "./model-config.js";
 import { parseDirectives, executeDirectives } from "./runtime/index.js";
 import { runtimeConfig, runtimeState } from "./runtime/index.js";
+import { FamiliarityTracker } from "./runtime/familiarity.js";
+import { DejaVuTracker } from "./runtime/deja-vu.js";
+import type { AwarenessSource } from "./memory/awareness-source.js";
 
 const VERSION = getGroVersion();
 
@@ -88,6 +91,10 @@ let _shutdownSessionPersistence = false;
 
 /** Last AgentChat send target — relay LLM text output to this destination */
 let _lastChatSendTarget: string | null = null;
+
+/** Awareness trackers — module-level so they persist across turns. */
+const familiarityTracker = new FamiliarityTracker();
+const dejaVuTracker = new DejaVuTracker();
 
 /** Auto-save interval: save session every N tool rounds in persistent mode */
 const AUTO_SAVE_INTERVAL = 10;
@@ -871,10 +878,17 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       });
     }
 
+    // Wire awareness trackers
+    const awarenessSource = sensory.getChannelSource("awareness") as AwarenessSource | undefined;
+    if (awarenessSource) {
+      awarenessSource.setFamiliarity(familiarityTracker);
+      awarenessSource.setDejaVu(dejaVuTracker);
+    }
+
     // Default camera slots
     sensory.setSlot(0, "context");
     sensory.setSlot(1, "time");
-    sensory.setSlot(2, "config");
+    sensory.setSlot(2, "awareness");
     return sensory;
   } catch (err) {
     Logger.warn(`Failed to initialize sensory memory: ${err}`);
@@ -1232,6 +1246,7 @@ async function executeTurn(
   _turnActive = true;
   for (let round = 0; round < cfg.maxToolRounds; round++) {
     runtimeState.advanceRound();
+    familiarityTracker.decay();
     let roundHadFailure = false;
     let roundImportance: number | undefined = undefined;
     let thinkingSeenThisTurn = false;
@@ -1359,6 +1374,7 @@ async function executeTurn(
               (inner as any).ref(id);
               // Record explicit ref for feedback-driven retrieval
               if (semanticRetrieval) semanticRetrieval.recordExplicitRef(id);
+              familiarityTracker.touch(`page:${id}`);
             }
             Logger.telemetry(`Stream marker: ref('${marker.arg}') — ${ids.length} page(s) will load next turn`);
           }
@@ -2284,6 +2300,22 @@ async function executeTurn(
       };
       memory.protectMessage(toolResultMsg);
       await memory.add(toolResultMsg);
+
+      // Familiarity: touch resources accessed by file-related tools
+      if (fnName === "Read" || fnName === "read") {
+        familiarityTracker.touch(fnArgs.file_path ?? fnArgs.path ?? "");
+      } else if (fnName === "shell" || fnName === "Bash") {
+        const cmd = String(fnArgs.command ?? "");
+        const catMatch = cmd.match(/\b(?:cat|head|tail|less|bat)\s+(\S+)/);
+        if (catMatch) familiarityTracker.touch(catMatch[1]);
+      } else if (fnName === "Glob") {
+        if (fnArgs.path) familiarityTracker.touch(fnArgs.path);
+      } else if (fnName === "Grep") {
+        if (fnArgs.path) familiarityTracker.touch(fnArgs.path);
+      }
+
+      // Deja vu: record tool call signature for repeat detection
+      dejaVuTracker.record(fnName, fnArgs, result, round);
     }
     // All tool results for this round are now in the buffer — release protections.
     // Protection was only needed to prevent compaction from flattening in-flight

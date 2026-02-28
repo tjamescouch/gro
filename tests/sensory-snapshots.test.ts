@@ -267,7 +267,7 @@ describe("Self view snapshots", () => {
 // =============================================================================
 
 describe("SensoryViewFactory", () => {
-  test("createDefaultFactory registers all 8 views", () => {
+  test("createDefaultFactory registers all 9 views", () => {
     const factory = createDefaultFactory();
     const names = factory.names();
 
@@ -276,7 +276,7 @@ describe("SensoryViewFactory", () => {
       console.log(`  ${spec.name.padEnd(12)} ${spec.width}×${spec.height}  maxTok:${String(spec.maxTokens).padStart(3)}  enabled:${spec.enabled}  viewable:${spec.viewable}`);
     }
 
-    assert.strictEqual(names.length, 8, "should have 8 registered views");
+    assert.strictEqual(names.length, 9, "should have 9 registered views");
     assert.ok(names.includes("context"), "should include context");
     assert.ok(names.includes("time"), "should include time");
     assert.ok(names.includes("config"), "should include config");
@@ -285,6 +285,7 @@ describe("SensoryViewFactory", () => {
     assert.ok(names.includes("social"), "should include social");
     assert.ok(names.includes("spend"), "should include spend");
     assert.ok(names.includes("violations"), "should include violations");
+    assert.ok(names.includes("awareness"), "should include awareness");
   });
 
   test("all channels are viewable", () => {

@@ -19,6 +19,7 @@ import { TaskSource } from "./task-source.js";
 import { SocialSource } from "./social-source.js";
 import { SpendSource } from "./spend-source.js";
 import { ViolationsSource } from "./violations-source.js";
+import { AwarenessSource } from "./awareness-source.js";
 export class SensoryViewFactory {
     constructor() {
         this.entries = new Map();
@@ -62,6 +63,7 @@ export function createDefaultFactory() {
     factory.register({ name: "social", maxTokens: 200, width: 48, height: 12, enabled: true, updateMode: "every_turn", viewable: true }, () => new SocialSource());
     factory.register({ name: "spend", maxTokens: 100, width: 48, height: 12, enabled: false, updateMode: "every_turn", viewable: true }, (deps) => new SpendSource(deps.spendMeter));
     factory.register({ name: "violations", maxTokens: 80, width: 48, height: 12, enabled: false, updateMode: "every_turn", viewable: true }, () => new ViolationsSource(null));
+    factory.register({ name: "awareness", maxTokens: 120, width: 80, height: 10, enabled: true, updateMode: "every_turn", viewable: true }, () => new AwarenessSource());
     factory.register({ name: "config", maxTokens: 120, width: 80, height: 17, enabled: true, updateMode: "every_turn", viewable: true }, () => new ConfigSource());
     factory.register({ name: "self", maxTokens: 200, width: 80, height: 20, enabled: false, updateMode: "every_turn", viewable: true }, () => new SelfSource());
     return factory;

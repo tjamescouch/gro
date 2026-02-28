@@ -22,6 +22,7 @@ import { TaskSource } from "./task-source.js";
 import { SocialSource } from "./social-source.js";
 import { SpendSource } from "./spend-source.js";
 import { ViolationsSource } from "./violations-source.js";
+import { AwarenessSource } from "./awareness-source.js";
 
 /** Channel configuration — lives alongside the view that renders it. */
 export interface ViewSpec {
@@ -119,6 +120,11 @@ export function createDefaultFactory(): SensoryViewFactory {
   factory.register(
     { name: "violations", maxTokens: 80, width: 48, height: 12, enabled: false, updateMode: "every_turn", viewable: true },
     () => new ViolationsSource(null),
+  );
+
+  factory.register(
+    { name: "awareness", maxTokens: 120, width: 80, height: 10, enabled: true, updateMode: "every_turn", viewable: true },
+    () => new AwarenessSource(),
   );
 
   factory.register(

@@ -125,6 +125,14 @@ export async function init() {
     const stockDir = getStockDistDir();
     // Create overlay with copies of stock dist files
     mirrorWithCopies(stockDir, OVERLAY_DIR);
+    // Copy _base.md to plastic dir so the overlay's main.js can find it.
+    // Stock dist is at <package>/dist/, so _base.md is at <package>/_base.md.
+    // The overlay's __dirname resolves to ~/.gro/plastic/overlay/, and discoverExtensions()
+    // falls back to join(__dirname, "..", "_base.md") = ~/.gro/plastic/_base.md.
+    const baseDoc = join(dirname(stockDir), "_base.md");
+    if (existsSync(baseDoc)) {
+        copyFileSync(baseDoc, join(PLASTIC_DIR, "_base.md"));
+    }
     // Resolve project root for source file access
     const projectRoot = getProjectRoot(stockDir);
     // Generate source pages
@@ -142,18 +150,31 @@ export async function init() {
     const sourceMapLines = [
         "## PLASTIC Mode — Active",
         "",
-        "You are running in PLASTIC mode. You can read and modify your own source code.",
-        "Your code lives in the overlay at ~/.gro/plastic/overlay/ (mirrors dist/).",
+        "**You are running in PLASTIC mode. You can read and modify your own source code.**",
         "",
-        "### Workflow",
-        "1. Read source: use `@@ref('page_id')@@` to load source pages, or `Read` overlay files directly",
-        "2. Modify: write to ~/.gro/plastic/overlay/ using any tool (Write, write_source, apply_patch, bash)",
-        "3. Reboot: emit `@@reboot@@` — runtime saves state and restarts with your changes",
+        "### Your code location",
+        "Your runtime code lives at: `~/.gro/plastic/overlay/` (a writable copy of `dist/`).",
+        "The stock (read-only) install is at: `/usr/local/lib/node_modules/@tjamescouch/gro/dist/`.",
+        "IMPORTANT: Never modify /usr/local/... — you don't have permission. Always write to the overlay.",
         "",
-        "Tip: `write_source` tool takes path relative to dist/ (e.g. 'main.js') and handles backup automatically.",
-        "Do NOT modify /usr/local/... directly — write to the overlay instead.",
+        "### Key files in the overlay",
+        "- `~/.gro/plastic/overlay/main.js` — your entry point, runtime loop, tool dispatch",
+        "- `~/.gro/plastic/overlay/version.js` — `export const GRO_VERSION = \"...\"`",
+        "- `~/.gro/plastic/overlay/memory/` — virtual memory, sensory memory, context map",
+        "- `~/.gro/plastic/overlay/plastic/` — bootstrap, init, write-source (this system)",
         "",
-        "### Available source pages:",
+        "### How to modify yourself",
+        "1. **Read**: `shell('cat ~/.gro/plastic/overlay/version.js')` or use `@@ref('page_id')@@` for source pages",
+        "2. **Write**: Use `write_source` tool (path relative to dist/, e.g. `version.js`), or `shell('cat > ~/.gro/plastic/overlay/file.js << EOF ... EOF')`",
+        "3. **Reboot**: Emit `@@reboot@@` — saves state, exits, runner restarts with your changes",
+        "",
+        "### Example: bump version",
+        "```",
+        "shell(\"sed -i 's/GRO_VERSION = \\\".*\\\"/GRO_VERSION = \\\"2.11.0\\\"/' ~/.gro/plastic/overlay/version.js\")",
+        "@@reboot@@",
+        "```",
+        "",
+        "### Available source pages (use @@ref('page_id')@@ to load):",
     ];
     for (const p of pages) {
         sourceMapLines.push(`  ${p.id}  ${p.label.padEnd(20)}  ~${p.tokens}t  ${p.description}`);

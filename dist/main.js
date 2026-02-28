@@ -134,6 +134,19 @@ function discoverExtensions(mcpConfigPaths) {
             Logger.warn(`Failed to read _base.md at ${repoBase}`);
         }
     }
+    else {
+        // Fallback: check the gro package directory (for global installs where CWD != package dir).
+        // __dirname_resolved is dist/ (or overlay/), so package root is one level up.
+        const pkgBase = join(__dirname_resolved, "..", "_base.md");
+        if (existsSync(pkgBase)) {
+            try {
+                extensions.push(readFileSync(pkgBase, "utf-8").trim());
+            }
+            catch {
+                Logger.warn(`Failed to read _base.md at ${pkgBase}`);
+            }
+        }
+    }
     // Check for _learn.md (persistent learned facts from 📚 markers)
     const learnFile = join(process.cwd(), "_learn.md");
     if (existsSync(learnFile)) {

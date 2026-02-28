@@ -218,49 +218,6 @@ export class ViolationTracker {
     }
 }
 /**
- * Track consecutive calls to the same tool.
- * Returns true if a same-tool-loop violation should be recorded.
- */
-export class SameToolLoopTracker {
-    constructor(opts) {
-        this.lastTool = null;
-        this.consecutiveCount = 0;
-        this.threshold = opts?.threshold ?? 5;
-    }
-    /**
-     * Check if tool calls indicate a same-tool loop.
-     * Returns true if the threshold is exceeded.
-     */
-    check(toolNames) {
-        if (toolNames.length === 0) {
-            this.reset();
-            return false;
-        }
-        // Mixed tool usage — not a loop
-        if (toolNames.length > 1 && new Set(toolNames).size > 1) {
-            this.reset();
-            return false;
-        }
-        const currentTool = toolNames[0];
-        if (currentTool === this.lastTool) {
-            this.consecutiveCount++;
-            if (this.consecutiveCount >= this.threshold) {
-                this.reset(); // fire once, then reset
-                return true;
-            }
-        }
-        else {
-            this.lastTool = currentTool;
-            this.consecutiveCount = 1;
-        }
-        return false;
-    }
-    reset() {
-        this.lastTool = null;
-        this.consecutiveCount = 0;
-    }
-}
-/**
  * Detect repetitive thinking loops where the model repeats the same phrase
  * many times in its reasoning tokens. This wastes tokens and indicates
  * degenerate behavior under context pressure.

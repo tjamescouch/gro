@@ -328,10 +328,11 @@ A 3-slot camera system injects a `--- SENSORY BUFFER ---` block after the system
 |---------|-------------|--------|-------------|
 | context | slot 0 | 300 | Context map — page index, active pages, memory stats |
 | time | slot 1 | 200 | Temporal awareness — local time, uptime, horizon bar |
-| social | slot 2 | 200 | Social feed — recent messages from connected services |
+| config | slot 2 | 120 | Runtime state — model, sampling params (with clamping notes), thinking level, autofill, violations summary |
+| social | — | 200 | Social feed — recent messages from connected services |
 | tasks | — | 150 | Task list and status (disabled by default) |
 | spend | — | 100 | Session cost tracking (disabled by default) |
-| violations | — | 80 | Violation log and counts (disabled by default) |
+| violations | — | 80 | Full violation log (disabled by default — summary in config channel) |
 
 **View switching:**
 `@@view('channel')@@` — set slot 0 to named channel (e.g. `@@view('tasks')@@`)

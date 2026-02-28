@@ -34,6 +34,7 @@ import { TaskSource } from "./memory/task-source.js";
 import { SocialSource } from "./memory/social-source.js";
 import { SpendSource } from "./memory/spend-source.js";
 import { ViolationsSource } from "./memory/violations-source.js";
+import { ConfigSource } from "./memory/config-source.js";
 import { tryCreateEmbeddingProvider } from "./memory/embedding-provider.js";
 import { PageSearchIndex } from "./memory/page-search-index.js";
 import { SemanticRetrieval } from "./memory/semantic-retrieval.js";
@@ -844,10 +845,20 @@ function wrapWithSensory(inner) {
             enabled: false,
             source: violationsSource,
         });
+        // "config" channel — runtime state: model, sampling params, thinking, violations summary
+        const configSource = new ConfigSource();
+        sensory.addChannel({
+            name: "config",
+            maxTokens: 120,
+            updateMode: "every_turn",
+            content: "",
+            enabled: true,
+            source: configSource,
+        });
         // Configure default camera slots
         sensory.setSlot(0, "context");
         sensory.setSlot(1, "time");
-        sensory.setSlot(2, "social");
+        sensory.setSlot(2, "config");
         return sensory;
     }
     catch (err) {
@@ -1038,6 +1049,13 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     // Semantic retrieval: auto-surface relevant pages by meaning
     const semanticInit = await initSemanticRetrieval(memory);
     const semanticRetrieval = semanticInit?.retrieval ?? null;
+    // Wire config source with autofill state
+    if (memory instanceof SensoryMemory) {
+        const cs = memory.getChannelSource("config");
+        if (cs && cs instanceof ConfigSource) {
+            cs.setAutoFill(!!semanticRetrieval, 0.5);
+        }
+    }
     let brokeCleanly = false;
     let sleepRequested = false; // @@sleep@@/@@listening@@ → yield to user
     let midTaskNudged = false; // One-shot continuation nudge after context resize

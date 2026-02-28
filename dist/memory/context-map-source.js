@@ -157,6 +157,25 @@ export class ContextMapSource {
             default: return role.slice(0, 4);
         }
     }
+    /**
+     * Strip boilerplate prefixes from page summaries and truncate for compact display.
+     * Removes "[Summary of N messages: ...]", "[Pending summary: ...]", timestamps in labels.
+     */
+    compactSummary(summary, label, maxLen = 50) {
+        let s = summary;
+        // Strip "[Summary of N messages: label] content" → keep content
+        s = s.replace(/^\[Summary of \d+ messages:[^\]]*\]\s*/i, "");
+        // Strip "[Pending summary: ...]"
+        s = s.replace(/^\[Pending summary:[^\]]*\]\s*/i, "");
+        // If nothing left, derive from label
+        if (!s || s.length < 3) {
+            // Strip ISO timestamps from label for compactness
+            s = label.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*-?\s*/g, "").trim();
+            if (!s)
+                s = label;
+        }
+        return s.length > maxLen ? s.slice(0, maxLen - 3) + "..." : s;
+    }
     /** Render page digest as a time-grouped tree the agent can browse and ref from. */
     renderPageDigest(pages) {
         const now = new Date();
@@ -186,7 +205,7 @@ export class ContextMapSource {
         for (const p of loaded) {
             const status = p.loaded ? "★" : "📌";
             const tokK = (p.tokens / 1000).toFixed(1);
-            lines.push(`  ${status} ${p.id} (${tokK}K) ${p.summary}`);
+            lines.push(`  ${status} ${p.id} (${tokK}K) ${this.compactSummary(p.summary, p.label)}`);
         }
         // Group unloaded by time bucket
         if (unloaded.length > 0) {
@@ -209,11 +228,10 @@ export class ContextMapSource {
                     lines.push(`  ${bucket} (${items.length}):`);
                     const shown = items.slice(0, 15);
                     for (const p of shown) {
-                        const tokK = (p.tokens / 1000).toFixed(1);
-                        lines.push(`    · ${p.id} (${tokK}K) ${p.summary}`);
+                        lines.push(`    · ${p.id} ${this.compactSummary(p.summary, p.label, 40)}`);
                     }
                     if (items.length > 15)
-                        lines.push(`    ... +${items.length - 15} more`);
+                        lines.push(`    +${items.length - 15} more`);
                 }
             }
             else if (filter && this.isTimeBucketFilter(filter)) {
@@ -223,8 +241,7 @@ export class ContextMapSource {
                     if (bucket === filter) {
                         lines.push(`  ${bucket} (${items.length}):`);
                         for (const p of items) {
-                            const tokK = (p.tokens / 1000).toFixed(1);
-                            lines.push(`    · ${p.id} (${tokK}K) ${p.summary}`);
+                            lines.push(`    · ${p.id} (${(p.tokens / 1000).toFixed(1)}K) ${this.compactSummary(p.summary, p.label)}`);
                         }
                     }
                     else {
@@ -233,20 +250,19 @@ export class ContextMapSource {
                 }
             }
             else {
-                // Normal mode: expand most recent bucket only (up to 5 entries)
+                // Normal mode: expand most recent bucket only (up to 3 entries)
                 let firstBucketExpanded = false;
                 for (const bucket of bucketOrder) {
                     const items = buckets.get(bucket);
                     if (!firstBucketExpanded) {
                         firstBucketExpanded = true;
                         lines.push(`  ${bucket} (${items.length}):`);
-                        const shown = items.slice(0, 5);
+                        const shown = items.slice(0, 3);
                         for (const p of shown) {
-                            const tokK = (p.tokens / 1000).toFixed(1);
-                            lines.push(`    · ${p.id} (${tokK}K) ${p.summary}`);
+                            lines.push(`    · ${p.id} (${(p.tokens / 1000).toFixed(1)}K) ${this.compactSummary(p.summary, p.label)}`);
                         }
-                        if (items.length > 5)
-                            lines.push(`    ... +${items.length - 5} more`);
+                        if (items.length > 3)
+                            lines.push(`    +${items.length - 3} more`);
                     }
                     else {
                         lines.push(`  ${bucket} (${items.length})`);
@@ -256,10 +272,10 @@ export class ContextMapSource {
         }
         // Hint line — include back navigation when filtered
         if (filter) {
-            lines.push(`back: @@view('context')@@  load: @@ref('id')@@  search: memory_grep`);
+            lines.push(`back: @@view('context')@@  load: @@ref('id')@@`);
         }
         else {
-            lines.push(`drill: @@view('context:today')@@  full: @@view('context:full')@@  search: memory_grep`);
+            lines.push(`drill: @@view('context:today')@@  full: @@view('context:full')@@`);
         }
         return lines.join("\n");
     }

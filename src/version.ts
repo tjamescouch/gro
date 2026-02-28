@@ -1,2 +1,2 @@
 /** Baked-in version constant. Stamped by the build script from package.json. */
-export const GRO_VERSION = "2.10.31";
+export const GRO_VERSION = "2.10.32";

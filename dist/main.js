@@ -1017,7 +1017,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     // Emit 🦉 to go into the phone booth; let it decay to come back out.
     let activeThinkingBudget = 0.5;
     let modelExplicitlySet = false; // true after @@model-change@@, suppresses tier auto-select for current round
-    const modelPinnedByCLI = wasModelExplicitlyPassed(); // --model flag: permanently suppress tier auto-select
+    // Note: wasModelExplicitlyPassed() is used for session restore (don't override CLI model
+    // with saved session model) but does NOT lock tier auto-select. The thinking lever
+    // must be able to shift model tiers even when -m was passed.
     // Sampling parameters — controlled via 🌡️, ⚙️, ⚙️ markers
     let activeTemperature = undefined;
     let activeTopK = undefined;
@@ -1507,8 +1509,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
             }
         };
         // Select model tier based on current thinking budget.
-        // Skip if: --model CLI flag (permanent), or @@model-change@@ this round (one-shot).
-        if (!modelExplicitlySet && !modelPinnedByCLI) {
+        // Skip if: @@model-change@@ this round (one-shot override).
+        // Note: --model CLI flag sets the initial model but does NOT lock tier switching.
+        // The thinking lever must be able to shift tiers even when -m was passed.
+        if (!modelExplicitlySet) {
             const tierResult = thinkingTierModel(activeThinkingBudget);
             if (typeof tierResult === "string") {
                 // Single-provider mode — just a model name

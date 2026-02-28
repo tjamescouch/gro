@@ -66,13 +66,13 @@ interface SourceChunk {
 
 const SOURCE_CHUNKS: SourceChunk[] = [
   // main.ts — split into logical sections
-  { label: "main_entry", srcPath: "src/main.ts", lines: [2595, 2772], description: "Entry point: main(), signal handlers, process bootstrap" },
-  { label: "main_config", srcPath: "src/main.ts", lines: [354, 526], description: "Config loading: CLI flags, env vars, system prompt assembly" },
-  { label: "main_memory", srcPath: "src/main.ts", lines: [735, 906], description: "Memory creation, sensory wrapping, save/restore snapshots" },
-  { label: "main_turn", srcPath: "src/main.ts", lines: [1069, 1250], description: "executeTurn(): driver.chat loop, retry logic, tool dispatch" },
-  { label: "main_markers", srcPath: "src/main.ts", lines: [1250, 1500], description: "handleMarker(): model-change, ref, unref, importance, sense, view" },
-  { label: "main_tools", srcPath: "src/main.ts", lines: [1500, 1800], description: "Tool definitions: bash, write_self, yield, built-in tool handling" },
-  { label: "main_interactive", srcPath: "src/main.ts", lines: [2441, 2594], description: "interactive(): readline loop, session management, MCP" },
+  { label: "main_entry", srcPath: "src/main.ts", lines: [2630, 2830], description: "Entry point: main(), signal handlers, process bootstrap" },
+  { label: "main_config", srcPath: "src/main.ts", lines: [357, 545], description: "Config loading: CLI flags, env vars, system prompt assembly" },
+  { label: "main_memory", srcPath: "src/main.ts", lines: [740, 930], description: "Memory creation, sensory wrapping, save/restore snapshots" },
+  { label: "main_turn", srcPath: "src/main.ts", lines: [1091, 1280], description: "executeTurn(): driver.chat loop, retry logic, tool dispatch" },
+  { label: "main_markers", srcPath: "src/main.ts", lines: [1280, 1660], description: "handleMarker(): model-change, ref, unref, importance, sense, view, reboot" },
+  { label: "main_tools", srcPath: "src/main.ts", lines: [1660, 2330], description: "Tool definitions: bash, write_self, write_source, yield, built-in tool handling" },
+  { label: "main_interactive", srcPath: "src/main.ts", lines: [2475, 2630], description: "interactive(): readline loop, session management, MCP" },
 
   // Key memory files
   { label: "sensory_memory", srcPath: "src/memory/sensory-memory.ts", description: "SensoryMemory: channels, slots, grid enforcement, buffer rendering" },
@@ -80,6 +80,10 @@ const SOURCE_CHUNKS: SourceChunk[] = [
   { label: "context_map", srcPath: "src/memory/context-map-source.ts", description: "ContextMapSource: 6-section page viewer, lanes, anchors, histogram" },
   { label: "view_factory", srcPath: "src/memory/sensory-view-factory.ts", description: "SensoryViewFactory: channel specs, view creation" },
   { label: "box_drawing", srcPath: "src/memory/box.ts", description: "Box-drawing helpers: borders, rows, bars, padding" },
+  // PLASTIC mode files
+  { label: "plastic_bootstrap", srcPath: "src/plastic/bootstrap.ts", description: "PLASTIC bootstrap: overlay loader, crash fallback" },
+  { label: "plastic_init", srcPath: "src/plastic/init.ts", description: "PLASTIC init: overlay symlinks, source page generation" },
+  { label: "plastic_write", srcPath: "src/plastic/write-source.ts", description: "write_source tool: overlay file modification" },
 ];
 
 /** Read a source chunk, extracting line range if specified. */

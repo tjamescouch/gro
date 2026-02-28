@@ -247,6 +247,18 @@ export class SensoryMemory extends AgentMemory {
     setThinkingBudget(budget) {
         this.inner.setThinkingBudget(budget);
     }
+    protectMessage(msg) {
+        this.inner.protectMessage(msg);
+    }
+    unprotectMessage(msg) {
+        this.inner.unprotectMessage(msg);
+    }
+    clearProtectedMessages() {
+        this.inner.clearProtectedMessages();
+    }
+    async preToolCompact(threshold) {
+        return this.inner.preToolCompact(threshold);
+    }
     getStats() {
         return this.inner.getStats();
     }

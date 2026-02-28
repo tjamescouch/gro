@@ -295,6 +295,22 @@ export class SensoryMemory extends AgentMemory {
     this.inner.setThinkingBudget(budget);
   }
 
+  override protectMessage(msg: ChatMessage): void {
+    this.inner.protectMessage(msg);
+  }
+
+  override unprotectMessage(msg: ChatMessage): void {
+    this.inner.unprotectMessage(msg);
+  }
+
+  override clearProtectedMessages(): void {
+    this.inner.clearProtectedMessages();
+  }
+
+  override async preToolCompact(threshold?: number): Promise<boolean> {
+    return this.inner.preToolCompact(threshold);
+  }
+
   override getStats(): MemoryStats {
     return this.inner.getStats();
   }

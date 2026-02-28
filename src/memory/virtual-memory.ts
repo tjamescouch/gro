@@ -1226,7 +1226,8 @@ export class VirtualMemory extends AgentMemory {
             },
           };
 
-          // Matching tool message
+          // Matching tool message — marked as flattened so future compaction
+          // cycles don't re-process or drop it as "dangling"
           const flatTool: ChatMessage = {
             role: "tool",
             from: fnName,
@@ -1234,6 +1235,7 @@ export class VirtualMemory extends AgentMemory {
             tool_call_id: callId,
             name: fnName,
           };
+          (flatTool as any)._flattened = true;
 
           output.push(flatAssistant, flatTool);
           flattenCount++;
@@ -1250,6 +1252,12 @@ export class VirtualMemory extends AgentMemory {
 
         // Protected tool results are in-flight — their assistant may not have tool_calls yet
       if (this.protectedMessages.has(msg)) {
+        output.push(msg);
+        continue;
+      }
+
+      // Previously flattened tool results are already summarized — pass through
+      if ((msg as any)._flattened) {
         output.push(msg);
         continue;
       }
@@ -1320,11 +1328,11 @@ export class VirtualMemory extends AgentMemory {
     const toolTokens = this.msgTokens(unprotectedTool);
 
     // Check if any lane exceeds its budget
-    const assistantOverBudget = assistantTokens > budgets.assistant * this.cfg.highRatio;
+    const toolOverBudget = toolTokens > budgets.tool * this.cfg.highRatio;
+    // If tool lane is over budget, assistant must page too (tool results pair with tool calls in assistant lane)
+    const assistantOverBudget = assistantTokens > budgets.assistant * this.cfg.highRatio || toolOverBudget;
     const userOverBudget = userTokens > budgets.user * this.cfg.highRatio;
     const systemOverBudget = systemTokens > budgets.system * this.cfg.highRatio;
-    // Tool lane always pages with assistant to avoid orphaning tool calls/results
-    const toolOverBudget = assistantOverBudget;
 
     // VM diagnostics logging (if GRO_VM_DEBUG=true)
     if (process.env.GRO_VM_DEBUG === "true") {
@@ -1411,12 +1419,11 @@ export class VirtualMemory extends AgentMemory {
       const toolTok = this.msgTokens(tool);
 
       // Determine which lanes to page based on normalized budget (forced = page all non-empty lanes)
-      const shouldPageAssistant = forced ? assistant.length > tailN : assistantTok > budgets.assistant * this.cfg.highRatio;
+      const shouldPageTool = forced ? tool.length > tailN : toolTok > budgets.tool * this.cfg.highRatio;
+      // If tool lane needs paging, assistant must page too (tool results pair with tool calls)
+      const shouldPageAssistant = forced ? assistant.length > tailN : (assistantTok > budgets.assistant * this.cfg.highRatio || shouldPageTool);
       const shouldPageUser = forced ? user.length > tailN : userTok > budgets.user * this.cfg.highRatio;
       const shouldPageSystem = forced ? remainingSystem.length > 0 : systemTok > budgets.system * this.cfg.highRatio;
-      // CRITICAL: Tool lane MUST page with assistant lane to avoid orphaning tool calls/results
-      // Tool results (tool lane) must stay paired with their tool calls (assistant lane)
-      const shouldPageTool = shouldPageAssistant;
 
       // Determine which messages to page out vs keep per lane.
       // High-importance messages (>= IMPORTANCE_KEEP_THRESHOLD) are promoted to

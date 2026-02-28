@@ -1105,7 +1105,8 @@ async function executeTurn(
   // Decays toward THINKING_MEAN each round without 🦉 — agents coast at mid-tier.
   // Emit 🦉 to go into the phone booth; let it decay to come back out.
   let activeThinkingBudget = 0.5;
-  let modelExplicitlySet = false; // true after 🔀, suppresses tier auto-select
+  let modelExplicitlySet = false; // true after @@model-change@@, suppresses tier auto-select for current round
+  const modelPinnedByCLI = wasModelExplicitlyPassed(); // --model flag: permanently suppress tier auto-select
 
   // Sampling parameters — controlled via 🌡️, ⚙️, ⚙️ markers
   let activeTemperature: number | undefined = undefined;
@@ -1143,6 +1144,9 @@ async function executeTurn(
     let roundImportance: number | undefined = undefined;
     let thinkingSeenThisTurn = false;
     let contextRemediatedThisTurn = false;
+    // Reset per-round: @@model-change@@ is a one-shot override, not permanent.
+    // The thinking tier ladder resumes control next round.
+    modelExplicitlySet = false;
 
     // Memory hot-swap handler
     const swapMemory = async (targetType: string): Promise<void> => {
@@ -1547,8 +1551,9 @@ async function executeTurn(
     }
    };
 
-    // Select model tier based on current thinking budget (unless agent pinned a model explicitly)
-    if (!modelExplicitlySet) {
+    // Select model tier based on current thinking budget.
+    // Skip if: --model CLI flag (permanent), or @@model-change@@ this round (one-shot).
+    if (!modelExplicitlySet && !modelPinnedByCLI) {
       const tierResult = thinkingTierModel(activeThinkingBudget);
       if (typeof tierResult === "string") {
         // Single-provider mode — just a model name

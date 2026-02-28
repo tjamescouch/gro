@@ -52,6 +52,10 @@ export class ContextMapSource {
     setFilter(filter) {
         this.filter = filter;
     }
+    /** Dynamically update the character budget (e.g., during full-screen expand). */
+    setMaxChars(maxChars) {
+        this.config.maxChars = maxChars;
+    }
     async poll() {
         const result = this.render();
         // One-shot: clear filter after rendering
@@ -213,9 +217,11 @@ export class ContextMapSource {
             if (page)
                 return this.renderSinglePage(page, pages.length, loaded.length, usedK, budgetK);
         }
-        // Hint line — built first so we can reserve space for it
+        // Hint line — built first so we can reserve space for it.
+        // Use plain text (no @@ markers) — markers in the sensory buffer get consumed
+        // when the LLM repeats them verbatim, stripping the hint from visible output.
         const hintLine = filter
-            ? `@@view('context')@@ to reset`
+            ? `reset: view('context')`
             : `view('context:today|full|pg_id')`;
         const hintReserve = hintLine.length + 1; // +1 for \n
         const lines = [`pages: ${pages.length} total, ${loaded.length} loaded (${usedK}K/${budgetK}K budget)`];
@@ -243,7 +249,7 @@ export class ContextMapSource {
             // Sort bucket order: today first, then yesterday, then Nd ago ascending, then older
             bucketOrder.sort((a, b) => bucketRank(a) - bucketRank(b));
             if (filter === "full") {
-                // Full mode: expand all buckets (cap per bucket to stay within budget)
+                // Full mode: expand all buckets, no per-bucket cap — overflow check limits naturally
                 for (const bucket of bucketOrder) {
                     const items = buckets.get(bucket);
                     const header = `  ${bucket} (${items.length}):`;
@@ -251,7 +257,7 @@ export class ContextMapSource {
                         break;
                     lines.push(header);
                     let shown = 0;
-                    for (const p of items.slice(0, 15)) {
+                    for (const p of items) {
                         const line = `    · ${p.id} ${this.compactSummary(p.summary, p.label, 40)}`;
                         if (wouldOverflow(line))
                             break;

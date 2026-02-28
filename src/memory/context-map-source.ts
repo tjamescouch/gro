@@ -70,6 +70,11 @@ export class ContextMapSource implements SensorySource {
     this.filter = filter;
   }
 
+  /** Dynamically update the character budget (e.g., during full-screen expand). */
+  setMaxChars(maxChars: number): void {
+    this.config.maxChars = maxChars;
+  }
+
   async poll(): Promise<string | null> {
     const result = this.render();
     // One-shot: clear filter after rendering
@@ -252,9 +257,11 @@ export class ContextMapSource implements SensorySource {
       if (page) return this.renderSinglePage(page, pages.length, loaded.length, usedK, budgetK);
     }
 
-    // Hint line — built first so we can reserve space for it
+    // Hint line — built first so we can reserve space for it.
+    // Use plain text (no @@ markers) — markers in the sensory buffer get consumed
+    // when the LLM repeats them verbatim, stripping the hint from visible output.
     const hintLine = filter
-      ? `@@view('context')@@ to reset`
+      ? `reset: view('context')`
       : `view('context:today|full|pg_id')`;
     const hintReserve = hintLine.length + 1; // +1 for \n
 
@@ -289,14 +296,14 @@ export class ContextMapSource implements SensorySource {
       bucketOrder.sort((a, b) => bucketRank(a) - bucketRank(b));
 
       if (filter === "full") {
-        // Full mode: expand all buckets (cap per bucket to stay within budget)
+        // Full mode: expand all buckets, no per-bucket cap — overflow check limits naturally
         for (const bucket of bucketOrder) {
           const items = buckets.get(bucket)!;
           const header = `  ${bucket} (${items.length}):`;
           if (wouldOverflow(header)) break;
           lines.push(header);
           let shown = 0;
-          for (const p of items.slice(0, 15)) {
+          for (const p of items) {
             const line = `    · ${p.id} ${this.compactSummary(p.summary, p.label, 40)}`;
             if (wouldOverflow(line)) break;
             lines.push(line);

@@ -123,12 +123,17 @@ export class SensoryMemory extends AgentMemory {
         // Save current state
         this.savedSlots = [...this.slots];
         this.savedMaxTokens.set(channelName, ch.maxTokens);
-        // Expand: all budget to this channel, clear other slots
-        ch.maxTokens = this.totalBudget;
+        // Expand: 3x budget to this channel (one-shot diagnostic, restores after 1 turn)
+        const expandedBudget = this.totalBudget * 3;
+        ch.maxTokens = expandedBudget;
+        // Propagate expanded budget to the source if it supports dynamic maxChars
+        if (ch.source && "setMaxChars" in ch.source && typeof ch.source.setMaxChars === "function") {
+            ch.source.setMaxChars(Math.floor(expandedBudget * this.avgCharsPerToken));
+        }
         this.slots = [channelName, null, null];
         // 2 = next poll renders expanded, then restore before the poll after that
         this.expandTurnsRemaining = 2;
-        Logger.telemetry(`[Sensory] Full-screen expand: ${channelName} (budget: ${this.totalBudget})`);
+        Logger.telemetry(`[Sensory] Full-screen expand: ${channelName} (budget: ${expandedBudget})`);
     }
     /** Restore slot config and channel budgets after full-screen expand. */
     restoreFromExpand() {
@@ -138,8 +143,13 @@ export class SensoryMemory extends AgentMemory {
         }
         for (const [name, maxTok] of this.savedMaxTokens) {
             const ch = this.channels.get(name);
-            if (ch)
+            if (ch) {
                 ch.maxTokens = maxTok;
+                // Restore source's maxChars to match the original channel budget
+                if (ch.source && "setMaxChars" in ch.source && typeof ch.source.setMaxChars === "function") {
+                    ch.source.setMaxChars(Math.floor(maxTok * this.avgCharsPerToken));
+                }
+            }
         }
         this.savedMaxTokens.clear();
         Logger.telemetry(`[Sensory] Restored from full-screen expand`);

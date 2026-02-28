@@ -310,14 +310,14 @@ PLASTIC mode lets you read, modify, and reload your own source code. It is activ
 
 ### Architecture
 
-Your runtime code lives in a **symlink overlay** at `~/.gro/plastic/overlay/`. This mirrors the stock `dist/` directory structure. When you modify a file, the symlink is replaced with your real file. The runtime loads from the overlay, so your changes take effect on restart.
+Your runtime code lives in an **overlay** at `~/.gro/plastic/overlay/`. This is a copy of the stock `dist/` directory. When you modify a file, you're editing a real copy — the stock code is untouched. The runtime loads from the overlay, so your changes take effect on restart.
 
 ```
 ~/.gro/plastic/overlay/
-├── main.js          → /usr/local/.../dist/main.js  (symlink = stock)
+├── main.js              (copy of stock — or your modified version)
 ├── memory/
-│   ├── virtual-memory.js → .../dist/memory/virtual-memory.js  (symlink)
-│   └── sensory-memory.js  ← YOUR MODIFIED VERSION (real file)
+│   ├── virtual-memory.js  (stock copy)
+│   └── sensory-memory.js  (your modified version)
 └── ...
 ```
 

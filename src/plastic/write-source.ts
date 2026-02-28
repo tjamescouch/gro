@@ -8,7 +8,7 @@
  * Only registered when GRO_PLASTIC=1.
  */
 
-import { existsSync, mkdirSync, writeFileSync, lstatSync, unlinkSync, copyFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, copyFileSync, readFileSync } from "node:fs";
 import { join, dirname, normalize } from "node:path";
 import { homedir } from "node:os";
 
@@ -62,15 +62,8 @@ export function handleWriteSource(args: { path: string; content: string }): stri
   // Backup previous version
   try {
     if (existsSync(targetPath)) {
-      const stat = lstatSync(targetPath);
-      if (stat.isSymbolicLink()) {
-        // Remove symlink — stock code is still at the original location
-        unlinkSync(targetPath);
-      } else {
-        // Backup real file (previous modification)
-        const backupPath = targetPath + ".bak";
-        copyFileSync(targetPath, backupPath);
-      }
+      const backupPath = targetPath + ".bak";
+      copyFileSync(targetPath, backupPath);
     }
   } catch (err) {
     return `ERROR: failed to backup previous version: ${err}`;

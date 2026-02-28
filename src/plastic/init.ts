@@ -8,7 +8,7 @@
  * Training-only infrastructure — never active in production.
  */
 
-import { existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSync, readFileSync, lstatSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, copyFileSync, writeFileSync, readFileSync, lstatSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -25,19 +25,22 @@ function getStockDistDir(): string {
   return resolve(dirname(thisFile), "..");
 }
 
-/** Recursively mirror a directory tree with symlinks. */
-function mirrorWithSymlinks(src: string, dest: string): void {
+/** Recursively mirror a directory tree with file copies (not symlinks).
+ *  Copies are used instead of symlinks because Node's ESM loader resolves
+ *  symlinks to their real path before resolving relative imports — which
+ *  means overlay symlinks would still load from the stock dist/ directory. */
+function mirrorWithCopies(src: string, dest: string): void {
   mkdirSync(dest, { recursive: true });
   for (const entry of readdirSync(src, { withFileTypes: true })) {
     const srcPath = join(src, entry.name);
     const destPath = join(dest, entry.name);
     if (entry.isDirectory()) {
-      // Skip the plastic directory itself to avoid circular symlinks
+      // Skip the plastic directory itself to avoid circular refs
       if (entry.name === "plastic") continue;
-      mirrorWithSymlinks(srcPath, destPath);
+      mirrorWithCopies(srcPath, destPath);
     } else {
       if (!existsSync(destPath)) {
-        symlinkSync(srcPath, destPath);
+        copyFileSync(srcPath, destPath);
       }
     }
   }
@@ -150,8 +153,8 @@ function getProjectRoot(stockDir: string): string {
 export async function init(): Promise<void> {
   const stockDir = getStockDistDir();
 
-  // Create overlay with symlinks
-  mirrorWithSymlinks(stockDir, OVERLAY_DIR);
+  // Create overlay with copies of stock dist files
+  mirrorWithCopies(stockDir, OVERLAY_DIR);
 
   // Resolve project root for source file access
   const projectRoot = getProjectRoot(stockDir);

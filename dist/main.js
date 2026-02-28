@@ -367,6 +367,7 @@ function loadConfig() {
         else if (arg === "--show-diffs") {
             flags.showDiffs = "true";
         }
+        else if (arg === "--plastic") { /* handled at boot, before main() */ }
         else if (arg === "--name") {
             flags.name = args[++i];
         }
@@ -556,6 +557,7 @@ options:
   -c, --continue         continue most recent session
   -r, --resume [id]      resume a session by ID
   -i, --interactive      interactive conversation mode
+  --plastic              PLASTIC mode: self-modifying agent (training only)
   --verbose              verbose output
   -V, --version          show version
   -h, --help             show this help
@@ -2705,6 +2707,10 @@ const _mainError = (e) => {
         Logger.error(err.stack);
     process.exit(1);
 };
+// --plastic CLI flag sets the env var before bootstrap check
+if (process.argv.includes("--plastic")) {
+    process.env.GRO_PLASTIC = "1";
+}
 if (process.env.GRO_PLASTIC) {
     import("./plastic/bootstrap.js").then(m => m.boot()).catch(e => {
         console.error("[PLASTIC] Bootstrap failed, falling back to stock:", e);

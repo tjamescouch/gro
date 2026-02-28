@@ -180,6 +180,13 @@ export async function init(): Promise<void> {
     copyFileSync(baseDoc, join(PLASTIC_DIR, "_base.md"));
   }
 
+  // Copy providers/ to plastic dir so tier-loader.js can find provider configs.
+  // tier-loader resolves join(__dirname, "..", "providers") = ~/.gro/plastic/providers/
+  const providersDir = join(dirname(stockDir), "providers");
+  if (existsSync(providersDir)) {
+    mirrorWithCopies(providersDir, join(PLASTIC_DIR, "providers"));
+  }
+
   // Resolve project root for source file access
   const projectRoot = getProjectRoot(stockDir);
 

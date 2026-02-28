@@ -1,17 +1,15 @@
 /**
- * ContextMapSource — sensory channel that renders a spatial context map.
+ * ContextMapSource — sensory channel that renders a memory map.
  *
- * Default view: composite fill bar + page symbol grid.
- *   Line 1: Single composite bar — █ sys, ▓ page, ▒ wm, ░ free + stats
- *   Line 2: Key metrics (pin count, pages, model, fill %)
- *   Lines 3+: Page grid — each cell is a symbol (█ loaded, · unloaded, ◆ pinned, ! important)
- *   Last 2 lines: Legend + drill-down hint
+ * Box-drawn 48-char-wide panel with three sections:
+ *   1. Lane swimlanes — AST/USR/SYS/TOL bars with token + message counts
+ *   2. Page dot grid — ● loaded, ○ dark, bucketed by time
+ *   3. Active page slots — loaded pages with ID, lane, time, token bar
  *
  * Drill-down filters (context:today, context:full, context:pg_id) render
- * detailed page info into the same grid, truncated to fit.
- *
- * Degrades gracefully: renders whatever stats the memory type provides.
+ * detailed page info into the same box.
  */
+import { topBorder, bottomBorder, divider, row, bar, lpad, rpad } from "./box.js";
 // --- Time bucketing helpers ---
 function timeBucket(createdAt, now) {
     const d = new Date(createdAt);
@@ -19,29 +17,33 @@ function timeBucket(createdAt, now) {
     if (diffDays <= 0)
         return "today";
     if (diffDays === 1)
-        return "yesterday";
+        return "yest";
     if (diffDays < 7)
-        return `${diffDays}d ago`;
+        return `${diffDays}d`;
     return "older";
 }
 function bucketRank(bucket) {
     if (bucket === "today")
         return 0;
-    if (bucket === "yesterday")
+    if (bucket === "yest")
         return 1;
     if (bucket === "older")
         return 100;
-    const m = bucket.match(/^(\d+)d ago$/);
+    const m = bucket.match(/^(\d+)d$/);
     return m ? parseInt(m[1], 10) : 50;
 }
+/** Lane bar width. */
+const LANE_BAR_W = 26;
+/** Dots per page row. */
+const DOTS_PER_ROW = 22;
+/** Page slot bar width. */
+const SLOT_BAR_W = 12;
 export class ContextMapSource {
     constructor(memory, config) {
         /** One-shot filter for drill-down views. Cleared after next render. */
         this.filter = null;
         this.memory = memory;
         this.config = {
-            barWidth: config?.barWidth ?? 32,
-            showPages: config?.showPages ?? true,
             maxChars: config?.maxChars ?? 0,
         };
     }
@@ -53,13 +55,12 @@ export class ContextMapSource {
     setFilter(filter) {
         this.filter = filter;
     }
-    /** Dynamically update the character budget (e.g., during full-screen expand). */
+    /** Dynamically update the character budget. */
     setMaxChars(maxChars) {
         this.config.maxChars = maxChars;
     }
     async poll() {
         const result = this.render();
-        // One-shot: clear filter after rendering
         if (this.filter)
             this.filter = null;
         return result;
@@ -72,98 +73,85 @@ export class ContextMapSource {
     isVirtualStats(stats) {
         return stats.type === "virtual" || stats.type === "fragmentation" || stats.type === "hnsw" || stats.type === "perfect";
     }
-    // --- Virtual Memory (composite bar + page grid) ---
+    // --- Virtual Memory (lane bars + page grid + page slots) ---
     renderVirtual(stats) {
-        const w = this.config.barWidth;
         const totalBudget = stats.workingMemoryBudget + stats.pageSlotBudget;
         if (totalBudget === 0)
             return this.renderBasic(stats);
-        const sysTokens = stats.systemTokens;
-        const pageTokens = stats.pageSlotUsed;
-        const wmUsed = stats.workingMemoryUsed;
-        const totalUsed = sysTokens + pageTokens + wmUsed;
-        const free = Math.max(0, totalBudget - totalUsed);
+        const totalUsed = stats.systemTokens + stats.pageSlotUsed + stats.workingMemoryUsed;
         const usePct = totalBudget > 0 ? totalUsed / totalBudget : 0;
-        const isLow = (free / totalBudget) < 0.2 || stats.compactionActive || usePct > stats.highRatio;
         const lines = [];
-        // Line 1: Composite fill bar — █ sys, ▓ page, ▒ wm, ░ free
-        const sysChars = Math.max(sysTokens > 0 ? 1 : 0, Math.round((sysTokens / totalBudget) * w));
-        const pageChars = Math.max(pageTokens > 0 ? 1 : 0, Math.round((pageTokens / totalBudget) * w));
-        const wmChars = Math.max(wmUsed > 0 ? 1 : 0, Math.round((wmUsed / totalBudget) * w));
-        const freeChars = Math.max(0, w - sysChars - pageChars - wmChars);
-        const bar = "█".repeat(sysChars) + "▓".repeat(pageChars) + "▒".repeat(wmChars) + "░".repeat(freeChars);
+        // --- Header ---
+        const pgCount = stats.pagesAvailable;
         const usedK = (totalUsed / 1000).toFixed(0);
         const budgetK = (totalBudget / 1000).toFixed(0);
-        const barSuffix = isLow ? `${usedK}K/${budgetK}K LOW` : `${usedK}K/${budgetK}K`;
-        lines.push(`${bar}  ${barSuffix}`);
-        // Line 2: Key metrics
-        const parts = [];
-        if (stats.pinnedMessages > 0)
-            parts.push(`pin:${stats.pinnedMessages}`);
-        parts.push(`pg:${stats.pagesLoaded}/${stats.pagesAvailable}`);
-        if (stats.model)
-            parts.push(this.shortModel(stats.model));
-        parts.push(`fill:${Math.round(usePct * 100)}%`);
-        lines.push(parts.join(" "));
-        // Page digest — either drill-down or page grid
-        if (this.config.showPages && stats.pageDigest && stats.pageDigest.length > 0) {
-            const filter = this.filter;
-            // Single page drill-down
-            if (filter && this.isPageIdFilter(filter, stats.pageDigest)) {
-                const page = stats.pageDigest.find(p => p.id === filter);
-                if (page) {
-                    lines.push(...this.renderSinglePage(page, stats.pageDigest.length, stats.pagesLoaded));
-                    lines.push(`reset: view('context')`);
-                    return lines.join("\n");
-                }
-            }
-            // Time bucket or full drill-down
-            if (filter && (this.isTimeBucketFilter(filter) || filter === "full")) {
-                lines.push(...this.renderDrillDown(stats.pageDigest, filter));
-                lines.push(`reset: view('context')`);
+        const fillPct = Math.round(usePct * 100);
+        const headerRight = `${pgCount} pg  ${usedK}K/${budgetK}K  fill:${fillPct}%`;
+        const headerInner = " MEMORY" + " ".repeat(Math.max(1, 46 - 7 - headerRight.length)) + headerRight;
+        lines.push(topBorder());
+        lines.push(row(headerInner));
+        // --- Check for drill-down ---
+        const filter = this.filter;
+        const pages = stats.pageDigest ?? [];
+        if (filter && this.isPageIdFilter(filter, pages)) {
+            const page = pages.find(p => p.id === filter);
+            if (page) {
+                lines.push(divider());
+                lines.push(...this.renderSinglePage(page, pages.length, stats.pagesLoaded));
+                lines.push(row(" reset: view('context')".padEnd(46)));
+                lines.push(bottomBorder());
                 return lines.join("\n");
             }
-            // Default: page symbol grid
-            lines.push(...this.renderPageGrid(stats.pageDigest, w));
         }
-        else if (this.config.showPages) {
-            // No pages yet
-            lines.push("(no pages)");
+        if (filter && (this.isTimeBucketFilter(filter) || filter === "full")) {
+            lines.push(divider());
+            lines.push(...this.renderDrillDown(pages, filter));
+            lines.push(row(" reset: view('context')".padEnd(46)));
+            lines.push(bottomBorder());
+            return lines.join("\n");
         }
-        // Hint line
-        lines.push(`view('context:today|full|pg_id')`);
-        return lines.join("\n");
-    }
-    // --- Page symbol grid ---
-    renderPageGrid(pages, barWidth) {
-        const cellsPerRow = Math.max(1, Math.floor(barWidth / 2));
-        const lines = [];
-        let row = "";
-        let count = 0;
-        for (const p of pages) {
-            let sym;
-            if (p.pinned)
-                sym = "◆";
-            else if (p.loaded)
-                sym = "█";
-            else
-                sym = "·";
-            row += sym + " ";
-            count++;
-            if (count >= cellsPerRow) {
-                lines.push(row.trimEnd());
-                row = "";
-                count = 0;
+        // --- Lane swimlanes ---
+        lines.push(divider());
+        const laneMap = new Map();
+        for (const lane of stats.lanes) {
+            laneMap.set(lane.role, { tokens: lane.tokens, count: lane.count });
+        }
+        const maxLaneTokens = Math.max(1, ...stats.lanes.map(l => l.tokens));
+        for (const [abbr, role] of [["AST", "assistant"], ["USR", "user"], ["SYS", "system"], ["TOL", "tool"]]) {
+            const lane = laneMap.get(role) ?? { tokens: 0, count: 0 };
+            const frac = lane.tokens / maxLaneTokens;
+            const barStr = bar(frac, LANE_BAR_W);
+            const tokStr = lpad(String(lane.tokens), 5);
+            const msgStr = lpad(String(lane.count), 2);
+            const inner = ` ${abbr} ${barStr} ${tokStr} tok  ${msgStr} `;
+            lines.push(row(inner));
+        }
+        // --- Page dot grid ---
+        lines.push(divider());
+        if (pages.length > 0) {
+            lines.push(...this.renderPageDots(pages));
+        }
+        else {
+            lines.push(row(" PAGES  (none)".padEnd(46)));
+        }
+        // --- Active page slots ---
+        const loadedPages = pages.filter(p => p.loaded);
+        if (loadedPages.length > 0) {
+            lines.push(divider());
+            const maxSlotTokens = Math.max(1, ...loadedPages.map(p => p.tokens));
+            for (let i = 0; i < Math.min(4, loadedPages.length); i++) {
+                const p = loadedPages[i];
+                lines.push(this.renderPageSlot(i, p, maxSlotTokens));
             }
         }
-        if (row)
-            lines.push(row.trimEnd());
-        // Legend
-        lines.push("█=loaded ·=free ◆=pinned");
-        return lines;
+        lines.push(bottomBorder());
+        return lines.join("\n");
     }
-    // --- Drill-down views ---
-    renderDrillDown(pages, filter) {
+    // --- Lane bar row ---
+    // Format: ` AST <bar>  TTTTT tok  MM `
+    // Prefix=5, bar=26, suffix=15 → total 46
+    // --- Page dot grid ---
+    renderPageDots(pages) {
         const now = new Date();
         const lines = [];
         // Group by time bucket
@@ -178,65 +166,130 @@ export class ContextMapSource {
             buckets.get(bucket).push(p);
         }
         bucketOrder.sort((a, b) => bucketRank(a) - bucketRank(b));
-        if (filter === "full") {
-            for (const bucket of bucketOrder) {
-                const items = buckets.get(bucket);
-                lines.push(`${bucket} (${items.length}):`);
-                for (const p of items) {
-                    const status = p.loaded ? "★" : p.pinned ? "◆" : "·";
-                    lines.push(`  ${status} ${p.id} ${this.compactSummary(p.summary, p.label, 30)}`);
-                }
-            }
+        // Render bucket rows
+        const labelWidth = 8; // " PAGES  " or "        "
+        let first = true;
+        for (const bucket of bucketOrder) {
+            const items = buckets.get(bucket);
+            const prefix = first ? " PAGES  " : "        ";
+            first = false;
+            // Dot string: ● for loaded, ○ for dark
+            const dots = items.map(p => p.loaded ? "●" : "○").join("").slice(0, DOTS_PER_ROW);
+            const paddedDots = dots.padEnd(DOTS_PER_ROW);
+            // Bucket label with count, right portion
+            const bucketLabel = ` ${bucket}:${lpad(String(items.length), 2)}`;
+            const suffix = bucketLabel.padEnd(46 - labelWidth - DOTS_PER_ROW);
+            lines.push(row(prefix + paddedDots + suffix));
+        }
+        // Legend line
+        const legend = "        ●=loaded ○=dark  pin:" + stats_pinnedCount(pages);
+        lines.push(row(legend.padEnd(46)));
+        return lines;
+    }
+    // --- Page slot ---
+    renderPageSlot(idx, page, maxTokens) {
+        // Format: ` [N] pg_XXXX  lll HH:MM  TTTTTt  <bar>  `
+        const idShort = page.id.length > 7 ? page.id.slice(0, 7) : page.id;
+        const createdDate = new Date(page.createdAt);
+        const hh = lpad(String(createdDate.getHours()), 2).replace(/ /g, "0");
+        const mm = lpad(String(createdDate.getMinutes()), 2).replace(/ /g, "0");
+        const timeStr = `${hh}:${mm}`;
+        // Determine lane from page label/summary (heuristic: look for role keywords)
+        const lane = this.guessLane(page);
+        const tokStr = lpad(String(page.tokens), 5) + "t";
+        const frac = page.tokens / maxTokens;
+        const barStr = bar(frac, SLOT_BAR_W);
+        // ` [0] pg_XXXX  lll HH:MM  TTTTTt  ████░░░░░░░░ `
+        // Build: ` [N] ` (5) + id (7) + `  ` (2) + lane (3) + ` ` (1) + time (5) + `  ` (2) + tok (6) + `  ` (2) + bar (12) + ` ` (1) = 46
+        const inner = ` [${idx}] ${rpad(idShort, 7)}  ${rpad(lane, 3)} ${timeStr}  ${tokStr}  ${barStr} `;
+        return row(inner);
+    }
+    /** Best-effort lane guess from page content. */
+    guessLane(page) {
+        const s = (page.label + " " + page.summary).toLowerCase();
+        if (s.includes("tool") || s.includes("function"))
+            return "tol";
+        if (s.includes("user") || s.includes("human"))
+            return "usr";
+        if (s.includes("system") || s.includes("sys"))
+            return "sys";
+        return "ast";
+    }
+    // --- Single page drill-down ---
+    renderSinglePage(page, totalPages, loadedCount) {
+        const lines = [];
+        lines.push(row(` page: ${page.id}`.padEnd(46)));
+        lines.push(row(`   tokens: ${(page.tokens / 1000).toFixed(1)}K`.padEnd(46)));
+        const status = page.loaded ? "loaded *" : page.pinned ? "pinned" : "unloaded";
+        lines.push(row(`   status: ${status}`.padEnd(46)));
+        lines.push(row(`   created: ${page.createdAt}`.padEnd(46)));
+        const summary = this.compactSummary(page.summary, page.label, 40);
+        lines.push(row(`   ${summary}`.padEnd(46)));
+        if (page.loaded) {
+            lines.push(row(`   unload: unref('${page.id}')`.padEnd(46)));
         }
         else {
-            // Show only the matching bucket expanded, others collapsed
-            for (const bucket of bucketOrder) {
-                const items = buckets.get(bucket);
-                if (bucket === filter) {
-                    lines.push(`${bucket} (${items.length}):`);
-                    for (const p of items) {
-                        const status = p.loaded ? "★" : p.pinned ? "◆" : "·";
-                        const tokK = (p.tokens / 1000).toFixed(1);
-                        lines.push(`  ${status} ${p.id} (${tokK}K) ${this.compactSummary(p.summary, p.label)}`);
-                    }
-                }
-                else {
-                    lines.push(`${bucket} (${items.length})`);
-                }
-            }
+            lines.push(row(`   load: ref('${page.id}')`.padEnd(46)));
         }
         return lines;
     }
-    renderSinglePage(page, totalPages, loadedCount) {
+    // --- Time-bucket drill-down ---
+    renderDrillDown(pages, filter) {
+        const now = new Date();
         const lines = [];
-        lines.push(`page: ${page.id}`);
-        lines.push(`  tokens: ${(page.tokens / 1000).toFixed(1)}K`);
-        lines.push(`  status: ${page.loaded ? "loaded ★" : page.pinned ? "pinned ◆" : "unloaded"}`);
-        lines.push(`  created: ${page.createdAt}`);
-        lines.push(`  ${this.compactSummary(page.summary, page.label, 42)}`);
-        if (page.loaded) {
-            lines.push(`  unload: unref('${page.id}')`);
+        const buckets = new Map();
+        const bucketOrder = [];
+        for (const p of pages) {
+            const bucket = timeBucket(p.createdAt, now);
+            if (!buckets.has(bucket)) {
+                buckets.set(bucket, []);
+                bucketOrder.push(bucket);
+            }
+            buckets.get(bucket).push(p);
+        }
+        bucketOrder.sort((a, b) => bucketRank(a) - bucketRank(b));
+        if (filter === "full") {
+            for (const bucket of bucketOrder) {
+                const items = buckets.get(bucket);
+                lines.push(row(` ${bucket} (${items.length}):`.padEnd(46)));
+                for (const p of items) {
+                    const sym = p.loaded ? "*" : p.pinned ? "+" : ".";
+                    const detail = `  ${sym} ${p.id} ${this.compactSummary(p.summary, p.label, 28)}`;
+                    lines.push(row(detail.padEnd(46)));
+                }
+            }
         }
         else {
-            lines.push(`  load: ref('${page.id}')`);
+            for (const bucket of bucketOrder) {
+                const items = buckets.get(bucket);
+                if (bucket === filter) {
+                    lines.push(row(` ${bucket} (${items.length}):`.padEnd(46)));
+                    for (const p of items) {
+                        const sym = p.loaded ? "*" : p.pinned ? "+" : ".";
+                        const tokK = (p.tokens / 1000).toFixed(1);
+                        const detail = `  ${sym} ${p.id} (${tokK}K) ${this.compactSummary(p.summary, p.label, 22)}`;
+                        lines.push(row(detail.padEnd(46)));
+                    }
+                }
+                else {
+                    lines.push(row(` ${bucket} (${items.length})`.padEnd(46)));
+                }
+            }
         }
         return lines;
     }
     // --- Basic Memory (fallback) ---
     renderBasic(stats) {
-        const w = this.config.barWidth;
-        const estimatedBudget = 128000;
-        const used = stats.totalTokensEstimate;
-        const free = Math.max(0, estimatedBudget - used);
-        const usedChars = Math.max(used > 0 ? 1 : 0, Math.round((used / estimatedBudget) * w));
-        const freeChars = Math.max(0, w - usedChars);
         const lines = [];
-        lines.push("▒".repeat(usedChars) + "░".repeat(freeChars) + `  ${(used / 1000).toFixed(0)}K`);
-        lines.push(`${stats.type} | ${stats.totalMessages} msgs`);
+        const usedK = (stats.totalTokensEstimate / 1000).toFixed(0);
+        const headerInner = ` MEMORY  ${usedK}K  ${stats.totalMessages} msgs`;
+        lines.push(topBorder());
+        lines.push(row(headerInner.padEnd(46)));
+        lines.push(bottomBorder());
         return lines.join("\n");
     }
     // --- Helpers ---
-    compactSummary(summary, label, maxLen = 80) {
+    compactSummary(summary, label, maxLen = 40) {
         let s = summary;
         s = s.replace(/^\[Summary of \d+ messages:[^\]]*\]?\s*/i, "");
         s = s.replace(/^\[Pending summary:[^\]]*\]?\s*/i, "");
@@ -249,26 +302,15 @@ export class ContextMapSource {
         return s.length > maxLen ? s.slice(0, maxLen - 3) + "..." : s;
     }
     isTimeBucketFilter(filter) {
-        return filter === "today" || filter === "yesterday" || filter === "older" || /^\d+d ago$/.test(filter);
+        return filter === "today" || filter === "yest" || filter === "yesterday" ||
+            filter === "older" || /^\d+d$/.test(filter) || /^\d+d ago$/.test(filter);
     }
     isPageIdFilter(filter, pages) {
         return pages.some(p => p.id === filter);
     }
-    shortModel(model) {
-        if (model.includes("opus"))
-            return "opus";
-        if (model.includes("sonnet"))
-            return "sonnet";
-        if (model.includes("haiku"))
-            return "haiku";
-        if (model.includes("gpt-4"))
-            return "gpt4";
-        if (model.includes("gpt-3"))
-            return "gpt3";
-        if (model.includes("llama"))
-            return "llama";
-        if (model.includes("gemini"))
-            return "gemini";
-        return model.length > 12 ? model.slice(0, 12) : model;
-    }
+}
+/** Count pinned pages. */
+function stats_pinnedCount(pages) {
+    const count = pages.filter(p => p.pinned).length;
+    return String(count);
 }

@@ -841,8 +841,6 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
     const sensory = new SensoryMemory(inner, { totalBudget: 900 });
     const contextMaxTokens = 500;
     const contextMap = new ContextMapSource(inner, {
-      barWidth: 32,
-      showPages: true,
       maxChars: Math.floor(contextMaxTokens * 2.8),
     });
     sensory.addChannel({
@@ -852,8 +850,10 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       content: "",
       enabled: true,
       source: contextMap,
+      width: 48,
+      height: 24,
     });
-    const temporal = new TemporalSource({ barWidth: 32 });
+    const temporal = new TemporalSource();
     sensory.addChannel({
       name: "time",
       maxTokens: 200,
@@ -861,6 +861,8 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       content: "",
       enabled: true,
       source: temporal,
+      width: 48,
+      height: 22,
     });
     // "tasks" channel — agent-switchable via <view:tasks>
     const taskSource = new TaskSource();
@@ -911,6 +913,8 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       content: "",
       enabled: true,
       source: configSource,
+      width: 48,
+      height: 17,
     });
     // "self" channel — model-writable canvas (via write_self tool)
     const selfSource = new SelfSource();
@@ -921,6 +925,8 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       content: "",
       enabled: false, // model activates with @@view('self')@@ or @@sense('self','on')@@
       source: selfSource,
+      width: 48,
+      height: 20,
     });
     // Configure default camera slots
     sensory.setSlot(0, "context");
@@ -1768,6 +1774,12 @@ async function executeTurn(
 
     // Poll sensory sources (renders fresh context map)
     if (memory instanceof SensoryMemory) {
+      // Update temporal source with current round number
+      const ts = memory.getChannelSource("time");
+      if (ts && ts instanceof TemporalSource) {
+        (ts as TemporalSource).setTurnCount(round);
+        (ts as TemporalSource).setMaxTurns(cfg.maxToolRounds);
+      }
       await memory.pollSources();
     }
 

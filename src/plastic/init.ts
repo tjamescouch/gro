@@ -35,8 +35,6 @@ function mirrorWithCopies(src: string, dest: string): void {
     const srcPath = join(src, entry.name);
     const destPath = join(dest, entry.name);
     if (entry.isDirectory()) {
-      // Skip the plastic directory itself to avoid circular refs
-      if (entry.name === "plastic") continue;
       mirrorWithCopies(srcPath, destPath);
     } else {
       if (!existsSync(destPath)) {

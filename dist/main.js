@@ -2719,12 +2719,14 @@ const _mainError = (e) => {
 if (process.argv.includes("--plastic")) {
     process.env.GRO_PLASTIC = "1";
 }
-if (process.env.GRO_PLASTIC) {
+if (process.env.GRO_PLASTIC && !process.env.GRO_PLASTIC_BOOTED) {
+    // First load — divert to bootstrap which loads overlay/main.js
     import("./plastic/bootstrap.js").then(m => m.boot()).catch(e => {
         console.error("[PLASTIC] Bootstrap failed, falling back to stock:", e);
         main().catch(_mainError);
     });
 }
 else {
+    // Normal path, or overlay already loaded (GRO_PLASTIC_BOOTED=1)
     main().catch(_mainError);
 }

@@ -7,7 +7,7 @@
  *
  * Training-only infrastructure — never active in production.
  */
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -32,6 +32,9 @@ export async function boot() {
     }
     try {
         console.log("[PLASTIC] Booting from overlay...");
+        // Signal to the overlay's main.js that we're already inside the overlay —
+        // prevents it from re-entering the bootstrap divert at module load time
+        process.env.GRO_PLASTIC_BOOTED = "1";
         const mod = await import(pathToFileURL(overlayMain).href);
         if (typeof mod.main !== "function") {
             throw new Error("overlay/main.js does not export main()");
@@ -47,6 +50,11 @@ export async function boot() {
         }
         catch { }
         console.error(`[PLASTIC] Overlay crashed: ${errObj.message}`);
+        console.error("[PLASTIC] Wiping corrupted overlay — will re-init on next boot.");
+        try {
+            rmSync(OVERLAY_DIR, { recursive: true, force: true });
+        }
+        catch { }
         console.error("[PLASTIC] Falling back to stock code.");
         await runStock();
     }

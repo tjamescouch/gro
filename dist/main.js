@@ -1622,11 +1622,24 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     Logger.warn("Stream marker: resummarize — semantic retrieval not available");
                 }
             }
-            else if (marker.name === "reboot" && process.env.GRO_PLASTIC) {
-                Logger.telemetry("Stream marker: @@reboot@@ — saving state and exiting for restart");
-                const sid = sessionId ?? "plastic";
-                saveSensorySnapshot(memory, sid);
-                memory.save(sid).then(() => process.exit(75)).catch(() => process.exit(75));
+            else if (marker.name === "reboot") {
+                if (!process.env.GRO_PLASTIC) {
+                    Logger.warn("Stream marker: @@reboot@@ — ignored (not in PLASTIC mode)");
+                }
+                else {
+                    Logger.telemetry("Stream marker: @@reboot@@ — saving state and exiting for restart");
+                    const sid = sessionId ?? "plastic";
+                    try {
+                        saveSensorySnapshot(memory, sid);
+                    }
+                    catch { }
+                    memory.save(sid).finally(() => process.exit(75));
+                    // Safety: exit even if save() never settles
+                    setTimeout(() => {
+                        Logger.warn("@@reboot@@ save timed out — forcing exit");
+                        process.exit(75);
+                    }, 3000);
+                }
             }
         };
         // Select model tier based on current thinking budget.

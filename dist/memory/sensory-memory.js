@@ -135,10 +135,14 @@ export class SensoryMemory extends AgentMemory {
     getSlot(slot) {
         return this.slots[slot];
     }
-    /** Switch a camera slot. If channelName exists, activate it. */
+    /** Switch a camera slot. If channelName exists and is viewable, activate it. */
     switchView(channelName, slot = 0) {
         if (!this.channels.has(channelName)) {
             Logger.warn(`[Sensory] switchView: unknown channel '${channelName}'`);
+            return;
+        }
+        if (SensoryMemory.NON_VIEWABLE.has(channelName)) {
+            Logger.warn(`[Sensory] switchView: '${channelName}' is canvas-only, not slot-assignable`);
             return;
         }
         this.setSlot(slot, channelName);
@@ -186,13 +190,31 @@ export class SensoryMemory extends AgentMemory {
     getSlots() {
         return [...this.slots];
     }
-    /** Restore slot assignments (from persistence). */
+    /** Restore slot assignments (from persistence). Rejects non-viewable or duplicate entries. */
     restoreSlots(slots) {
-        this.slots = [...slots];
+        const validated = [...slots];
+        const seen = new Set();
+        let corrupted = false;
+        for (let i = 0; i < 3; i++) {
+            const name = validated[i];
+            if (name === null)
+                continue;
+            if (!this.channels.has(name) || SensoryMemory.NON_VIEWABLE.has(name) || seen.has(name)) {
+                corrupted = true;
+                validated[i] = null;
+            }
+            else {
+                seen.add(name);
+            }
+        }
+        if (corrupted) {
+            Logger.warn(`[Sensory] restoreSlots: corrupted state ${JSON.stringify(slots)}, sanitized to ${JSON.stringify(validated)}`);
+        }
+        this.slots = validated;
     }
-    /** Cycle slot0 to the next/previous channel in registration order. */
+    /** Cycle slot0 to the next/previous viewable channel in registration order. */
     cycleSlot0(direction) {
-        const names = this.getChannelNames();
+        const names = this.getChannelNames().filter(n => !SensoryMemory.NON_VIEWABLE.has(n));
         if (names.length === 0)
             return;
         const current = this.slots[0];
@@ -420,3 +442,5 @@ export class SensoryMemory extends AgentMemory {
         // Handled by inner memory
     }
 }
+/** Channels that cannot be assigned to camera slots (canvas-only). */
+SensoryMemory.NON_VIEWABLE = new Set(["self"]);

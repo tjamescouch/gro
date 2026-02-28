@@ -176,10 +176,17 @@ export class SensoryMemory extends AgentMemory {
     return this.slots[slot];
   }
 
-  /** Switch a camera slot. If channelName exists, activate it. */
+  /** Channels that cannot be assigned to camera slots (canvas-only). */
+  private static readonly NON_VIEWABLE = new Set(["self"]);
+
+  /** Switch a camera slot. If channelName exists and is viewable, activate it. */
   switchView(channelName: string, slot: 0 | 1 | 2 = 0): void {
     if (!this.channels.has(channelName)) {
       Logger.warn(`[Sensory] switchView: unknown channel '${channelName}'`);
+      return;
+    }
+    if (SensoryMemory.NON_VIEWABLE.has(channelName)) {
+      Logger.warn(`[Sensory] switchView: '${channelName}' is canvas-only, not slot-assignable`);
       return;
     }
     this.setSlot(slot, channelName);
@@ -234,14 +241,30 @@ export class SensoryMemory extends AgentMemory {
     return [...this.slots] as [string | null, string | null, string | null];
   }
 
-  /** Restore slot assignments (from persistence). */
+  /** Restore slot assignments (from persistence). Rejects non-viewable or duplicate entries. */
   restoreSlots(slots: [string | null, string | null, string | null]): void {
-    this.slots = [...slots] as [string | null, string | null, string | null];
+    const validated = [...slots] as [string | null, string | null, string | null];
+    const seen = new Set<string>();
+    let corrupted = false;
+    for (let i = 0; i < 3; i++) {
+      const name = validated[i];
+      if (name === null) continue;
+      if (!this.channels.has(name) || SensoryMemory.NON_VIEWABLE.has(name) || seen.has(name)) {
+        corrupted = true;
+        validated[i] = null;
+      } else {
+        seen.add(name);
+      }
+    }
+    if (corrupted) {
+      Logger.warn(`[Sensory] restoreSlots: corrupted state ${JSON.stringify(slots)}, sanitized to ${JSON.stringify(validated)}`);
+    }
+    this.slots = validated;
   }
 
-  /** Cycle slot0 to the next/previous channel in registration order. */
+  /** Cycle slot0 to the next/previous viewable channel in registration order. */
   cycleSlot0(direction: "next" | "prev"): void {
-    const names = this.getChannelNames();
+    const names = this.getChannelNames().filter(n => !SensoryMemory.NON_VIEWABLE.has(n));
     if (names.length === 0) return;
     const current = this.slots[0];
     let idx = current ? names.indexOf(current) : -1;

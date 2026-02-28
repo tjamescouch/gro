@@ -247,6 +247,9 @@ export class ContextMapSource {
             const shown = items.slice(0, MAX_ROWS_PER_BUCKET);
             for (const p of shown) {
                 lines.push(this.renderPageRow(p));
+                const sumLine = this.renderSummaryLine(p);
+                if (sumLine)
+                    lines.push(sumLine);
             }
             if (items.length > MAX_ROWS_PER_BUCKET) {
                 lines.push(row(`  [+${items.length - MAX_ROWS_PER_BUCKET} more pages]`));
@@ -277,6 +280,23 @@ export class ContextMapSource {
         const snippetStr = `"${snippet}"`;
         const inner = `  ${idShort}  ${glyph}   ${time}  ${msgs}  ${toks}  ${status} ${snippetStr}`;
         return row(inner);
+    }
+    /** Render an inline summary line under a page row. Returns null if no summary. */
+    renderSummaryLine(p) {
+        if (!p.summary)
+            return null;
+        // Strip boilerplate prefixes
+        let s = p.summary;
+        s = s.replace(/^\[Summary of \d+ messages:[^\]]*\]?\s*/i, "");
+        s = s.replace(/^\[Pending summary:[^\]]*\]?\s*/i, "");
+        s = s.replace(/^\.{3}\s*/, "");
+        s = s.trim();
+        if (!s || s.length < 3)
+            return null;
+        // Prefix: `   └ ` = 5 chars. Max summary = IW - 5 = 73 chars.
+        const maxLen = IW - 5;
+        const clipped = s.length > maxLen ? s.slice(0, maxLen - 1) + "…" : s;
+        return row(`   └ ${clipped}`);
     }
     // --- Section 5: Size histogram ---
     renderHistogram(pages, lines) {
@@ -355,6 +375,9 @@ export class ContextMapSource {
                 lines.push(row(` ${bucket} (${items.length}):`));
                 for (const p of items) {
                     lines.push(this.renderPageRow(p));
+                    const sumLine = this.renderSummaryLine(p);
+                    if (sumLine)
+                        lines.push(sumLine);
                 }
             }
         }
@@ -365,6 +388,9 @@ export class ContextMapSource {
                     lines.push(row(` ${bucket} (${items.length}):`));
                     for (const p of items) {
                         lines.push(this.renderPageRow(p));
+                        const sumLine = this.renderSummaryLine(p);
+                        if (sumLine)
+                            lines.push(sumLine);
                     }
                 }
                 else {

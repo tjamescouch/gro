@@ -33,13 +33,12 @@ function readVersion(): string {
   try {
     selfDir = dirname(fileURLToPath(import.meta.url));
   } catch {
-    selfDir = process.cwd();
+    return "unknown";
   }
 
   const candidates = [
     join(selfDir, "..", "package.json"),       // from dist/tools/ or src/tools/
     join(selfDir, "..", "..", "package.json"),  // from deeper nesting
-    join(process.cwd(), "package.json"),
   ];
   for (const p of candidates) {
     if (existsSync(p)) {

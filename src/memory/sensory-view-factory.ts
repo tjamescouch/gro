@@ -127,7 +127,7 @@ export function createDefaultFactory(): SensoryViewFactory {
   );
 
   factory.register(
-    { name: "self", maxTokens: 200, width: 80, height: 20, enabled: false, updateMode: "every_turn", viewable: false },
+    { name: "self", maxTokens: 200, width: 80, height: 20, enabled: false, updateMode: "every_turn", viewable: true },
     () => new SelfSource(),
   );
 

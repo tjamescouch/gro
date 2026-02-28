@@ -63,6 +63,6 @@ export function createDefaultFactory() {
     factory.register({ name: "spend", maxTokens: 100, width: 48, height: 12, enabled: false, updateMode: "every_turn", viewable: true }, (deps) => new SpendSource(deps.spendMeter));
     factory.register({ name: "violations", maxTokens: 80, width: 48, height: 12, enabled: false, updateMode: "every_turn", viewable: true }, () => new ViolationsSource(null));
     factory.register({ name: "config", maxTokens: 120, width: 80, height: 17, enabled: true, updateMode: "every_turn", viewable: true }, () => new ConfigSource());
-    factory.register({ name: "self", maxTokens: 200, width: 80, height: 20, enabled: false, updateMode: "every_turn", viewable: false }, () => new SelfSource());
+    factory.register({ name: "self", maxTokens: 200, width: 80, height: 20, enabled: false, updateMode: "every_turn", viewable: true }, () => new SelfSource());
     return factory;
 }

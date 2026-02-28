@@ -287,13 +287,13 @@ describe("SensoryViewFactory", () => {
     assert.ok(names.includes("violations"), "should include violations");
   });
 
-  test("self is non-viewable, others are viewable", () => {
+  test("all channels are viewable", () => {
     const factory = createDefaultFactory();
     const nonViewable = factory.nonViewableNames();
 
-    assert.deepStrictEqual(nonViewable, ["self"], "only 'self' should be non-viewable");
+    assert.deepStrictEqual(nonViewable, [], "no channels should be non-viewable");
 
-    for (const name of ["context", "time", "config", "tasks", "social", "spend", "violations"]) {
+    for (const name of ["context", "time", "config", "tasks", "social", "spend", "violations", "self"]) {
       const spec = factory.getSpec(name);
       assert.ok(spec, `${name} should have a spec`);
       assert.strictEqual(spec!.viewable, true, `${name} should be viewable`);
@@ -326,7 +326,7 @@ describe("SensoryViewFactory", () => {
 
     const self = factory.getSpec("self");
     assert.ok(self);
-    assert.strictEqual(self!.viewable, false);
+    assert.strictEqual(self!.viewable, true);
     assert.strictEqual(self!.enabled, false);
 
     assert.strictEqual(factory.getSpec("nonexistent"), undefined);

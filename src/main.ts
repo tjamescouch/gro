@@ -852,7 +852,7 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       enabled: true,
       source: contextMap,
     });
-    const temporal = new TemporalSource({ barWidth: 16, showChannels: true });
+    const temporal = new TemporalSource({ barWidth: 32 });
     sensory.addChannel({
       name: "time",
       maxTokens: 200,

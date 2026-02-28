@@ -199,10 +199,13 @@ export class ContextMapSource implements SensorySource {
    */
   private compactSummary(summary: string, label: string, maxLen = 80): string {
     let s = summary;
-    // Strip "[Summary of N messages: label] content" → keep content
-    s = s.replace(/^\[Summary of \d+ messages:[^\]]*\]\s*/i, "");
-    // Strip "[Pending summary: ...]"
-    s = s.replace(/^\[Pending summary:[^\]]*\]\s*/i, "");
+    // Strip "[Summary of N messages: ...]" or truncated "[Summary of N messages: ..."
+    // The closing ] may be missing if virtual-memory truncated the summary to 80 chars
+    s = s.replace(/^\[Summary of \d+ messages:[^\]]*\]?\s*/i, "");
+    // Strip "[Pending summary: ...]" (same truncation-safe pattern)
+    s = s.replace(/^\[Pending summary:[^\]]*\]?\s*/i, "");
+    // Strip leading "..." left by truncation
+    s = s.replace(/^\.{3}\s*/, "");
     // If nothing left, derive from label
     if (!s || s.length < 3) {
       // Strip ISO timestamps from label for compactness

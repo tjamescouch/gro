@@ -790,7 +790,7 @@ function wrapWithSensory(inner) {
         });
         sensory.addChannel({
             name: "context",
-            maxTokens: 300,
+            maxTokens: 350,
             updateMode: "every_turn",
             content: "",
             enabled: true,

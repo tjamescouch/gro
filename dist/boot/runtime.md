@@ -326,7 +326,7 @@ A 3-slot camera system injects a `--- SENSORY BUFFER ---` block after the system
 
 | Channel | Default slot | Tokens | Description |
 |---------|-------------|--------|-------------|
-| context | slot 0 | 300 | Context map — page index, active pages, memory stats |
+| context | slot 0 | 350 | Context map — page index, active pages, memory stats |
 | time | slot 1 | 200 | Temporal awareness — local time, uptime, horizon bar |
 | config | slot 2 | 120 | Runtime state — model, sampling params (with clamping notes), thinking level, autofill, violations summary |
 | social | — | 200 | Social feed — recent messages from connected services |

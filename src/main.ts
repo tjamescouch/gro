@@ -845,7 +845,7 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
     });
     sensory.addChannel({
       name: "context",
-      maxTokens: 300,
+      maxTokens: 350,
       updateMode: "every_turn",
       content: "",
       enabled: true,

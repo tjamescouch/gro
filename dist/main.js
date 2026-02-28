@@ -1082,15 +1082,18 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     // Thinking level: 0.0 = idle (haiku), 1.0 = full (opus + max budget).
     // Decays toward THINKING_MEAN each round without 🦉 — agents coast at mid-tier.
     // Emit 🦉 to go into the phone booth; let it decay to come back out.
-    let activeThinkingBudget = 0.5;
+    // Initialize from runtimeState so the decayed value persists across turns.
+    let activeThinkingBudget = runtimeState.getThinkingBudget();
     let modelExplicitlySet = false; // true after @@model-change@@, suppresses tier auto-select for current round
     // Note: wasModelExplicitlyPassed() is used for session restore (don't override CLI model
     // with saved session model) but does NOT lock tier auto-select. The thinking lever
     // must be able to shift model tiers even when -m was passed.
     // Sampling parameters — controlled via 🌡️, ⚙️, ⚙️ markers
-    let activeTemperature = undefined;
-    let activeTopK = undefined;
-    let activeTopP = undefined;
+    // Initialize from runtimeState so marker-set values persist across turns.
+    const prevTurn = runtimeState.getTurn();
+    let activeTemperature = prevTurn.activeTemperature;
+    let activeTopK = prevTurn.activeTopK;
+    let activeTopP = prevTurn.activeTopP;
     /** Select model tier based on thinking budget and provider.
      * Loads tier ladders from providers/*.json config files.
      * When cfg.providers is set, selects across multiple providers.

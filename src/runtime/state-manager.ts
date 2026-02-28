@@ -173,7 +173,7 @@ export class RuntimeStateManager {
         memoryType: cfg.memoryType,
         model: cfg.model,
         provider: cfg.provider,
-        thinkingLevel: cfg.thinkingLevel,
+        thinkingLevel: this.turn.activeThinkingBudget,
       },
       spend: {
         cost: spendMeter.cost(),

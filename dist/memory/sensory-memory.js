@@ -191,35 +191,34 @@ export class SensoryMemory extends AgentMemory {
         return [...this.slots];
     }
     /** Restore slot assignments (from persistence). Rejects non-viewable or duplicate entries,
-     *  backfills empty slots from defaults. */
+     *  backfills null/empty slots from defaults. */
     restoreSlots(slots) {
         const validated = [...slots];
         const seen = new Set();
-        let corrupted = false;
+        // Pass 1: strip invalid entries
         for (let i = 0; i < 3; i++) {
             const name = validated[i];
             if (name === null)
                 continue;
             if (!this.channels.has(name) || SensoryMemory.NON_VIEWABLE.has(name) || seen.has(name)) {
-                corrupted = true;
                 validated[i] = null;
             }
             else {
                 seen.add(name);
             }
         }
-        // Backfill empty slots from defaults (only if the default channel isn't already assigned)
-        if (corrupted) {
-            for (let i = 0; i < 3; i++) {
-                if (validated[i] === null) {
-                    const fallback = SensoryMemory.DEFAULT_SLOTS[i];
-                    if (this.channels.has(fallback) && !seen.has(fallback)) {
-                        validated[i] = fallback;
-                        seen.add(fallback);
-                    }
+        // Pass 2: backfill any null slot from defaults
+        for (let i = 0; i < 3; i++) {
+            if (validated[i] === null) {
+                const fallback = SensoryMemory.DEFAULT_SLOTS[i];
+                if (this.channels.has(fallback) && !seen.has(fallback)) {
+                    validated[i] = fallback;
+                    seen.add(fallback);
                 }
             }
-            Logger.warn(`[Sensory] restoreSlots: corrupted state ${JSON.stringify(slots)}, healed to ${JSON.stringify(validated)}`);
+        }
+        if (JSON.stringify(validated) !== JSON.stringify(slots)) {
+            Logger.warn(`[Sensory] restoreSlots: healed ${JSON.stringify(slots)} → ${JSON.stringify(validated)}`);
         }
         this.slots = validated;
     }

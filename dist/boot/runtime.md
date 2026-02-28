@@ -240,6 +240,8 @@ The **page index** is always visible in the `[context]` sensory channel. It list
 
 Pages you explicitly `@@unref@@` are excluded from auto-fill — the runtime respects your intent.
 
+**Ref-feedback:** When you explicitly load a page with `@@ref@@`, the runtime treats that as a relevance signal. On subsequent turns, auto-fill will boost pages that are semantically similar to your recent explicit refs. This decays over time — recent refs have the strongest effect. You don't need to do anything special; just ref pages you find useful and the system learns from your choices within the session.
+
 ### Memory Navigation
 
 You have three ways to find information in pages. Use the right one:

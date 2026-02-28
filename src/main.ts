@@ -1267,6 +1267,8 @@ async function executeTurn(
             const ids = marker.arg.split(",").map(s => s.trim()).filter(Boolean);
             for (const id of ids) {
               (inner as any).ref(id);
+              // Record explicit ref for feedback-driven retrieval
+              if (semanticRetrieval) semanticRetrieval.recordExplicitRef(id);
             }
             Logger.telemetry(`Stream marker: ref('${marker.arg}') — ${ids.length} page(s) will load next turn`);
           }

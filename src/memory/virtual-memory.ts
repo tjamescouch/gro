@@ -1843,6 +1843,7 @@ export class VirtualMemory extends AgentMemory {
         loaded: this.activePageIds.has(page.id),
         pinned: this.pinnedPageIds.has(page.id),
         summary,
+        createdAt: page.createdAt,
       };
     });
 

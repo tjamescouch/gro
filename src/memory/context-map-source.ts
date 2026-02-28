@@ -14,6 +14,25 @@
 import type { AgentMemory, MemoryStats, VirtualMemoryStats, PageDigestEntry } from "./agent-memory.js";
 import type { SensorySource } from "./sensory-memory.js";
 
+// --- Time bucketing helpers ---
+
+function timeBucket(createdAt: string, now: Date): string {
+  const d = new Date(createdAt);
+  const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000);
+  if (diffDays <= 0) return "today";
+  if (diffDays === 1) return "yesterday";
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return "older";
+}
+
+function bucketRank(bucket: string): number {
+  if (bucket === "today") return 0;
+  if (bucket === "yesterday") return 1;
+  if (bucket === "older") return 100;
+  const m = bucket.match(/^(\d+)d ago$/);
+  return m ? parseInt(m[1], 10) : 50;
+}
+
 export interface ContextMapConfig {
   /** Width of the bar chart in characters (default: 32) */
   barWidth?: number;
@@ -164,21 +183,67 @@ export class ContextMapSource implements SensorySource {
     }
   }
 
-  /** Render page digest as a compact listing the agent can browse and ref from. */
+  /** Render page digest as a time-grouped tree the agent can browse and ref from. */
   private renderPageDigest(pages: PageDigestEntry[]): string {
-    const lines: string[] = ["pages:"];
-    // Show loaded pages first, then unloaded, capped at 12 to stay within token budget
-    const sorted = [...pages].sort((a, b) => (b.loaded ? 1 : 0) - (a.loaded ? 1 : 0));
-    const shown = sorted.slice(0, 12);
-    for (const p of shown) {
-      const status = p.loaded ? "★" : p.pinned ? "📌" : "·";
+    const now = new Date();
+    const loaded: PageDigestEntry[] = [];
+    const unloaded: PageDigestEntry[] = [];
+    let totalTokens = 0;
+
+    for (const p of pages) {
+      if (p.loaded || p.pinned) loaded.push(p);
+      else unloaded.push(p);
+      if (p.loaded) totalTokens += p.tokens;
+    }
+
+    const budgetK = "18"; // page slot budget ~18K
+    const usedK = (totalTokens / 1000).toFixed(1);
+    const lines: string[] = [`pages: ${pages.length} total, ${loaded.length} loaded (${usedK}K/${budgetK}K budget)`];
+
+    // Loaded/pinned pages always shown individually
+    for (const p of loaded) {
+      const status = p.loaded ? "★" : "📌";
       const tokK = (p.tokens / 1000).toFixed(1);
       lines.push(`  ${status} ${p.id} (${tokK}K) ${p.summary}`);
     }
-    if (pages.length > 12) {
-      lines.push(`  ... +${pages.length - 12} more`);
+
+    // Group unloaded by time bucket
+    if (unloaded.length > 0) {
+      const buckets = new Map<string, PageDigestEntry[]>();
+      const bucketOrder: string[] = [];
+      for (const p of unloaded) {
+        const bucket = timeBucket(p.createdAt, now);
+        if (!buckets.has(bucket)) {
+          buckets.set(bucket, []);
+          bucketOrder.push(bucket);
+        }
+        buckets.get(bucket)!.push(p);
+      }
+
+      // Sort bucket order: today first, then yesterday, then Nd ago ascending, then older
+      bucketOrder.sort((a, b) => bucketRank(a) - bucketRank(b));
+
+      let firstBucketExpanded = false;
+      for (const bucket of bucketOrder) {
+        const items = buckets.get(bucket)!;
+        if (!firstBucketExpanded) {
+          // Expand the most recent bucket with up to 5 entries
+          firstBucketExpanded = true;
+          lines.push(`  ${bucket} (${items.length}):`);
+          const shown = items.slice(0, 5);
+          for (const p of shown) {
+            const tokK = (p.tokens / 1000).toFixed(1);
+            lines.push(`    · ${p.id} (${tokK}K) ${p.summary}`);
+          }
+          if (items.length > 5) lines.push(`    ... +${items.length - 5} more`);
+        } else {
+          // Collapse older buckets to count only
+          lines.push(`  ${bucket} (${items.length})`);
+        }
+      }
     }
-    lines.push(`load: @@ref('id1,id2')@@  release: @@unref('id')@@`);
+
+    lines.push(`load: @@ref('id1,id2')@@  search: memory_grep`);
     return lines.join("\n");
   }
 

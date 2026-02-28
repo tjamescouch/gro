@@ -136,6 +136,53 @@ export class PageSearchIndex {
         const deduped = deduplicateResults(candidates);
         return deduped.slice(0, k);
     }
+    /**
+     * Search with ref-feedback boosts. Same as search() but applies an additive
+     * boost based on embedding similarity to recently-ref'd pages.
+     * Threshold filters on raw score only — boosts can lift ranking but not
+     * synthesize relevance from nothing.
+     */
+    async searchWithRefBoosts(query, k = 5, threshold = 0.5, refBoosts) {
+        if (this.entries.size === 0)
+            return [];
+        if (refBoosts.length === 0)
+            return this.search(query, k, threshold);
+        const queryEmbeddings = await this.provider.embed([query]);
+        if (queryEmbeddings.length === 0 || queryEmbeddings[0].length === 0)
+            return [];
+        const queryVec = queryEmbeddings[0];
+        // Collect ref embeddings
+        const refEmbeddings = [];
+        for (const rb of refBoosts) {
+            const entry = this.entries.get(rb.pageId);
+            if (entry)
+                refEmbeddings.push({ embedding: entry.embedding, weight: rb.weight });
+        }
+        // Score all entries
+        const scored = [];
+        for (const [pageId, entry] of this.entries) {
+            const rawScore = cosineSimilarity(queryVec, entry.embedding);
+            if (rawScore < threshold)
+                continue;
+            // Compute ref boost: max similarity to any ref embedding, scaled by weight
+            let refBoost = 0;
+            for (const re of refEmbeddings) {
+                const sim = cosineSimilarity(entry.embedding, re.embedding) * re.weight;
+                if (sim > refBoost)
+                    refBoost = sim;
+            }
+            scored.push({
+                pageId,
+                score: rawScore + refBoost * 0.15,
+                label: entry.label,
+                embedding: entry.embedding,
+            });
+        }
+        scored.sort((a, b) => b.score - a.score);
+        const candidates = scored.slice(0, k * 2);
+        const deduped = deduplicateResults(candidates);
+        return deduped.slice(0, k);
+    }
     // --- Utilities ---
     getMissingPageIds(allPageIds) {
         return allPageIds.filter(id => !this.entries.has(id));

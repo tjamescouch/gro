@@ -1172,6 +1172,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                         const ids = marker.arg.split(",").map(s => s.trim()).filter(Boolean);
                         for (const id of ids) {
                             inner.ref(id);
+                            // Record explicit ref for feedback-driven retrieval
+                            if (semanticRetrieval)
+                                semanticRetrieval.recordExplicitRef(id);
                         }
                         Logger.telemetry(`Stream marker: ref('${marker.arg}') — ${ids.length} page(s) will load next turn`);
                     }

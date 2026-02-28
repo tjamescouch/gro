@@ -109,6 +109,10 @@ export class SemanticRetrieval {
   private lastFillHash = "";
   /** Mutex: true while a batch re-summarization is running. Prevents concurrent backfill. */
   private _batchRunning = false;
+  /** Session-level ref-feedback: recently explicitly ref'd pages boost similar pages in retrieval. */
+  private recentRefBoosts: Array<{ pageId: string; weight: number }> = [];
+  private readonly maxRecentRefs: number;
+  private readonly refDecayRate: number;
 
   constructor(config: SemanticRetrievalConfig) {
     this.memory = config.memory;
@@ -120,6 +124,8 @@ export class SemanticRetrieval {
     this.searchMaxResults = config.searchMaxResults ?? 5;
     this.maxAutoFillPages = config.maxAutoFillPages ?? 3;
     this.autoFillBudgetFraction = config.autoFillBudgetFraction ?? 0.7;
+    this.maxRecentRefs = 5;
+    this.refDecayRate = 0.7;
   }
 
   get available(): boolean {
@@ -137,6 +143,36 @@ export class SemanticRetrieval {
 
   /** Expose the current search index (for BatchSummarizer to clone). */
   getSearchIndex(): PageSearchIndex { return this.searchIndex; }
+
+  // --- Ref-feedback ---
+
+  /**
+   * Record an explicit page ref from the agent. This boosts retrieval of
+   * similar pages on subsequent turns. Called from the @@ref('id')@@ handler.
+   */
+  recordExplicitRef(pageId: string): void {
+    // Avoid duplicates — if already tracked, refresh its weight
+    const existing = this.recentRefBoosts.findIndex(r => r.pageId === pageId);
+    if (existing >= 0) {
+      this.recentRefBoosts[existing].weight = 1.0;
+      return;
+    }
+    this.recentRefBoosts.push({ pageId, weight: 1.0 });
+    // Cap at maxRecentRefs (FIFO)
+    if (this.recentRefBoosts.length > this.maxRecentRefs) {
+      this.recentRefBoosts.shift();
+    }
+    Logger.telemetry(`[RefFeedback] Recorded explicit ref: ${pageId} (${this.recentRefBoosts.length} tracked)`);
+  }
+
+  /** Decay ref-feedback weights. Called once per autoFillPageSlots cycle. */
+  private decayRefBoosts(): void {
+    for (const rb of this.recentRefBoosts) {
+      rb.weight *= this.refDecayRate;
+    }
+    // Prune entries below threshold
+    this.recentRefBoosts = this.recentRefBoosts.filter(rb => rb.weight >= 0.1);
+  }
 
   // --- Auto-retrieval (called before each turn) ---
 
@@ -190,6 +226,9 @@ export class SemanticRetrieval {
     semanticIds: string[];
   } | null> {
     if (!this.autoEnabled) return null;
+
+    // Decay ref-feedback boosts each cycle
+    this.decayRefBoosts();
 
     // Change detection: skip if working memory hasn't changed
     const contentSample = messages.slice(-6).map(m => String(m.content ?? "").slice(0, 200)).join("|");
@@ -252,10 +291,11 @@ export class SemanticRetrieval {
 
           try {
             const maxSemantic = this.maxAutoFillPages - totalLoaded;
-            const results = await this.searchIndex.search(
+            const results = await this.searchIndex.searchWithRefBoosts(
               query,
               maxSemantic + 3, // over-fetch for filtering
               this.autoThreshold,
+              this.recentRefBoosts,
             );
 
             for (const r of results) {

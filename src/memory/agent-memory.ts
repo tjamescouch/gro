@@ -32,6 +32,7 @@ export interface PageDigestEntry {
   loaded: boolean;
   pinned: boolean;
   summary: string;  // short truncation of the page summary
+  createdAt: string; // ISO 8601 timestamp
 }
 
 export interface VirtualMemoryStats extends MemoryStats {

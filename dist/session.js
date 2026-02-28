@@ -224,3 +224,33 @@ export function listSessions() {
     sessions.sort((a, b) => b.mtime - a.mtime);
     return sessions.map(({ mtime: _, ...rest }) => rest);
 }
+/**
+ * Save sensory channel state for a session.
+ */
+export function saveSensoryState(id, state) {
+    const dir = sessionDir(id);
+    if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+    }
+    try {
+        writeFileSync(join(dir, "sensory-state.json"), JSON.stringify(state, null, 2));
+    }
+    catch (e) {
+        Logger.warn(`Failed to save sensory state for session ${id}: ${asError(e).message}`);
+    }
+}
+/**
+ * Load sensory channel state for a session. Returns null if not found.
+ */
+export function loadSensoryState(id) {
+    const path = join(sessionDir(id), "sensory-state.json");
+    if (!existsSync(path))
+        return null;
+    try {
+        return JSON.parse(readFileSync(path, "utf-8"));
+    }
+    catch (e) {
+        Logger.warn(`Failed to load sensory state for session ${id}: ${asError(e).message}`);
+        return null;
+    }
+}

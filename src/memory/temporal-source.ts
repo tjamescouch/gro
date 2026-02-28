@@ -1,24 +1,23 @@
 /**
- * TemporalSource — sensory channel that renders temporal position as progress bars.
+ * TemporalSource — sensory channel that renders temporal position as concentric rings.
  *
- * Five zoom levels show where you are within each unit of time:
- *   session — elapsed within max session window
- *   day     — position within 24h
- *   week    — position within Mon–Sun
- *   month   — day of month / days in month
- *   year    — month position within 12
+ * Five nested rings show where you are within each unit of time:
+ *   outermost: year  — position within 12 months
+ *   next:      month — day of month / days in month
+ *   next:      week  — position within Mon–Sun
+ *   next:      day   — position within 24h
+ *   innermost: session — elapsed within max session window
  *
- * Same visual language as context-map-source: ▒ = filled, ░ = empty.
- * A session gap shows up as a jump in the day/week bars — discontinuity
- * you can see rather than read.
+ * Each ring is a single row of fill characters, indented to create a visual
+ * nesting effect. No prose — pure visual with cardinal labels.
  *
- * Target: under 120 tokens per render.
+ * Adapts to the channel's grid width.
  */
 
 import type { SensorySource } from "./sensory-memory.js";
 
 export interface TemporalSourceConfig {
-  /** Width of progress bars in characters (default: 32) */
+  /** Max bar width in characters (default: 44, adapts to grid) */
   barWidth?: number;
   /** Max session duration in ms for the session bar scale (default: 2h) */
   maxSessionMs?: number;
@@ -29,7 +28,13 @@ export interface TemporalSourceConfig {
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const LABEL_WIDTH = 9; // "session" + 2 spaces
+
+/** Ring definitions: outermost to innermost, each indents 2 more on each side. */
+interface RingSpec {
+  indent: number;
+  fraction: (now: Date, startTime: number, maxSessionMs: number) => number;
+  label: (now: Date, startTime: number, maxSessionMs: number) => string;
+}
 
 export class TemporalSource implements SensorySource {
   private startTime: number;
@@ -38,7 +43,7 @@ export class TemporalSource implements SensorySource {
   constructor(config?: TemporalSourceConfig) {
     this.startTime = config?.sessionOrigin ?? Date.now();
     this.config = {
-      barWidth: config?.barWidth ?? 32,
+      barWidth: config?.barWidth ?? 44,
       maxSessionMs: config?.maxSessionMs ?? 2 * 60 * 60 * 1000,
     };
   }
@@ -59,40 +64,49 @@ export class TemporalSource implements SensorySource {
     const w = this.config.barWidth;
     const lines: string[] = [];
 
-    // Session — elapsed / max window
-    const elapsedMs = now.getTime() - this.startTime;
-    const sessionFrac = Math.min(1, elapsedMs / this.config.maxSessionMs);
-    lines.push(this.progressRow("session", sessionFrac, w, this.formatDuration(elapsedMs)));
-
-    // Day — position within 24h
     const minutesInDay = now.getHours() * 60 + now.getMinutes();
-    const dayFrac = minutesInDay / (24 * 60);
-    lines.push(this.progressRow("day", dayFrac, w, `${Math.round(dayFrac * 100)}%`));
-
-    // Week — position within Mon–Sun (Monday = 0)
-    const dow = (now.getDay() + 6) % 7; // Monday=0, Sunday=6
-    const weekFrac = (dow + minutesInDay / (24 * 60)) / 7;
-    lines.push(this.progressRow("week", weekFrac, w, DAY_NAMES[dow]));
-
-    // Month — day of month / days in month
+    const dow = (now.getDay() + 6) % 7; // Monday=0
     const dom = now.getDate();
     const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    const monthFrac = dom / dim;
-    lines.push(this.progressRow("month", monthFrac, w, `${dom}/${dim}`));
 
-    // Year — month position within 12
-    const yearFrac = (now.getMonth() + dom / dim) / 12;
-    lines.push(this.progressRow("year", yearFrac, w, MONTH_NAMES[now.getMonth()]));
+    const rings: Array<{ indent: number; frac: number; label: string }> = [
+      {
+        indent: 0,
+        frac: (now.getMonth() + dom / dim) / 12,
+        label: MONTH_NAMES[now.getMonth()],
+      },
+      {
+        indent: 2,
+        frac: dom / dim,
+        label: `${dom}/${dim}`,
+      },
+      {
+        indent: 4,
+        frac: (dow + minutesInDay / (24 * 60)) / 7,
+        label: DAY_NAMES[dow],
+      },
+      {
+        indent: 6,
+        frac: minutesInDay / (24 * 60),
+        label: `${Math.round((minutesInDay / (24 * 60)) * 100)}%`,
+      },
+      {
+        indent: 8,
+        frac: Math.min(1, (now.getTime() - this.startTime) / this.config.maxSessionMs),
+        label: this.formatDuration(now.getTime() - this.startTime),
+      },
+    ];
+
+    for (const ring of rings) {
+      const barWidth = Math.max(4, w - ring.indent * 2 - ring.label.length - 2);
+      const filled = Math.round(Math.max(0, Math.min(1, ring.frac)) * barWidth);
+      const empty = barWidth - filled;
+      const pad = " ".repeat(ring.indent);
+      const bar = "▒".repeat(filled) + "░".repeat(empty);
+      lines.push(`${pad}${bar}  ${ring.label}`);
+    }
 
     return lines.join("\n");
-  }
-
-  /** Render a progress row: left-aligned label + ▒ fill + ░ empty + suffix. */
-  private progressRow(label: string, fraction: number, width: number, suffix: string): string {
-    const paddedLabel = label.padEnd(LABEL_WIDTH);
-    const filled = Math.round(Math.max(0, Math.min(1, fraction)) * width);
-    const empty = width - filled;
-    return `${paddedLabel}${"▒".repeat(filled)}${"░".repeat(empty)}  ${suffix}`;
   }
 
   /** Format a duration in ms to a compact human-readable string. */

@@ -24,7 +24,7 @@ import { AdvancedMemory } from "./memory/advanced-memory.js";
 import { VirtualMemory } from "./memory/virtual-memory.js";
 import { FragmentationMemory } from "./memory/fragmentation-memory.js";
 import { McpManager } from "./mcp/index.js";
-import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
+import { newSessionId, findLatestSession, loadSession, ensureGroDir, saveSensoryState, loadSensoryState } from "./session.js";
 // Register all memory types in the registry (side-effect import)
 import "./memory/register-memory-types.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
@@ -39,6 +39,7 @@ import { SocialSource } from "./memory/social-source.js";
 import { SpendSource } from "./memory/spend-source.js";
 import { ViolationsSource } from "./memory/violations-source.js";
 import { ConfigSource } from "./memory/config-source.js";
+import { SelfSource } from "./memory/self-source.js";
 import { tryCreateEmbeddingProvider } from "./memory/embedding-provider.js";
 import { PageSearchIndex } from "./memory/page-search-index.js";
 import { SemanticRetrieval } from "./memory/semantic-retrieval.js";
@@ -58,6 +59,7 @@ import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
+import { writeSelfToolDefinition, executeWriteSelf } from "./tools/write-self.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
 import { ViolationTracker, ThinkingLoopDetector } from "./violations.js";
 import { thinkingTierModel as selectTierModel, selectMultiProviderTierModel } from "./tier-loader.js";
@@ -840,7 +842,6 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
     const contextMaxTokens = 500;
     const contextMap = new ContextMapSource(inner, {
       barWidth: 32,
-      showLanes: true,
       showPages: true,
       maxChars: Math.floor(contextMaxTokens * 2.8),
     });
@@ -911,6 +912,16 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       enabled: true,
       source: configSource,
     });
+    // "self" channel — model-writable canvas (via write_self tool)
+    const selfSource = new SelfSource();
+    sensory.addChannel({
+      name: "self",
+      maxTokens: 200,
+      updateMode: "every_turn",
+      content: "",
+      enabled: false, // model activates with @@view('self')@@ or @@sense('self','on')@@
+      source: selfSource,
+    });
     // Configure default camera slots
     sensory.setSlot(0, "context");
     sensory.setSlot(1, "time");
@@ -925,6 +936,45 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
 /** Unwrap SensoryMemory decorator to get the underlying memory for duck-typed method calls. */
 function unwrapMemory(mem: AgentMemory): AgentMemory {
   return mem instanceof SensoryMemory ? (mem as SensoryMemory).getInner() : mem;
+}
+
+/** Capture and save sensory channel state alongside session data. */
+function saveSensorySnapshot(mem: AgentMemory, sessionId: string): void {
+  if (!(mem instanceof SensoryMemory)) return;
+  const sensory = mem as SensoryMemory;
+  const selfSrc = sensory.getChannelSource("self");
+  const selfContent = selfSrc && "getContent" in selfSrc
+    ? (selfSrc as SelfSource).getContent()
+    : "";
+  saveSensoryState(sessionId, {
+    selfContent,
+    channelDimensions: sensory.getChannelDimensions(),
+    slots: sensory.getSlots(),
+  });
+}
+
+/** Restore sensory channel state after session load. */
+function restoreSensorySnapshot(mem: AgentMemory, sessionId: string): void {
+  if (!(mem instanceof SensoryMemory)) return;
+  const state = loadSensoryState(sessionId);
+  if (!state) return;
+  const sensory = mem as SensoryMemory;
+  // Restore self content
+  if (state.selfContent) {
+    const selfSrc = sensory.getChannelSource("self");
+    if (selfSrc && "setContent" in selfSrc) {
+      (selfSrc as SelfSource).setContent(state.selfContent);
+    }
+  }
+  // Restore channel dimensions
+  if (state.channelDimensions) {
+    sensory.restoreChannelDimensions(state.channelDimensions);
+  }
+  // Restore slot assignments
+  if (state.slots) {
+    sensory.restoreSlots(state.slots);
+  }
+  Logger.debug(`Restored sensory state for session ${sessionId}`);
 }
 
 /** After session load, surface integrity status and restore session origin for temporal bar. */
@@ -1112,6 +1162,11 @@ async function executeTurn(
   tools.push(writeToolDefinition());
   tools.push(globToolDefinition());
   tools.push(grepToolDefinition());
+  // write_self — only if sensory memory with self channel is available
+  const selfSource = memory instanceof SensoryMemory
+    ? memory.getChannelSource("self") as SelfSource | undefined
+    : undefined;
+  if (selfSource) tools.push(writeSelfToolDefinition);
   runtimeState.beginTurn({ model: cfg.model, maxToolRounds: cfg.maxToolRounds });
   memory.clearProtectedMessages();
 
@@ -1615,6 +1670,20 @@ async function executeTurn(
         } else {
           memory.switchView(viewName, slot);
           Logger.telemetry(`Stream marker: view('${viewName}','${slot}') → slot${slot}=${viewName}`);
+        }
+      }
+    } else if (marker.name === "resize") {
+      // @@resize('channel,width,height')@@ — dynamically resize a sensory channel grid
+      if (memory instanceof SensoryMemory) {
+        const parts = marker.arg.split(",").map(s => s.trim());
+        const channel = parts[0];
+        const w = parseInt(parts[1], 10);
+        const h = parseInt(parts[2], 10);
+        if (channel && !isNaN(w) && !isNaN(h)) {
+          memory.resize(channel, w, h);
+          Logger.telemetry(`Stream marker: resize('${channel}',${w},${h})`);
+        } else {
+          Logger.warn(`Stream marker: resize('${marker.arg}') — invalid format, expected 'channel,width,height'`);
         }
       }
     } else if (marker.name === "resummarize") {
@@ -2135,6 +2204,8 @@ async function executeTurn(
           result = executeGlob(fnArgs);
         } else if (fnName === "Grep") {
           result = executeGrep(fnArgs);
+        } else if (fnName === "write_self" && selfSource) {
+          result = executeWriteSelf(fnArgs as { content: string }, selfSource);
         } else {
           const pluginResult = await toolRegistry.callTool(fnName, fnArgs);
           if (pluginResult !== undefined) {
@@ -2205,6 +2276,7 @@ async function executeTurn(
     if (cfg.persistent && cfg.sessionPersistence && sessionId && round > 0 && round % AUTO_SAVE_INTERVAL === 0) {
       try {
         await memory.save(sessionId);
+        saveSensorySnapshot(memory, sessionId);
         Logger.debug(`Auto-saved session ${sessionId} at round ${round}`);
       } catch (e: unknown) {
         Logger.warn(`Auto-save failed at round ${round}: ${asError(e).message}`);
@@ -2370,6 +2442,7 @@ async function singleShot(
       }
     }
     surfaceResumeState(memory, sess?.meta.createdAt);
+    if (sessionId) restoreSensorySnapshot(memory, sessionId);
   }
 
   await memory.add({ role: "user", from: "User", content: prompt });
@@ -2407,6 +2480,7 @@ async function singleShot(
   if (cfg.sessionPersistence) {
     try {
       await memory.save(sessionId);
+      saveSensorySnapshot(memory, sessionId);
     } catch (e: unknown) {
       Logger.error(C.red(`session save failed: ${asError(e).message}`));
     }
@@ -2498,6 +2572,7 @@ async function interactive(
       }
     }
     surfaceResumeState(memory, sess?.meta.createdAt);
+    if (sessionId) restoreSensorySnapshot(memory, sessionId);
   }
 
   const rl = readline.createInterface({
@@ -2546,6 +2621,7 @@ async function interactive(
       if (cfg.sessionPersistence) {
         try {
           await memory.save(sessionId);
+          saveSensorySnapshot(memory, sessionId);
         } catch (e: unknown) {
           Logger.error(C.red(`session save failed: ${asError(e).message}`));
         }
@@ -2565,6 +2641,7 @@ async function interactive(
     if (cfg.sessionPersistence) {
       try {
         await memory.save(sessionId);
+        saveSensorySnapshot(memory, sessionId);
       } catch (e: unknown) {
         Logger.error(C.red(`session save failed: ${asError(e).message}`));
       }

@@ -41,11 +41,35 @@ export interface SensoryChannel {
   content: string;
   enabled: boolean;
   source?: SensorySource;
+  /** Fixed grid width in characters (default: 48). */
+  width?: number;
+  /** Fixed grid height in lines (default: 12). */
+  height?: number;
 }
 
 export interface SensoryMemoryConfig {
   totalBudget?: number;
   avgCharsPerToken?: number;
+}
+
+// --- Grid enforcement ---
+
+const DEFAULT_GRID_WIDTH = 48;
+const DEFAULT_GRID_HEIGHT = 12;
+
+/**
+ * Enforce a fixed-width, fixed-height character grid.
+ * Every line is padded/truncated to exactly `width` chars.
+ * Total line count is padded/truncated to exactly `height` lines.
+ */
+function enforceGrid(content: string, width: number, height: number): string {
+  const lines = content.split("\n");
+  const result: string[] = [];
+  for (let i = 0; i < height; i++) {
+    const raw = i < lines.length ? lines[i] : "";
+    result.push(raw.length > width ? raw.slice(0, width) : raw.padEnd(width));
+  }
+  return result.join("\n");
 }
 
 // --- SensoryMemory ---
@@ -94,9 +118,9 @@ export class SensoryMemory extends AgentMemory {
   update(name: string, content: string): void {
     const ch = this.channels.get(name);
     if (!ch) return;
-    // Enforce per-channel token limit
-    const maxChars = ch.maxTokens * this.avgCharsPerToken;
-    ch.content = content.length > maxChars ? content.slice(0, maxChars) + "..." : content;
+    const w = ch.width ?? DEFAULT_GRID_WIDTH;
+    const h = ch.height ?? DEFAULT_GRID_HEIGHT;
+    ch.content = enforceGrid(content, w, h);
   }
 
   // --- Camera slot management ---
@@ -132,6 +156,50 @@ export class SensoryMemory extends AgentMemory {
   /** Get the source for a named channel (for late-binding dependency injection). */
   getChannelSource(name: string): SensorySource | undefined {
     return this.channels.get(name)?.source;
+  }
+
+  /** Resize a channel's grid dimensions. Clamped to sane ranges. */
+  resize(channelName: string, width: number, height: number): void {
+    const ch = this.channels.get(channelName);
+    if (!ch) {
+      Logger.warn(`[Sensory] resize: unknown channel '${channelName}'`);
+      return;
+    }
+    ch.width = Math.max(16, Math.min(120, width));
+    ch.height = Math.max(4, Math.min(40, height));
+    Logger.telemetry(`[Sensory] resize: ${channelName} → ${ch.width}×${ch.height}`);
+  }
+
+  /** Get all channel dimensions (for persistence). */
+  getChannelDimensions(): Record<string, { width: number; height: number }> {
+    const dims: Record<string, { width: number; height: number }> = {};
+    for (const [name, ch] of this.channels) {
+      if (ch.width !== undefined || ch.height !== undefined) {
+        dims[name] = { width: ch.width ?? DEFAULT_GRID_WIDTH, height: ch.height ?? DEFAULT_GRID_HEIGHT };
+      }
+    }
+    return dims;
+  }
+
+  /** Restore channel dimensions (from persistence). */
+  restoreChannelDimensions(dims: Record<string, { width: number; height: number }>): void {
+    for (const [name, { width, height }] of Object.entries(dims)) {
+      const ch = this.channels.get(name);
+      if (ch) {
+        ch.width = width;
+        ch.height = height;
+      }
+    }
+  }
+
+  /** Get current slot assignments (for persistence). */
+  getSlots(): [string | null, string | null, string | null] {
+    return [...this.slots] as [string | null, string | null, string | null];
+  }
+
+  /** Restore slot assignments (from persistence). */
+  restoreSlots(slots: [string | null, string | null, string | null]): void {
+    this.slots = [...slots] as [string | null, string | null, string | null];
   }
 
   /** Cycle slot0 to the next/previous channel in registration order. */

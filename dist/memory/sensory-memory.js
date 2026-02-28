@@ -22,6 +22,23 @@
  */
 import { AgentMemory } from "./agent-memory.js";
 import { Logger } from "../logger.js";
+// --- Grid enforcement ---
+const DEFAULT_GRID_WIDTH = 48;
+const DEFAULT_GRID_HEIGHT = 12;
+/**
+ * Enforce a fixed-width, fixed-height character grid.
+ * Every line is padded/truncated to exactly `width` chars.
+ * Total line count is padded/truncated to exactly `height` lines.
+ */
+function enforceGrid(content, width, height) {
+    const lines = content.split("\n");
+    const result = [];
+    for (let i = 0; i < height; i++) {
+        const raw = i < lines.length ? lines[i] : "";
+        result.push(raw.length > width ? raw.slice(0, width) : raw.padEnd(width));
+    }
+    return result.join("\n");
+}
 // --- SensoryMemory ---
 export class SensoryMemory extends AgentMemory {
     constructor(inner, config = {}) {
@@ -61,9 +78,9 @@ export class SensoryMemory extends AgentMemory {
         const ch = this.channels.get(name);
         if (!ch)
             return;
-        // Enforce per-channel token limit
-        const maxChars = ch.maxTokens * this.avgCharsPerToken;
-        ch.content = content.length > maxChars ? content.slice(0, maxChars) + "..." : content;
+        const w = ch.width ?? DEFAULT_GRID_WIDTH;
+        const h = ch.height ?? DEFAULT_GRID_HEIGHT;
+        ch.content = enforceGrid(content, w, h);
     }
     // --- Camera slot management ---
     /**
@@ -93,6 +110,45 @@ export class SensoryMemory extends AgentMemory {
     /** Get the source for a named channel (for late-binding dependency injection). */
     getChannelSource(name) {
         return this.channels.get(name)?.source;
+    }
+    /** Resize a channel's grid dimensions. Clamped to sane ranges. */
+    resize(channelName, width, height) {
+        const ch = this.channels.get(channelName);
+        if (!ch) {
+            Logger.warn(`[Sensory] resize: unknown channel '${channelName}'`);
+            return;
+        }
+        ch.width = Math.max(16, Math.min(120, width));
+        ch.height = Math.max(4, Math.min(40, height));
+        Logger.telemetry(`[Sensory] resize: ${channelName} → ${ch.width}×${ch.height}`);
+    }
+    /** Get all channel dimensions (for persistence). */
+    getChannelDimensions() {
+        const dims = {};
+        for (const [name, ch] of this.channels) {
+            if (ch.width !== undefined || ch.height !== undefined) {
+                dims[name] = { width: ch.width ?? DEFAULT_GRID_WIDTH, height: ch.height ?? DEFAULT_GRID_HEIGHT };
+            }
+        }
+        return dims;
+    }
+    /** Restore channel dimensions (from persistence). */
+    restoreChannelDimensions(dims) {
+        for (const [name, { width, height }] of Object.entries(dims)) {
+            const ch = this.channels.get(name);
+            if (ch) {
+                ch.width = width;
+                ch.height = height;
+            }
+        }
+    }
+    /** Get current slot assignments (for persistence). */
+    getSlots() {
+        return [...this.slots];
+    }
+    /** Restore slot assignments (from persistence). */
+    restoreSlots(slots) {
+        this.slots = [...slots];
     }
     /** Cycle slot0 to the next/previous channel in registration order. */
     cycleSlot0(direction) {

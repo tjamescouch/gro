@@ -1,14 +1,16 @@
 /**
  * ContextMapSource — sensory channel that renders a spatial context map.
  *
- * Reads memory stats from the inner AgentMemory (via getStats()) and produces
- * a 2D spatial visualization where position, density, and shape encode
- * context window distribution. The model perceives patterns from row length
- * and fill — not from labels and numbers.
+ * Default view: composite fill bar + page symbol grid.
+ *   Line 1: Single composite bar — █ sys, ▓ page, ▒ wm, ░ free + stats
+ *   Line 2: Key metrics (pin count, pages, model, fill %)
+ *   Lines 3+: Page grid — each cell is a symbol (█ loaded, · unloaded, ◆ pinned, ! important)
+ *   Last 2 lines: Legend + drill-down hint
+ *
+ * Drill-down filters (context:today, context:full, context:pg_id) render
+ * detailed page info into the same grid, truncated to fit.
  *
  * Degrades gracefully: renders whatever stats the memory type provides.
- *
- * Target: under 300 tokens per render.
  */
 
 import type { AgentMemory, MemoryStats, VirtualMemoryStats, PageDigestEntry } from "./agent-memory.js";
@@ -34,11 +36,9 @@ function bucketRank(bucket: string): number {
 }
 
 export interface ContextMapConfig {
-  /** Width of the bar chart in characters (default: 32) */
+  /** Width of the composite bar in characters (default: 32) */
   barWidth?: number;
-  /** Include individual swimlane rows (default: true) */
-  showLanes?: boolean;
-  /** Include page row (default: true) */
+  /** Include page grid (default: true) */
   showPages?: boolean;
   /** Character budget for the rendered output (default: 0 = unlimited) */
   maxChars?: number;
@@ -54,7 +54,6 @@ export class ContextMapSource implements SensorySource {
     this.memory = memory;
     this.config = {
       barWidth: config?.barWidth ?? 32,
-      showLanes: config?.showLanes ?? true,
       showPages: config?.showPages ?? true,
       maxChars: config?.maxChars ?? 0,
     };
@@ -82,9 +81,7 @@ export class ContextMapSource implements SensorySource {
     return result;
   }
 
-  destroy(): void {
-    // No resources to clean up
-  }
+  destroy(): void {}
 
   render(): string {
     const stats = this.memory.getStats();
@@ -95,7 +92,7 @@ export class ContextMapSource implements SensorySource {
     return stats.type === "virtual" || stats.type === "fragmentation" || stats.type === "hnsw" || stats.type === "perfect";
   }
 
-  // --- Virtual Memory (spatial 2D) ---
+  // --- Virtual Memory (composite bar + page grid) ---
 
   private renderVirtual(stats: VirtualMemoryStats): string {
     const w = this.config.barWidth;
@@ -105,68 +102,160 @@ export class ContextMapSource implements SensorySource {
     const sysTokens = stats.systemTokens;
     const pageTokens = stats.pageSlotUsed;
     const wmUsed = stats.workingMemoryUsed;
-    const free = Math.max(0, totalBudget - sysTokens - pageTokens - wmUsed);
+    const totalUsed = sysTokens + pageTokens + wmUsed;
+    const free = Math.max(0, totalBudget - totalUsed);
+    const usePct = totalBudget > 0 ? totalUsed / totalBudget : 0;
+    const isLow = (free / totalBudget) < 0.2 || stats.compactionActive || usePct > stats.highRatio;
 
     const lines: string[] = [];
 
-    // System prompt row (immutable — █)
-    if (sysTokens > 0) {
-      const chars = Math.max(1, Math.round((sysTokens / totalBudget) * w));
-      lines.push(this.spatialRow("sys", chars, w, "█"));
-    }
-
-    // Page row (loaded, evictable — ▓)
-    if (this.config.showPages && pageTokens > 0) {
-      const chars = Math.max(1, Math.round((pageTokens / totalBudget) * w));
-      lines.push(this.spatialRow("page", chars, w, "▓"));
-    }
-
-    // Lane rows (active working memory — ▒)
-    if (this.config.showLanes && stats.lanes.length > 0) {
-      for (const lane of stats.lanes) {
-        if (lane.tokens <= 0) continue;
-        const chars = Math.max(1, Math.round((lane.tokens / totalBudget) * w));
-        lines.push(this.spatialRow(this.laneLabel(lane.role), chars, w, "▒"));
-      }
-    }
-
-    // Free row — bar length IS the free space; no ░ padding
-    const freeChars = Math.round((free / totalBudget) * w);
-    const freeBar = "░".repeat(freeChars);
-    const freeLabel = "free".padStart(4);
-    const totalUsed = sysTokens + pageTokens + wmUsed;
-    const usePct = totalBudget > 0 ? totalUsed / totalBudget : 0;
-    const isLow = (free / totalBudget) < 0.2 || stats.compactionActive || usePct > stats.highRatio;
-    const isHigh = usePct > 0.75 && !stats.compactionActive;
-    lines.push(
-      isLow ? `${freeLabel} ${freeBar}  ← LOW` :
-      isHigh ? `${freeLabel} ${freeBar}  ⚠ expand budget or compact` :
-      `${freeLabel} ${freeBar}`
-    );
-
-    // Stats line — one line of precision for when the model needs exact numbers
+    // Line 1: Composite fill bar — █ sys, ▓ page, ▒ wm, ░ free
+    const sysChars = Math.max(sysTokens > 0 ? 1 : 0, Math.round((sysTokens / totalBudget) * w));
+    const pageChars = Math.max(pageTokens > 0 ? 1 : 0, Math.round((pageTokens / totalBudget) * w));
+    const wmChars = Math.max(wmUsed > 0 ? 1 : 0, Math.round((wmUsed / totalBudget) * w));
+    const freeChars = Math.max(0, w - sysChars - pageChars - wmChars);
+    const bar = "█".repeat(sysChars) + "▓".repeat(pageChars) + "▒".repeat(wmChars) + "░".repeat(freeChars);
     const usedK = (totalUsed / 1000).toFixed(0);
     const budgetK = (totalBudget / 1000).toFixed(0);
-    const parts: string[] = [`${usedK}K/${budgetK}K`];
+    const barSuffix = isLow ? `${usedK}K/${budgetK}K LOW` : `${usedK}K/${budgetK}K`;
+    lines.push(`${bar}  ${barSuffix}`);
+
+    // Line 2: Key metrics
+    const parts: string[] = [];
     if (stats.pinnedMessages > 0) parts.push(`pin:${stats.pinnedMessages}`);
     parts.push(`pg:${stats.pagesLoaded}/${stats.pagesAvailable}`);
     if (stats.model) parts.push(this.shortModel(stats.model));
-    lines.push(parts.join(" | "));
+    parts.push(`fill:${Math.round(usePct * 100)}%`);
+    lines.push(parts.join(" "));
 
-    // Page digest — compact listing of all pages with short summaries
+    // Page digest — either drill-down or page grid
     if (this.config.showPages && stats.pageDigest && stats.pageDigest.length > 0) {
-      // Calculate remaining character budget for page digest
-      const usedSoFar = lines.reduce((sum, l) => sum + l.length + 1, 0); // +1 for \n
-      const remaining = this.config.maxChars > 0
-        ? Math.max(100, this.config.maxChars - usedSoFar)
-        : 0;
-      lines.push(this.renderPageDigest(stats.pageDigest, remaining));
+      const filter = this.filter;
+
+      // Single page drill-down
+      if (filter && this.isPageIdFilter(filter, stats.pageDigest)) {
+        const page = stats.pageDigest.find(p => p.id === filter);
+        if (page) {
+          lines.push(...this.renderSinglePage(page, stats.pageDigest.length, stats.pagesLoaded));
+          lines.push(`reset: view('context')`);
+          return lines.join("\n");
+        }
+      }
+
+      // Time bucket or full drill-down
+      if (filter && (this.isTimeBucketFilter(filter) || filter === "full")) {
+        lines.push(...this.renderDrillDown(stats.pageDigest, filter));
+        lines.push(`reset: view('context')`);
+        return lines.join("\n");
+      }
+
+      // Default: page symbol grid
+      lines.push(...this.renderPageGrid(stats.pageDigest, w));
+    } else if (this.config.showPages) {
+      // No pages yet
+      lines.push("(no pages)");
     }
+
+    // Hint line
+    lines.push(`view('context:today|full|pg_id')`);
 
     return lines.join("\n");
   }
 
-  // --- Basic Memory (spatial simplified) ---
+  // --- Page symbol grid ---
+
+  private renderPageGrid(pages: PageDigestEntry[], barWidth: number): string[] {
+    const cellsPerRow = Math.max(1, Math.floor(barWidth / 2));
+    const lines: string[] = [];
+    let row = "";
+    let count = 0;
+
+    for (const p of pages) {
+      let sym: string;
+      if (p.pinned) sym = "◆";
+      else if (p.loaded) sym = "█";
+      else sym = "·";
+
+      row += sym + " ";
+      count++;
+      if (count >= cellsPerRow) {
+        lines.push(row.trimEnd());
+        row = "";
+        count = 0;
+      }
+    }
+    if (row) lines.push(row.trimEnd());
+
+    // Legend
+    lines.push("█=loaded ·=free ◆=pinned");
+
+    return lines;
+  }
+
+  // --- Drill-down views ---
+
+  private renderDrillDown(pages: PageDigestEntry[], filter: string): string[] {
+    const now = new Date();
+    const lines: string[] = [];
+
+    // Group by time bucket
+    const buckets = new Map<string, PageDigestEntry[]>();
+    const bucketOrder: string[] = [];
+    for (const p of pages) {
+      const bucket = timeBucket(p.createdAt, now);
+      if (!buckets.has(bucket)) {
+        buckets.set(bucket, []);
+        bucketOrder.push(bucket);
+      }
+      buckets.get(bucket)!.push(p);
+    }
+    bucketOrder.sort((a, b) => bucketRank(a) - bucketRank(b));
+
+    if (filter === "full") {
+      for (const bucket of bucketOrder) {
+        const items = buckets.get(bucket)!;
+        lines.push(`${bucket} (${items.length}):`);
+        for (const p of items) {
+          const status = p.loaded ? "★" : p.pinned ? "◆" : "·";
+          lines.push(`  ${status} ${p.id} ${this.compactSummary(p.summary, p.label, 30)}`);
+        }
+      }
+    } else {
+      // Show only the matching bucket expanded, others collapsed
+      for (const bucket of bucketOrder) {
+        const items = buckets.get(bucket)!;
+        if (bucket === filter) {
+          lines.push(`${bucket} (${items.length}):`);
+          for (const p of items) {
+            const status = p.loaded ? "★" : p.pinned ? "◆" : "·";
+            const tokK = (p.tokens / 1000).toFixed(1);
+            lines.push(`  ${status} ${p.id} (${tokK}K) ${this.compactSummary(p.summary, p.label)}`);
+          }
+        } else {
+          lines.push(`${bucket} (${items.length})`);
+        }
+      }
+    }
+
+    return lines;
+  }
+
+  private renderSinglePage(page: PageDigestEntry, totalPages: number, loadedCount: number): string[] {
+    const lines: string[] = [];
+    lines.push(`page: ${page.id}`);
+    lines.push(`  tokens: ${(page.tokens / 1000).toFixed(1)}K`);
+    lines.push(`  status: ${page.loaded ? "loaded ★" : page.pinned ? "pinned ◆" : "unloaded"}`);
+    lines.push(`  created: ${page.createdAt}`);
+    lines.push(`  ${this.compactSummary(page.summary, page.label, 42)}`);
+    if (page.loaded) {
+      lines.push(`  unload: unref('${page.id}')`);
+    } else {
+      lines.push(`  load: ref('${page.id}')`);
+    }
+    return lines;
+  }
+
+  // --- Basic Memory (fallback) ---
 
   private renderBasic(stats: MemoryStats): string {
     const w = this.config.barWidth;
@@ -175,231 +264,32 @@ export class ContextMapSource implements SensorySource {
     const free = Math.max(0, estimatedBudget - used);
 
     const usedChars = Math.max(used > 0 ? 1 : 0, Math.round((used / estimatedBudget) * w));
-    const freeChars = Math.round((free / estimatedBudget) * w);
+    const freeChars = Math.max(0, w - usedChars);
 
     const lines: string[] = [];
-    lines.push(this.spatialRow("used", usedChars, w, "▒"));
-    lines.push(`free ${"░".repeat(freeChars)}`);
-    lines.push(`${stats.type} | ${stats.totalMessages} msgs | ~${(stats.totalTokensEstimate / 1000).toFixed(1)}K tok`);
-
+    lines.push("▒".repeat(usedChars) + "░".repeat(freeChars) + `  ${(used / 1000).toFixed(0)}K`);
+    lines.push(`${stats.type} | ${stats.totalMessages} msgs`);
     return lines.join("\n");
   }
 
   // --- Helpers ---
 
-  /** Render a spatial row: right-aligned label + fill chars + ░ padding to width. */
-  private spatialRow(label: string, filled: number, width: number, fillChar: string): string {
-    const paddedLabel = label.padStart(4);
-    const fill = fillChar.repeat(Math.min(filled, width));
-    const pad = "░".repeat(Math.max(0, width - filled));
-    return `${paddedLabel} ${fill}${pad}`;
-  }
-
-  /** Map lane role to short label for spatial rows. */
-  private laneLabel(role: string): string {
-    switch (role) {
-      case "assistant": return "ast";
-      case "user": return "usr";
-      case "system": return "sys";
-      case "tool": return "tool";
-      default: return role.slice(0, 4);
-    }
-  }
-
-  /**
-   * Strip boilerplate prefixes from page summaries and truncate for compact display.
-   * Removes "[Summary of N messages: ...]", "[Pending summary: ...]", timestamps in labels.
-   */
   private compactSummary(summary: string, label: string, maxLen = 80): string {
     let s = summary;
-    // Strip "[Summary of N messages: ...]" or truncated "[Summary of N messages: ..."
-    // The closing ] may be missing if virtual-memory truncated the summary to 80 chars
     s = s.replace(/^\[Summary of \d+ messages:[^\]]*\]?\s*/i, "");
-    // Strip "[Pending summary: ...]" (same truncation-safe pattern)
     s = s.replace(/^\[Pending summary:[^\]]*\]?\s*/i, "");
-    // Strip leading "..." left by truncation
     s = s.replace(/^\.{3}\s*/, "");
-    // If nothing left, derive from label
     if (!s || s.length < 3) {
-      // Strip ISO timestamps from label for compactness
       s = label.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*-?\s*/g, "").trim();
       if (!s) s = label;
     }
     return s.length > maxLen ? s.slice(0, maxLen - 3) + "..." : s;
   }
 
-  /**
-   * Render page digest as a time-grouped tree the agent can browse and ref from.
-   * @param charBudget Max chars for this section (0 = unlimited). Entries are
-   *        trimmed to fit while preserving the hint line and loaded pages.
-   */
-  private renderPageDigest(pages: PageDigestEntry[], charBudget = 0): string {
-    const now = new Date();
-    const filter = this.filter;
-
-    // Build page collections
-    const loaded: PageDigestEntry[] = [];
-    const unloaded: PageDigestEntry[] = [];
-    let totalTokens = 0;
-
-    for (const p of pages) {
-      if (p.loaded || p.pinned) loaded.push(p);
-      else unloaded.push(p);
-      if (p.loaded) totalTokens += p.tokens;
-    }
-
-    const budgetK = "18"; // page slot budget ~18K
-    const usedK = (totalTokens / 1000).toFixed(1);
-
-    // --- Single page drill-down ---
-    if (filter && this.isPageIdFilter(filter, pages)) {
-      const page = pages.find(p => p.id === filter);
-      if (page) return this.renderSinglePage(page, pages.length, loaded.length, usedK, budgetK);
-    }
-
-    // Hint line — built first so we can reserve space for it.
-    // Use plain text (no @@ markers) — markers in the sensory buffer get consumed
-    // when the LLM repeats them verbatim, stripping the hint from visible output.
-    const hintLine = filter
-      ? `reset: view('context')`
-      : `view('context:today|full|pg_id')`;
-    const hintReserve = hintLine.length + 1; // +1 for \n
-
-    const lines: string[] = [`pages: ${pages.length} total, ${loaded.length} loaded (${usedK}K/${budgetK}K budget)`];
-
-    // Loaded/pinned pages always shown individually
-    for (const p of loaded) {
-      const status = p.loaded ? "★" : "📌";
-      const tokK = (p.tokens / 1000).toFixed(1);
-      lines.push(`  ${status} ${p.id} (${tokK}K) ${this.compactSummary(p.summary, p.label)}`);
-    }
-
-    /** Check if adding a line would overflow the character budget. */
-    const charsSoFar = () => lines.reduce((sum, l) => sum + l.length + 1, 0);
-    const wouldOverflow = (line: string) =>
-      charBudget > 0 && (charsSoFar() + line.length + 1 + hintReserve > charBudget);
-
-    // Group unloaded by time bucket
-    if (unloaded.length > 0) {
-      const buckets = new Map<string, PageDigestEntry[]>();
-      const bucketOrder: string[] = [];
-      for (const p of unloaded) {
-        const bucket = timeBucket(p.createdAt, now);
-        if (!buckets.has(bucket)) {
-          buckets.set(bucket, []);
-          bucketOrder.push(bucket);
-        }
-        buckets.get(bucket)!.push(p);
-      }
-
-      // Sort bucket order: today first, then yesterday, then Nd ago ascending, then older
-      bucketOrder.sort((a, b) => bucketRank(a) - bucketRank(b));
-
-      if (filter === "full") {
-        // Full mode: expand all buckets, no per-bucket cap — overflow check limits naturally
-        for (const bucket of bucketOrder) {
-          const items = buckets.get(bucket)!;
-          const header = `  ${bucket} (${items.length}):`;
-          if (wouldOverflow(header)) break;
-          lines.push(header);
-          let shown = 0;
-          for (const p of items) {
-            const line = `    · ${p.id} ${this.compactSummary(p.summary, p.label, 40)}`;
-            if (wouldOverflow(line)) break;
-            lines.push(line);
-            shown++;
-          }
-          if (shown < items.length) {
-            const more = `    +${items.length - shown} more`;
-            if (!wouldOverflow(more)) lines.push(more);
-          }
-        }
-      } else if (filter && this.isTimeBucketFilter(filter)) {
-        // Time bucket filter: expand only matching bucket, collapse others
-        for (const bucket of bucketOrder) {
-          const items = buckets.get(bucket)!;
-          if (bucket === filter) {
-            const header = `  ${bucket} (${items.length}):`;
-            if (wouldOverflow(header)) break;
-            lines.push(header);
-            for (const p of items) {
-              const line = `    · ${p.id} (${(p.tokens / 1000).toFixed(1)}K) ${this.compactSummary(p.summary, p.label)}`;
-              if (wouldOverflow(line)) break;
-              lines.push(line);
-            }
-          } else {
-            const line = `  ${bucket} (${items.length})`;
-            if (wouldOverflow(line)) break;
-            lines.push(line);
-          }
-        }
-      } else {
-        // Normal mode: expand most recent bucket only (up to 5 entries)
-        let firstBucketExpanded = false;
-        for (const bucket of bucketOrder) {
-          const items = buckets.get(bucket)!;
-          if (!firstBucketExpanded) {
-            firstBucketExpanded = true;
-            const header = `  ${bucket} (${items.length}):`;
-            if (wouldOverflow(header)) break;
-            lines.push(header);
-            let shown = 0;
-            for (const p of items.slice(0, 5)) {
-              const line = `    · ${p.id} (${(p.tokens / 1000).toFixed(1)}K) ${this.compactSummary(p.summary, p.label)}`;
-              if (wouldOverflow(line)) break;
-              lines.push(line);
-              shown++;
-            }
-            if (shown < items.length) {
-              const more = `    +${items.length - shown} more`;
-              if (!wouldOverflow(more)) lines.push(more);
-            }
-          } else {
-            const line = `  ${bucket} (${items.length})`;
-            if (wouldOverflow(line)) break;
-            lines.push(line);
-          }
-        }
-      }
-    }
-
-    // Hint line — always included (space was reserved)
-    lines.push(hintLine);
-    return lines.join("\n");
-  }
-
-  /** Render detailed view of a single page. */
-  private renderSinglePage(
-    page: PageDigestEntry,
-    totalPages: number,
-    loadedCount: number,
-    usedK: string,
-    budgetK: string,
-  ): string {
-    const lines: string[] = [];
-    lines.push(`page detail: ${page.id} (${totalPages} total, ${loadedCount} loaded)`);
-    lines.push(`  label: ${page.label}`);
-    lines.push(`  tokens: ${(page.tokens / 1000).toFixed(1)}K`);
-    lines.push(`  status: ${page.loaded ? "loaded ★" : page.pinned ? "pinned 📌" : "unloaded"}`);
-    lines.push(`  created: ${page.createdAt}`);
-    lines.push(`  summary: ${page.summary}`);
-    // Use plain text hints (no @@ markers) — markers in the sensory buffer
-    // get consumed by the stream parser when the LLM echoes buffer content,
-    // triggering unintended actions and stripping the hint from visible output.
-    if (page.loaded) {
-      lines.push(`  unload: unref('${page.id}')  back: view('context')`);
-    } else {
-      lines.push(`  load: ref('${page.id}')  back: view('context')`);
-    }
-    return lines.join("\n");
-  }
-
-  /** Check if a filter string matches a time bucket name. */
   private isTimeBucketFilter(filter: string): boolean {
     return filter === "today" || filter === "yesterday" || filter === "older" || /^\d+d ago$/.test(filter);
   }
 
-  /** Check if a filter string looks like a page ID (exists in pages list). */
   private isPageIdFilter(filter: string, pages: PageDigestEntry[]): boolean {
     return pages.some(p => p.id === filter);
   }

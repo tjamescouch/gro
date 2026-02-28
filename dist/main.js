@@ -23,7 +23,7 @@ import { AdvancedMemory } from "./memory/advanced-memory.js";
 import { VirtualMemory } from "./memory/virtual-memory.js";
 import { FragmentationMemory } from "./memory/fragmentation-memory.js";
 import { McpManager } from "./mcp/index.js";
-import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
+import { newSessionId, findLatestSession, loadSession, ensureGroDir, saveSensoryState, loadSensoryState } from "./session.js";
 // Register all memory types in the registry (side-effect import)
 import "./memory/register-memory-types.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
@@ -35,6 +35,7 @@ import { SocialSource } from "./memory/social-source.js";
 import { SpendSource } from "./memory/spend-source.js";
 import { ViolationsSource } from "./memory/violations-source.js";
 import { ConfigSource } from "./memory/config-source.js";
+import { SelfSource } from "./memory/self-source.js";
 import { tryCreateEmbeddingProvider } from "./memory/embedding-provider.js";
 import { PageSearchIndex } from "./memory/page-search-index.js";
 import { SemanticRetrieval } from "./memory/semantic-retrieval.js";
@@ -54,6 +55,7 @@ import { readToolDefinition, executeRead } from "./tools/read.js";
 import { writeToolDefinition, executeWrite } from "./tools/write.js";
 import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
+import { writeSelfToolDefinition, executeWriteSelf } from "./tools/write-self.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
 import { ViolationTracker, ThinkingLoopDetector } from "./violations.js";
 import { thinkingTierModel as selectTierModel, selectMultiProviderTierModel } from "./tier-loader.js";
@@ -787,7 +789,6 @@ function wrapWithSensory(inner) {
         const contextMaxTokens = 500;
         const contextMap = new ContextMapSource(inner, {
             barWidth: 32,
-            showLanes: true,
             showPages: true,
             maxChars: Math.floor(contextMaxTokens * 2.8),
         });
@@ -858,6 +859,16 @@ function wrapWithSensory(inner) {
             enabled: true,
             source: configSource,
         });
+        // "self" channel — model-writable canvas (via write_self tool)
+        const selfSource = new SelfSource();
+        sensory.addChannel({
+            name: "self",
+            maxTokens: 200,
+            updateMode: "every_turn",
+            content: "",
+            enabled: false, // model activates with @@view('self')@@ or @@sense('self','on')@@
+            source: selfSource,
+        });
         // Configure default camera slots
         sensory.setSlot(0, "context");
         sensory.setSlot(1, "time");
@@ -872,6 +883,46 @@ function wrapWithSensory(inner) {
 /** Unwrap SensoryMemory decorator to get the underlying memory for duck-typed method calls. */
 function unwrapMemory(mem) {
     return mem instanceof SensoryMemory ? mem.getInner() : mem;
+}
+/** Capture and save sensory channel state alongside session data. */
+function saveSensorySnapshot(mem, sessionId) {
+    if (!(mem instanceof SensoryMemory))
+        return;
+    const sensory = mem;
+    const selfSrc = sensory.getChannelSource("self");
+    const selfContent = selfSrc && "getContent" in selfSrc
+        ? selfSrc.getContent()
+        : "";
+    saveSensoryState(sessionId, {
+        selfContent,
+        channelDimensions: sensory.getChannelDimensions(),
+        slots: sensory.getSlots(),
+    });
+}
+/** Restore sensory channel state after session load. */
+function restoreSensorySnapshot(mem, sessionId) {
+    if (!(mem instanceof SensoryMemory))
+        return;
+    const state = loadSensoryState(sessionId);
+    if (!state)
+        return;
+    const sensory = mem;
+    // Restore self content
+    if (state.selfContent) {
+        const selfSrc = sensory.getChannelSource("self");
+        if (selfSrc && "setContent" in selfSrc) {
+            selfSrc.setContent(state.selfContent);
+        }
+    }
+    // Restore channel dimensions
+    if (state.channelDimensions) {
+        sensory.restoreChannelDimensions(state.channelDimensions);
+    }
+    // Restore slot assignments
+    if (state.slots) {
+        sensory.restoreSlots(state.slots);
+    }
+    Logger.debug(`Restored sensory state for session ${sessionId}`);
 }
 /** After session load, surface integrity status and restore session origin for temporal bar. */
 function surfaceResumeState(mem, sessionCreatedAt) {
@@ -1025,6 +1076,12 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     tools.push(writeToolDefinition());
     tools.push(globToolDefinition());
     tools.push(grepToolDefinition());
+    // write_self — only if sensory memory with self channel is available
+    const selfSource = memory instanceof SensoryMemory
+        ? memory.getChannelSource("self")
+        : undefined;
+    if (selfSource)
+        tools.push(writeSelfToolDefinition);
     runtimeState.beginTurn({ model: cfg.model, maxToolRounds: cfg.maxToolRounds });
     memory.clearProtectedMessages();
     let finalText = "";
@@ -1563,6 +1620,22 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     }
                 }
             }
+            else if (marker.name === "resize") {
+                // @@resize('channel,width,height')@@ — dynamically resize a sensory channel grid
+                if (memory instanceof SensoryMemory) {
+                    const parts = marker.arg.split(",").map(s => s.trim());
+                    const channel = parts[0];
+                    const w = parseInt(parts[1], 10);
+                    const h = parseInt(parts[2], 10);
+                    if (channel && !isNaN(w) && !isNaN(h)) {
+                        memory.resize(channel, w, h);
+                        Logger.telemetry(`Stream marker: resize('${channel}',${w},${h})`);
+                    }
+                    else {
+                        Logger.warn(`Stream marker: resize('${marker.arg}') — invalid format, expected 'channel,width,height'`);
+                    }
+                }
+            }
             else if (marker.name === "resummarize") {
                 // Trigger batch re-summarization of all pages (background, yield-aware)
                 if (semanticInit) {
@@ -2067,6 +2140,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 else if (fnName === "Grep") {
                     result = executeGrep(fnArgs);
                 }
+                else if (fnName === "write_self" && selfSource) {
+                    result = executeWriteSelf(fnArgs, selfSource);
+                }
                 else {
                     const pluginResult = await toolRegistry.callTool(fnName, fnArgs);
                     if (pluginResult !== undefined) {
@@ -2134,6 +2210,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
         if (cfg.persistent && cfg.sessionPersistence && sessionId && round > 0 && round % AUTO_SAVE_INTERVAL === 0) {
             try {
                 await memory.save(sessionId);
+                saveSensorySnapshot(memory, sessionId);
                 Logger.debug(`Auto-saved session ${sessionId} at round ${round}`);
             }
             catch (e) {
@@ -2282,6 +2359,8 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
             }
         }
         surfaceResumeState(memory, sess?.meta.createdAt);
+        if (sessionId)
+            restoreSensorySnapshot(memory, sessionId);
     }
     await memory.add({ role: "user", from: "User", content: prompt });
     // Violation tracker for persistent mode
@@ -2316,6 +2395,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
     if (cfg.sessionPersistence) {
         try {
             await memory.save(sessionId);
+            saveSensorySnapshot(memory, sessionId);
         }
         catch (e) {
             Logger.error(C.red(`session save failed: ${asError(e).message}`));
@@ -2397,6 +2477,8 @@ async function interactive(cfg, driver, mcp, sessionId) {
             }
         }
         surfaceResumeState(memory, sess?.meta.createdAt);
+        if (sessionId)
+            restoreSensorySnapshot(memory, sessionId);
     }
     const rl = readline.createInterface({
         input: process.stdin,
@@ -2449,6 +2531,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
             if (cfg.sessionPersistence) {
                 try {
                     await memory.save(sessionId);
+                    saveSensorySnapshot(memory, sessionId);
                 }
                 catch (e) {
                     Logger.error(C.red(`session save failed: ${asError(e).message}`));
@@ -2466,6 +2549,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
         if (cfg.sessionPersistence) {
             try {
                 await memory.save(sessionId);
+                saveSensorySnapshot(memory, sessionId);
             }
             catch (e) {
                 Logger.error(C.red(`session save failed: ${asError(e).message}`));

@@ -53,9 +53,17 @@ export function cleanupOldSessions(maxAgeMs: number = 48 * 60 * 60 * 1000): numb
  *   .gro/
  *     context/
  *       <session-id>/
- *         messages.json   — full message history
- *         meta.json       — session metadata (model, provider, timestamps)
+ *         messages.json       — full message history
+ *         meta.json           — session metadata (model, provider, timestamps)
+ *         sensory-state.json  — sensory channel state (self content, dimensions, slots)
  */
+
+/** Persisted sensory channel state. */
+export interface SensoryState {
+  selfContent: string;
+  channelDimensions: Record<string, { width: number; height: number }>;
+  slots: [string | null, string | null, string | null];
+}
 
 export interface SessionMeta {
   id: string;
@@ -273,4 +281,33 @@ export function listSessions(): SessionMeta[] {
 
   sessions.sort((a, b) => b.mtime - a.mtime);
   return sessions.map(({ mtime: _, ...rest }) => rest);
+}
+
+/**
+ * Save sensory channel state for a session.
+ */
+export function saveSensoryState(id: string, state: SensoryState): void {
+  const dir = sessionDir(id);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  try {
+    writeFileSync(join(dir, "sensory-state.json"), JSON.stringify(state, null, 2));
+  } catch (e: unknown) {
+    Logger.warn(`Failed to save sensory state for session ${id}: ${asError(e).message}`);
+  }
+}
+
+/**
+ * Load sensory channel state for a session. Returns null if not found.
+ */
+export function loadSensoryState(id: string): SensoryState | null {
+  const path = join(sessionDir(id), "sensory-state.json");
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf-8"));
+  } catch (e: unknown) {
+    Logger.warn(`Failed to load sensory state for session ${id}: ${asError(e).message}`);
+    return null;
+  }
 }

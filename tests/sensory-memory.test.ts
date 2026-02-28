@@ -139,28 +139,31 @@ describe("SensoryMemory", () => {
     assert.ok(sensoryMsg.content.includes("channel 2 data"));
   });
 
-  test("per-channel token budget truncates content", () => {
+  test("per-channel token budget: grid enforcement bounds content", () => {
     const inner = new SimpleMemory();
     const sensory = new SensoryMemory(inner, { avgCharsPerToken: 1 });
 
     sensory.addChannel({
       name: "limited",
-      maxTokens: 10, // ~10 chars at 1 char/tok
+      maxTokens: 10,
       updateMode: "manual",
       content: "",
       enabled: true,
+      width: 20,
+      height: 5,
     });
 
-    // Push content exceeding budget
-    const longContent = "A".repeat(100);
+    // Push content exceeding budget — grid enforcement clips to width × height
+    const longContent = "A".repeat(500);
     sensory.update("limited", longContent);
 
     const msgs = sensory.messages();
-    // Even though the message is injected, the content should be truncated
     const sensoryMsg = msgs[0]; // no system prompt
     assert.ok(sensoryMsg.content.includes("SENSORY BUFFER"));
-    // The channel content should be truncated to ~10 chars + "..."
-    assert.ok(sensoryMsg.content.length < longContent.length + 100);
+    // Grid enforcement clips to 20×5 = ~100 chars + newlines + buffer wrapper
+    // Much smaller than the raw 500-char input
+    assert.ok(sensoryMsg.content.length < 300,
+      `Content should be bounded by grid enforcement, got ${sensoryMsg.content.length} chars`);
   });
 
   test("pollSources calls every_turn sources", async () => {
@@ -340,29 +343,10 @@ describe("SensoryMemory", () => {
 });
 
 describe("ContextMapSource", () => {
-  test("renders basic stats for SimpleMemory", async () => {
-    const inner = new SimpleMemory();
-    await inner.add(msg("user", "hello world"));
-    await inner.add(msg("assistant", "hi there"));
-
-    const source = new ContextMapSource(inner);
-    const output = await source.poll();
-
-    assert.ok(output);
-    // Spatial basic: used row + free row + stats line
-    assert.ok(output!.includes("used"));
-    assert.ok(output!.includes("free"));
-    assert.ok(/[▒░]/.test(output!));
-    assert.ok(output!.includes("simple"));
-    assert.ok(output!.includes("msgs"));
-    assert.ok(output!.includes("tok"));
-  });
-
-  test("renders virtual stats with spatial 2D rows", async () => {
-    // Create a mock that returns VirtualMemoryStats
-    const inner = new SimpleMemory();
-    // Override getStats to simulate VirtualMemory
-    (inner as any).getStats = () => ({
+  /** Helper to build a virtual stats mock with pageDigest. */
+  function virtualStats(overrides: Record<string, any> = {}) {
+    const now = new Date();
+    return {
       type: "virtual",
       totalMessages: 20,
       totalTokensEstimate: 5000,
@@ -384,37 +368,92 @@ describe("ContextMapSource", () => {
       ],
       pinnedMessages: 1,
       model: "claude-sonnet-4-5-20250514",
-    });
+      pageDigest: [
+        { id: "pg_001", label: "page 1", tokens: 1200, loaded: true, pinned: false, summary: "Discussion about testing", createdAt: now.toISOString(), messageCount: 5, maxImportance: 0.5, lane: "assistant" },
+        { id: "pg_002", label: "page 2", tokens: 800, loaded: true, pinned: false, summary: "User preferences", createdAt: now.toISOString(), messageCount: 3, maxImportance: 0.3, lane: "user" },
+        { id: "pg_003", label: "page 3", tokens: 400, loaded: false, pinned: false, summary: "System configuration", createdAt: now.toISOString(), messageCount: 2, maxImportance: 0.1, lane: "system" },
+      ],
+      ...overrides,
+    };
+  }
 
-    const source = new ContextMapSource(inner, { barWidth: 32 });
+  test("renders basic stats for SimpleMemory", async () => {
+    const inner = new SimpleMemory();
+    await inner.add(msg("user", "hello world"));
+    await inner.add(msg("assistant", "hi there"));
+
+    const source = new ContextMapSource(inner);
     const output = await source.poll();
 
     assert.ok(output);
-    // Spatial rows: each region gets its own row with fill chars
-    assert.ok(/[█▓▒░]/.test(output!));
-    // Should have sys row (█), page row (▓), lane rows (▒), free row (░)
-    assert.ok(output!.includes("█"), "should have sys row with █");
-    assert.ok(output!.includes("▓"), "should have page row with ▓");
-    assert.ok(output!.includes("▒"), "should have lane rows with ▒");
-    // Should contain lane labels
-    assert.ok(output!.includes(" ast "), "should have assistant lane row");
-    assert.ok(output!.includes(" usr "), "should have user lane row");
-    assert.ok(output!.includes("tool "), "should have tool lane row");
-    // Should contain free row
-    assert.ok(output!.includes("free"), "should have free row");
-    // Should contain stats line
-    assert.ok(output!.includes("K/"), "should have used/budget stats");
-    assert.ok(output!.includes("pg:2/5"));
-    assert.ok(output!.includes("sonnet"));
+    // Basic render: box with MEMORY header
+    assert.ok(output!.includes("MEMORY"), "should include MEMORY header");
+    assert.ok(output!.includes("msgs"), "should include message count");
+    assert.ok(output!.includes("╔"), "should have box top border");
+    assert.ok(output!.includes("╚"), "should have box bottom border");
+    assert.ok(output!.includes("║"), "should have box side borders");
   });
 
-  test("render stays under 300 tokens", async () => {
+  test("renders virtual stats with 6-section page viewer", async () => {
     const inner = new SimpleMemory();
-    (inner as any).getStats = () => ({
-      type: "virtual",
+    (inner as any).getStats = () => virtualStats();
+
+    const source = new ContextMapSource(inner);
+    const output = await source.poll();
+
+    assert.ok(output);
+    // All 6 sections should be present
+    assert.ok(output!.includes("PAGES"), "should have PAGES header");
+    assert.ok(output!.includes("LANES"), "should have LANES section divider");
+    assert.ok(output!.includes("SIZE HISTOGRAM"), "should have histogram section");
+    assert.ok(output!.includes("LOAD BUDGET"), "should have load budget section");
+
+    // Lane glyphs
+    assert.ok(output!.includes("🤖"), "should have assistant glyph");
+    assert.ok(output!.includes("👤"), "should have user glyph");
+    assert.ok(output!.includes("🔧"), "should have tool glyph");
+
+    // Lane abbreviations
+    assert.ok(output!.includes("asst"), "should have assistant lane label");
+    assert.ok(output!.includes("user"), "should have user lane label");
+    assert.ok(output!.includes("tool"), "should have tool lane label");
+
+    // Page rows
+    assert.ok(output!.includes("pg_001"), "should show first page ID");
+    assert.ok(output!.includes("pg_003"), "should show third page ID");
+
+    // Fill bars (█ and ░)
+    assert.ok(output!.includes("█"), "should have filled bar segments");
+    assert.ok(output!.includes("░"), "should have empty bar segments");
+
+    // Box drawing
+    assert.ok(output!.includes("╔"), "should have top border");
+    assert.ok(output!.includes("╚"), "should have bottom border");
+    assert.ok(output!.includes("╠"), "should have section dividers");
+  });
+
+  test("render stays under 1200 tokens", async () => {
+    const now = new Date();
+    const pages = [];
+    for (let i = 0; i < 14; i++) {
+      pages.push({
+        id: `pg_${String(i).padStart(3, "0")}`,
+        label: `page ${i}`,
+        tokens: 300 + i * 400,
+        loaded: i < 3,
+        pinned: i === 0,
+        summary: `Summary for page ${i} with some content`,
+        createdAt: new Date(now.getTime() - i * 3600000).toISOString(),
+        messageCount: 2 + i,
+        maxImportance: i === 5 ? 0.9 : 0.3,
+        lane: ["assistant", "user", "tool", "system"][i % 4],
+      });
+    }
+
+    const inner = new SimpleMemory();
+    (inner as any).getStats = () => virtualStats({
       totalMessages: 100,
       totalTokensEstimate: 25000,
-      bufferMessages: 100,
       systemTokens: 2800,
       workingMemoryBudget: 32000,
       workingMemoryUsed: 25000,
@@ -422,92 +461,67 @@ describe("ContextMapSource", () => {
       pageSlotUsed: 4800,
       pagesAvailable: 14,
       pagesLoaded: 3,
-      highRatio: 0.75,
       compactionActive: true,
-      thinkingBudget: 0.8,
       lanes: [
         { role: "assistant", tokens: 11000, count: 30 },
         { role: "user", tokens: 6000, count: 25 },
         { role: "tool", tokens: 5000, count: 20 },
         { role: "system", tokens: 2800, count: 10 },
       ],
-      pinnedMessages: 3,
-      model: "claude-opus-4-5-20250514",
+      pageDigest: pages,
     });
 
-    const source = new ContextMapSource(inner, { barWidth: 32 });
+    const source = new ContextMapSource(inner);
     const output = await source.poll();
 
     assert.ok(output);
     // Rough token estimate: chars / 2.8
     const estimatedTokens = output!.length / 2.8;
-    assert.ok(estimatedTokens < 300, `Render too long: ~${Math.round(estimatedTokens)} tokens (${output!.length} chars)`);
+    assert.ok(estimatedTokens < 1200, `Render too long: ~${Math.round(estimatedTokens)} tokens (${output!.length} chars)`);
   });
 
-  test("LOW indicator when free < 20%", async () => {
+  test("anchors section shows high-importance pages", async () => {
+    const now = new Date();
     const inner = new SimpleMemory();
-    (inner as any).getStats = () => ({
-      type: "virtual",
-      totalMessages: 50,
-      totalTokensEstimate: 18000,
-      bufferMessages: 50,
-      systemTokens: 2000,
-      workingMemoryBudget: 12000,
-      workingMemoryUsed: 11000,
-      pageSlotBudget: 8000,
-      pageSlotUsed: 6000,
-      pagesAvailable: 5,
-      pagesLoaded: 3,
-      highRatio: 0.75,
-      compactionActive: false,
-      thinkingBudget: 0.5,
-      lanes: [
-        { role: "assistant", tokens: 6000, count: 20 },
-        { role: "user", tokens: 5000, count: 15 },
+    (inner as any).getStats = () => virtualStats({
+      pageDigest: [
+        { id: "pg_anchor1", label: "anchor 1", tokens: 500, loaded: true, pinned: false, summary: "Critical decision about architecture", createdAt: now.toISOString(), messageCount: 4, maxImportance: 0.9, lane: "assistant" },
+        { id: "pg_normal", label: "normal", tokens: 300, loaded: false, pinned: false, summary: "Regular conversation", createdAt: now.toISOString(), messageCount: 2, maxImportance: 0.3, lane: "user" },
+        { id: "pg_anchor2", label: "anchor 2", tokens: 800, loaded: false, pinned: false, summary: "Key user requirement", createdAt: now.toISOString(), messageCount: 6, maxImportance: 0.85, lane: "user" },
       ],
-      pinnedMessages: 0,
-      model: "sonnet",
     });
 
-    const source = new ContextMapSource(inner, { barWidth: 32 });
+    const source = new ContextMapSource(inner);
     const output = await source.poll();
 
     assert.ok(output);
-    // free = 20000 - 2000 - 6000 - 11000 = 1000, freePct = 1000/20000 = 5% → LOW
-    assert.ok(output!.includes("← LOW"), "should show LOW indicator when free < 20%");
+    assert.ok(output!.includes("ANCHORS"), "should have anchors section");
+    assert.ok(output!.includes("pg_anchor1"), "should show first anchor page");
+    assert.ok(output!.includes("pg_anchor2"), "should show second anchor page");
+    assert.ok(output!.includes("★"), "should have star marker for anchors");
   });
 
-  test("no LOW indicator when free is abundant", async () => {
+  test("histogram shows page size distribution", async () => {
+    const now = new Date();
     const inner = new SimpleMemory();
-    (inner as any).getStats = () => ({
-      type: "virtual",
-      totalMessages: 10,
-      totalTokensEstimate: 3000,
-      bufferMessages: 10,
-      systemTokens: 500,
-      workingMemoryBudget: 8000,
-      workingMemoryUsed: 2000,
-      pageSlotBudget: 6000,
-      pageSlotUsed: 0,
-      pagesAvailable: 2,
-      pagesLoaded: 0,
-      highRatio: 0.75,
-      compactionActive: false,
-      thinkingBudget: null,
-      lanes: [
-        { role: "assistant", tokens: 1000, count: 5 },
-        { role: "user", tokens: 1000, count: 5 },
+    (inner as any).getStats = () => virtualStats({
+      pageDigest: [
+        { id: "pg_tiny", label: "tiny", tokens: 50, loaded: false, pinned: false, summary: "Tiny page", createdAt: now.toISOString(), messageCount: 1, maxImportance: 0, lane: "system" },
+        { id: "pg_small", label: "small", tokens: 500, loaded: false, pinned: false, summary: "Small page", createdAt: now.toISOString(), messageCount: 2, maxImportance: 0, lane: "user" },
+        { id: "pg_med", label: "medium", tokens: 2500, loaded: true, pinned: false, summary: "Medium page", createdAt: now.toISOString(), messageCount: 5, maxImportance: 0, lane: "assistant" },
+        { id: "pg_big", label: "large", tokens: 5500, loaded: true, pinned: false, summary: "Large page", createdAt: now.toISOString(), messageCount: 10, maxImportance: 0, lane: "tool" },
       ],
-      pinnedMessages: 0,
-      model: "haiku",
     });
 
-    const source = new ContextMapSource(inner, { barWidth: 32 });
+    const source = new ContextMapSource(inner);
     const output = await source.poll();
 
     assert.ok(output);
-    // free = 14000 - 500 - 0 - 2000 = 11500, freePct = 82% → no LOW
-    assert.ok(!output!.includes("← LOW"), "should not show LOW when free > 20%");
+    assert.ok(output!.includes("SIZE HISTOGRAM"), "should have histogram section");
+    assert.ok(output!.includes("<100"), "should have tiny bucket");
+    assert.ok(output!.includes("<1000"), "should have small bucket");
+    assert.ok(output!.includes("<5000"), "should have medium bucket");
+    assert.ok(output!.includes("pages"), "should show page counts in buckets");
   });
 
   test("graceful degradation for basic memory types", async () => {
@@ -517,10 +531,10 @@ describe("ContextMapSource", () => {
     const source = new ContextMapSource(inner);
     const output = await source.poll();
 
-    // Should render without error
+    // Should render without error as a compact MEMORY box
     assert.ok(output);
-    assert.ok(output!.includes("simple"));
-    assert.ok(output!.includes("used"));
+    assert.ok(output!.includes("MEMORY"), "should include MEMORY header for basic type");
+    assert.ok(output!.includes("msgs"), "should include message count");
   });
 
   test("setMemory updates the memory reference", async () => {
@@ -540,76 +554,90 @@ describe("ContextMapSource", () => {
     assert.ok(output!.includes("2 msgs"));
   });
 
-  test("showLanes=false omits individual lane rows", async () => {
+  test("drill-down filter renders page detail", async () => {
+    const now = new Date();
     const inner = new SimpleMemory();
-    (inner as any).getStats = () => ({
-      type: "virtual",
-      totalMessages: 10,
-      totalTokensEstimate: 3000,
-      bufferMessages: 10,
-      systemTokens: 200,
-      workingMemoryBudget: 8000,
-      workingMemoryUsed: 3000,
-      pageSlotBudget: 4000,
-      pageSlotUsed: 1200,
-      pagesAvailable: 2,
-      pagesLoaded: 1,
-      highRatio: 0.75,
-      compactionActive: false,
-      thinkingBudget: null,
-      lanes: [
-        { role: "assistant", tokens: 1500, count: 5 },
-        { role: "user", tokens: 1500, count: 5 },
+    (inner as any).getStats = () => virtualStats({
+      pageDigest: [
+        { id: "pg_target", label: "target page", tokens: 1200, loaded: true, pinned: false, summary: "Detailed discussion about authentication flow", createdAt: now.toISOString(), messageCount: 8, maxImportance: 0.7, lane: "assistant" },
+        { id: "pg_other", label: "other page", tokens: 600, loaded: false, pinned: false, summary: "Other content", createdAt: now.toISOString(), messageCount: 3, maxImportance: 0.2, lane: "user" },
       ],
-      pinnedMessages: 0,
-      model: "haiku",
     });
 
-    const source = new ContextMapSource(inner, { showLanes: false });
+    const source = new ContextMapSource(inner);
+
+    // Set drill-down filter to a specific page
+    source.setFilter("pg_target");
     const output = await source.poll();
 
     assert.ok(output);
-    // Should NOT contain lane row labels
-    assert.ok(!output!.includes(" ast "), "should not show ast lane row");
-    assert.ok(!output!.includes(" usr "), "should not show usr lane row");
-    // Should still contain sys, free, and stats
-    assert.ok(output!.includes(" sys ") || output!.includes("█"), "should still show sys row");
-    assert.ok(output!.includes("free"), "should still show free row");
-    assert.ok(output!.includes("pg:"), "should still show stats line");
+    assert.ok(output!.includes("pg_target"), "should show target page ID");
+    assert.ok(output!.includes("page detail"), "should indicate drill-down mode");
+    assert.ok(output!.includes("1.2k") || output!.includes("1200"), "should show token count");
+    assert.ok(output!.includes("assistant"), "should show lane");
+
+    // Filter should be consumed (one-shot)
+    const output2 = await source.poll();
+    assert.ok(output2);
+    assert.ok(output2!.includes("PAGES"), "should return to normal view after filter consumed");
   });
 
-  test("LOW indicator when compaction is active", async () => {
+  test("load budget section shows slot usage", async () => {
     const inner = new SimpleMemory();
-    (inner as any).getStats = () => ({
-      type: "virtual",
-      totalMessages: 30,
-      totalTokensEstimate: 10000,
-      bufferMessages: 30,
-      systemTokens: 1000,
-      workingMemoryBudget: 16000,
-      workingMemoryUsed: 5000,
-      pageSlotBudget: 8000,
-      pageSlotUsed: 2000,
-      pagesAvailable: 5,
-      pagesLoaded: 2,
-      highRatio: 0.75,
-      compactionActive: true,
-      thinkingBudget: 0.5,
-      lanes: [
-        { role: "assistant", tokens: 3000, count: 15 },
-        { role: "user", tokens: 2000, count: 10 },
-      ],
-      pinnedMessages: 0,
-      model: "sonnet",
+    (inner as any).getStats = () => virtualStats({
+      pageSlotBudget: 18000,
+      pageSlotUsed: 6000,
     });
 
-    const source = new ContextMapSource(inner, { barWidth: 32 });
+    const source = new ContextMapSource(inner);
     const output = await source.poll();
 
     assert.ok(output);
-    // free = 24000 - 1000 - 2000 - 5000 = 16000, freePct = 66% > 20%
-    // But compactionActive is true → should still show LOW
-    assert.ok(output!.includes("← LOW"), "should show LOW when compaction is active");
+    assert.ok(output!.includes("LOAD BUDGET"), "should have load budget section");
+    assert.ok(output!.includes("slots:"), "should show slots label");
+    assert.ok(output!.includes("used"), "should show used indicator");
+    assert.ok(output!.includes("budget"), "should show budget indicator");
+  });
+
+  test("page rows show loaded/unloaded/pinned status", async () => {
+    const now = new Date();
+    const inner = new SimpleMemory();
+    (inner as any).getStats = () => virtualStats({
+      pagesLoaded: 2,
+      pageDigest: [
+        { id: "pg_live", label: "live", tokens: 500, loaded: true, pinned: false, summary: "Live page", createdAt: now.toISOString(), messageCount: 3, maxImportance: 0, lane: "assistant" },
+        { id: "pg_pinned", label: "pinned", tokens: 300, loaded: true, pinned: true, summary: "Pinned page", createdAt: now.toISOString(), messageCount: 2, maxImportance: 0, lane: "system" },
+        { id: "pg_dark", label: "dark", tokens: 200, loaded: false, pinned: false, summary: "Dark page", createdAt: now.toISOString(), messageCount: 1, maxImportance: 0, lane: "user" },
+      ],
+    });
+
+    const source = new ContextMapSource(inner);
+    const output = await source.poll();
+
+    assert.ok(output);
+    // Status indicators
+    assert.ok(output!.includes("live"), "should show live status for loaded pages");
+    assert.ok(output!.includes("dark"), "should show dark status for unloaded pages");
+    assert.ok(output!.includes("pin"), "should show pin status for pinned pages");
+  });
+
+  test("empty page digest renders gracefully", async () => {
+    const inner = new SimpleMemory();
+    (inner as any).getStats = () => virtualStats({
+      pageDigest: [],
+      pagesLoaded: 0,
+      pagesAvailable: 0,
+    });
+
+    const source = new ContextMapSource(inner);
+    const output = await source.poll();
+
+    assert.ok(output);
+    assert.ok(output!.includes("PAGES"), "should have PAGES header");
+    assert.ok(output!.includes("0 total"), "should show 0 total pages");
+    assert.ok(output!.includes("no pages"), "should show no pages indicator");
+    assert.ok(output!.includes("SIZE HISTOGRAM"), "should still have histogram");
+    assert.ok(output!.includes("LOAD BUDGET"), "should still have load budget");
   });
 });
 
@@ -620,7 +648,7 @@ describe("SensoryMemory + ContextMapSource integration", () => {
     await inner.add(msg("assistant", "4"));
 
     const sensory = new SensoryMemory(inner, { totalBudget: 500 });
-    const contextMap = new ContextMapSource(inner, { barWidth: 16 });
+    const contextMap = new ContextMapSource(inner);
 
     sensory.addChannel({
       name: "context",
@@ -640,7 +668,7 @@ describe("SensoryMemory + ContextMapSource integration", () => {
     assert.strictEqual(msgs[0].content, "You are a helpful assistant.");
     assert.strictEqual(msgs[1].role, "system");
     assert.ok(msgs[1].content.includes("SENSORY BUFFER"));
-    assert.ok(msgs[1].content.includes("simple")); // basic render for SimpleMemory
+    assert.ok(msgs[1].content.includes("MEMORY")); // basic render for SimpleMemory
     assert.strictEqual(msgs[2].content, "What is 2+2?");
     assert.strictEqual(msgs[3].content, "4");
   });

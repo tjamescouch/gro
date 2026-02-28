@@ -902,7 +902,7 @@ function saveSensorySnapshot(mem, sessionId) {
     saveSensoryState(sessionId, {
         selfContent,
         channelDimensions: sensory.getChannelDimensions(),
-        slots: sensory.getSlots(),
+        slots: [null, null, null], // slots are ephemeral UI state — always boot from defaults
     });
 }
 /** Restore sensory channel state after session load. */
@@ -924,10 +924,8 @@ function restoreSensorySnapshot(mem, sessionId) {
     if (state.channelDimensions) {
         sensory.restoreChannelDimensions(state.channelDimensions);
     }
-    // Restore slot assignments
-    if (state.slots) {
-        sensory.restoreSlots(state.slots);
-    }
+    // Slots are ephemeral UI state — always boot from defaults set in wrapWithSensory().
+    // Persisted slots were the root cause of slot corruption (e.g. @@view('self')@@ persisted).
     Logger.debug(`Restored sensory state for session ${sessionId}`);
 }
 /** After session load, surface integrity status and restore session origin for temporal bar. */

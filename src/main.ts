@@ -955,7 +955,7 @@ function saveSensorySnapshot(mem: AgentMemory, sessionId: string): void {
   saveSensoryState(sessionId, {
     selfContent,
     channelDimensions: sensory.getChannelDimensions(),
-    slots: sensory.getSlots(),
+    slots: [null, null, null], // slots are ephemeral UI state — always boot from defaults
   });
 }
 
@@ -976,10 +976,8 @@ function restoreSensorySnapshot(mem: AgentMemory, sessionId: string): void {
   if (state.channelDimensions) {
     sensory.restoreChannelDimensions(state.channelDimensions);
   }
-  // Restore slot assignments
-  if (state.slots) {
-    sensory.restoreSlots(state.slots);
-  }
+  // Slots are ephemeral UI state — always boot from defaults set in wrapWithSensory().
+  // Persisted slots were the root cause of slot corruption (e.g. @@view('self')@@ persisted).
   Logger.debug(`Restored sensory state for session ${sessionId}`);
 }
 

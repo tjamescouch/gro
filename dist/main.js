@@ -2466,10 +2466,15 @@ async function interactive(cfg, driver, mcp, sessionId) {
         if (sessionId)
             restoreSensorySnapshot(memory, sessionId);
     }
+    // terminal mode must match stdin's TTY state, not stderr's. If readline thinks
+    // it's a terminal (because stderr.isTTY) but stdin can't setRawMode, kernel echo
+    // stays on AND readline echoes = doubled input. Guard with stdin.isTTY check.
+    const isTerminal = !!(process.stdin.isTTY && typeof process.stdin.setRawMode === "function");
     const rl = readline.createInterface({
         input: process.stdin,
         output: process.stderr,
-        prompt: C.cyan("you > "),
+        terminal: isTerminal,
+        prompt: isTerminal ? C.cyan("you > ") : "you > ",
     });
     const toolCount = mcp.getToolDefinitions().length;
     if (Logger.isVerbose()) {

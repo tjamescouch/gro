@@ -62,6 +62,7 @@ export function cleanupOldSessions(maxAgeMs: number = 48 * 60 * 60 * 1000): numb
 export interface SensoryState {
   selfContent: string;
   channelDimensions: Record<string, { width: number; height: number }>;
+  slotAssignments?: [string | null, string | null, string | null];
 }
 
 export interface SessionMeta {

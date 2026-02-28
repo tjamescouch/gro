@@ -839,6 +839,7 @@ function saveSensorySnapshot(mem, sessionId) {
     saveSensoryState(sessionId, {
         selfContent,
         channelDimensions: sensory.getChannelDimensions(),
+        slotAssignments: [sensory.getSlot(0), sensory.getSlot(1), sensory.getSlot(2)],
     });
 }
 /** Restore sensory channel state after session load. */
@@ -859,6 +860,13 @@ function restoreSensorySnapshot(mem, sessionId) {
     // Restore channel dimensions
     if (state.channelDimensions) {
         sensory.restoreChannelDimensions(state.channelDimensions);
+    }
+    // Restore slot assignments
+    if (state.slotAssignments) {
+        state.slotAssignments.forEach((ch, i) => {
+            if (ch)
+                sensory.setSlot(i, ch);
+        });
     }
     Logger.debug(`Restored sensory state for session ${sessionId}`);
 }

@@ -241,7 +241,11 @@ export class SensoryMemory extends AgentMemory {
     return [...this.slots] as [string | null, string | null, string | null];
   }
 
-  /** Restore slot assignments (from persistence). Rejects non-viewable or duplicate entries. */
+  /** Default slot assignments — used as fallback when restoring corrupted state. */
+  private static readonly DEFAULT_SLOTS: [string, string, string] = ["context", "time", "config"];
+
+  /** Restore slot assignments (from persistence). Rejects non-viewable or duplicate entries,
+   *  backfills empty slots from defaults. */
   restoreSlots(slots: [string | null, string | null, string | null]): void {
     const validated = [...slots] as [string | null, string | null, string | null];
     const seen = new Set<string>();
@@ -256,8 +260,18 @@ export class SensoryMemory extends AgentMemory {
         seen.add(name);
       }
     }
+    // Backfill empty slots from defaults (only if the default channel isn't already assigned)
     if (corrupted) {
-      Logger.warn(`[Sensory] restoreSlots: corrupted state ${JSON.stringify(slots)}, sanitized to ${JSON.stringify(validated)}`);
+      for (let i = 0; i < 3; i++) {
+        if (validated[i] === null) {
+          const fallback = SensoryMemory.DEFAULT_SLOTS[i];
+          if (this.channels.has(fallback) && !seen.has(fallback)) {
+            validated[i] = fallback;
+            seen.add(fallback);
+          }
+        }
+      }
+      Logger.warn(`[Sensory] restoreSlots: corrupted state ${JSON.stringify(slots)}, healed to ${JSON.stringify(validated)}`);
     }
     this.slots = validated;
   }

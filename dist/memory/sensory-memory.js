@@ -190,7 +190,8 @@ export class SensoryMemory extends AgentMemory {
     getSlots() {
         return [...this.slots];
     }
-    /** Restore slot assignments (from persistence). Rejects non-viewable or duplicate entries. */
+    /** Restore slot assignments (from persistence). Rejects non-viewable or duplicate entries,
+     *  backfills empty slots from defaults. */
     restoreSlots(slots) {
         const validated = [...slots];
         const seen = new Set();
@@ -207,8 +208,18 @@ export class SensoryMemory extends AgentMemory {
                 seen.add(name);
             }
         }
+        // Backfill empty slots from defaults (only if the default channel isn't already assigned)
         if (corrupted) {
-            Logger.warn(`[Sensory] restoreSlots: corrupted state ${JSON.stringify(slots)}, sanitized to ${JSON.stringify(validated)}`);
+            for (let i = 0; i < 3; i++) {
+                if (validated[i] === null) {
+                    const fallback = SensoryMemory.DEFAULT_SLOTS[i];
+                    if (this.channels.has(fallback) && !seen.has(fallback)) {
+                        validated[i] = fallback;
+                        seen.add(fallback);
+                    }
+                }
+            }
+            Logger.warn(`[Sensory] restoreSlots: corrupted state ${JSON.stringify(slots)}, healed to ${JSON.stringify(validated)}`);
         }
         this.slots = validated;
     }
@@ -444,3 +455,5 @@ export class SensoryMemory extends AgentMemory {
 }
 /** Channels that cannot be assigned to camera slots (canvas-only). */
 SensoryMemory.NON_VIEWABLE = new Set(["self"]);
+/** Default slot assignments — used as fallback when restoring corrupted state. */
+SensoryMemory.DEFAULT_SLOTS = ["context", "time", "config"];

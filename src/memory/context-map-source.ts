@@ -40,6 +40,8 @@ export interface ContextMapConfig {
   showLanes?: boolean;
   /** Include page row (default: true) */
   showPages?: boolean;
+  /** Character budget for the rendered output (default: 0 = unlimited) */
+  maxChars?: number;
 }
 
 export class ContextMapSource implements SensorySource {
@@ -54,6 +56,7 @@ export class ContextMapSource implements SensorySource {
       barWidth: config?.barWidth ?? 32,
       showLanes: config?.showLanes ?? true,
       showPages: config?.showPages ?? true,
+      maxChars: config?.maxChars ?? 0,
     };
   }
 
@@ -147,7 +150,12 @@ export class ContextMapSource implements SensorySource {
 
     // Page digest — compact listing of all pages with short summaries
     if (this.config.showPages && stats.pageDigest && stats.pageDigest.length > 0) {
-      lines.push(this.renderPageDigest(stats.pageDigest));
+      // Calculate remaining character budget for page digest
+      const usedSoFar = lines.reduce((sum, l) => sum + l.length + 1, 0); // +1 for \n
+      const remaining = this.config.maxChars > 0
+        ? Math.max(100, this.config.maxChars - usedSoFar)
+        : 0;
+      lines.push(this.renderPageDigest(stats.pageDigest, remaining));
     }
 
     return lines.join("\n");
@@ -215,8 +223,12 @@ export class ContextMapSource implements SensorySource {
     return s.length > maxLen ? s.slice(0, maxLen - 3) + "..." : s;
   }
 
-  /** Render page digest as a time-grouped tree the agent can browse and ref from. */
-  private renderPageDigest(pages: PageDigestEntry[]): string {
+  /**
+   * Render page digest as a time-grouped tree the agent can browse and ref from.
+   * @param charBudget Max chars for this section (0 = unlimited). Entries are
+   *        trimmed to fit while preserving the hint line and loaded pages.
+   */
+  private renderPageDigest(pages: PageDigestEntry[], charBudget = 0): string {
     const now = new Date();
     const filter = this.filter;
 
@@ -240,6 +252,12 @@ export class ContextMapSource implements SensorySource {
       if (page) return this.renderSinglePage(page, pages.length, loaded.length, usedK, budgetK);
     }
 
+    // Hint line — built first so we can reserve space for it
+    const hintLine = filter
+      ? `@@view('context')@@ to reset`
+      : `view('context:today|full|pg_id')`;
+    const hintReserve = hintLine.length + 1; // +1 for \n
+
     const lines: string[] = [`pages: ${pages.length} total, ${loaded.length} loaded (${usedK}K/${budgetK}K budget)`];
 
     // Loaded/pinned pages always shown individually
@@ -248,6 +266,11 @@ export class ContextMapSource implements SensorySource {
       const tokK = (p.tokens / 1000).toFixed(1);
       lines.push(`  ${status} ${p.id} (${tokK}K) ${this.compactSummary(p.summary, p.label)}`);
     }
+
+    /** Check if adding a line would overflow the character budget. */
+    const charsSoFar = () => lines.reduce((sum, l) => sum + l.length + 1, 0);
+    const wouldOverflow = (line: string) =>
+      charBudget > 0 && (charsSoFar() + line.length + 1 + hintReserve > charBudget);
 
     // Group unloaded by time bucket
     if (unloaded.length > 0) {
@@ -269,24 +292,38 @@ export class ContextMapSource implements SensorySource {
         // Full mode: expand all buckets (cap per bucket to stay within budget)
         for (const bucket of bucketOrder) {
           const items = buckets.get(bucket)!;
-          lines.push(`  ${bucket} (${items.length}):`);
-          const shown = items.slice(0, 15);
-          for (const p of shown) {
-            lines.push(`    · ${p.id} ${this.compactSummary(p.summary, p.label, 40)}`);
+          const header = `  ${bucket} (${items.length}):`;
+          if (wouldOverflow(header)) break;
+          lines.push(header);
+          let shown = 0;
+          for (const p of items.slice(0, 15)) {
+            const line = `    · ${p.id} ${this.compactSummary(p.summary, p.label, 40)}`;
+            if (wouldOverflow(line)) break;
+            lines.push(line);
+            shown++;
           }
-          if (items.length > 15) lines.push(`    +${items.length - 15} more`);
+          if (shown < items.length) {
+            const more = `    +${items.length - shown} more`;
+            if (!wouldOverflow(more)) lines.push(more);
+          }
         }
       } else if (filter && this.isTimeBucketFilter(filter)) {
         // Time bucket filter: expand only matching bucket, collapse others
         for (const bucket of bucketOrder) {
           const items = buckets.get(bucket)!;
           if (bucket === filter) {
-            lines.push(`  ${bucket} (${items.length}):`);
+            const header = `  ${bucket} (${items.length}):`;
+            if (wouldOverflow(header)) break;
+            lines.push(header);
             for (const p of items) {
-              lines.push(`    · ${p.id} (${(p.tokens / 1000).toFixed(1)}K) ${this.compactSummary(p.summary, p.label)}`);
+              const line = `    · ${p.id} (${(p.tokens / 1000).toFixed(1)}K) ${this.compactSummary(p.summary, p.label)}`;
+              if (wouldOverflow(line)) break;
+              lines.push(line);
             }
           } else {
-            lines.push(`  ${bucket} (${items.length})`);
+            const line = `  ${bucket} (${items.length})`;
+            if (wouldOverflow(line)) break;
+            lines.push(line);
           }
         }
       } else {
@@ -296,25 +333,31 @@ export class ContextMapSource implements SensorySource {
           const items = buckets.get(bucket)!;
           if (!firstBucketExpanded) {
             firstBucketExpanded = true;
-            lines.push(`  ${bucket} (${items.length}):`);
-            const shown = items.slice(0, 5);
-            for (const p of shown) {
-              lines.push(`    · ${p.id} (${(p.tokens / 1000).toFixed(1)}K) ${this.compactSummary(p.summary, p.label)}`);
+            const header = `  ${bucket} (${items.length}):`;
+            if (wouldOverflow(header)) break;
+            lines.push(header);
+            let shown = 0;
+            for (const p of items.slice(0, 5)) {
+              const line = `    · ${p.id} (${(p.tokens / 1000).toFixed(1)}K) ${this.compactSummary(p.summary, p.label)}`;
+              if (wouldOverflow(line)) break;
+              lines.push(line);
+              shown++;
             }
-            if (items.length > 5) lines.push(`    +${items.length - 5} more`);
+            if (shown < items.length) {
+              const more = `    +${items.length - shown} more`;
+              if (!wouldOverflow(more)) lines.push(more);
+            }
           } else {
-            lines.push(`  ${bucket} (${items.length})`);
+            const line = `  ${bucket} (${items.length})`;
+            if (wouldOverflow(line)) break;
+            lines.push(line);
           }
         }
       }
     }
 
-    // Hint line — compact syntax reminder
-    if (filter) {
-      lines.push(`@@view('context')@@ to reset`);
-    } else {
-      lines.push(`view('context:today|full|pg_id')`);
-    }
+    // Hint line — always included (space was reserved)
+    lines.push(hintLine);
     return lines.join("\n");
   }
 

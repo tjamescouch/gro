@@ -265,7 +265,7 @@ export class ContextMapSource {
         const glyph = laneGlyph(p.lane);
         const d = new Date(p.createdAt);
         const time = fmtHHMM(d);
-        const msgs = lpad(String(p.messageCount), 4);
+        const msgs = lpad(String(p.messageCount ?? 0), 4);
         const toks = lpad(fmtTok(p.tokens), 5) + "t";
         let status;
         if (p.pinned)

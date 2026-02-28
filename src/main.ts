@@ -60,6 +60,7 @@ import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { writeSelfToolDefinition, executeWriteSelf } from "./tools/write-self.js";
 import { writeSourceToolDefinition, handleWriteSource } from "./plastic/write-source.js";
+import { exportChanges, exportChangesToolDefinition, handleExportChanges } from "./plastic/export.js";
 import { injectSourcePages } from "./plastic/init.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
 import { ViolationTracker, ThinkingLoopDetector } from "./violations.js";
@@ -1128,9 +1129,10 @@ async function executeTurn(
     ? memory.getChannelSource("self") as SelfSource | undefined
     : undefined;
   if (selfSource) tools.push(writeSelfToolDefinition);
-  // PLASTIC mode: register write_source tool for self-modification
+  // PLASTIC mode: register write_source and export_changes tools
   if (process.env.GRO_PLASTIC) {
     tools.push(writeSourceToolDefinition);
+    tools.push(exportChangesToolDefinition);
   }
   runtimeState.beginTurn({ model: cfg.model, maxToolRounds: cfg.maxToolRounds });
   memory.clearProtectedMessages();
@@ -1699,6 +1701,17 @@ async function executeTurn(
           process.exit(75);
         }, 3000);
       }
+    } else if (marker.name === "export") {
+      if (!process.env.GRO_PLASTIC) {
+        Logger.warn("Stream marker: @@export@@ — ignored (not in PLASTIC mode)");
+      } else {
+        try {
+          const { patchPath, fileCount } = exportChanges();
+          Logger.telemetry(`Stream marker: @@export@@ — wrote ${fileCount} file diff(s) to ${patchPath}`);
+        } catch (e: unknown) {
+          Logger.warn(`@@export@@ failed: ${e instanceof Error ? e.message : e}`);
+        }
+      }
     }
    };
 
@@ -2239,6 +2252,8 @@ async function executeTurn(
           result = executeWriteSelf(fnArgs as { content: string }, selfSource);
         } else if (fnName === "write_source" && process.env.GRO_PLASTIC) {
           result = handleWriteSource(fnArgs as { path: string; content: string });
+        } else if (fnName === "export_changes" && process.env.GRO_PLASTIC) {
+          result = handleExportChanges();
         } else {
           const pluginResult = await toolRegistry.callTool(fnName, fnArgs);
           if (pluginResult !== undefined) {
@@ -2889,6 +2904,14 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
       } catch (e: unknown) {
         Logger.error(C.red(`session save on ${sig} failed: ${asError(e).message}`));
       }
+    }
+    // Auto-export PLASTIC changes on clean shutdown
+    if (process.env.GRO_PLASTIC) {
+      try {
+        const { exportChanges } = await import("./plastic/export.js");
+        const { fileCount } = exportChanges();
+        if (fileCount > 0) Logger.info(C.gray(`exported ${fileCount} PLASTIC change(s) to changes.patch`));
+      } catch {}
     }
     Logger.info(spendMeter.formatSummary());
     process.exit(0);

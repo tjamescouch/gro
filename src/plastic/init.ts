@@ -198,6 +198,13 @@ export async function init(): Promise<void> {
   // Resolve project root for source file access
   const projectRoot = getProjectRoot(stockDir);
 
+  // Mirror src/ into plastic/src/ so the agent can write TypeScript source
+  // for export. The host can extract TS-level patches from this directory.
+  const stockSrcDir = join(projectRoot, "src");
+  if (existsSync(stockSrcDir)) {
+    mirrorWithCopies(stockSrcDir, join(PLASTIC_DIR, "src"));
+  }
+
   // Generate source pages
   const { pages } = generateSourcePages(projectRoot);
 

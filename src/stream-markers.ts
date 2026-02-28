@@ -95,7 +95,7 @@ const THINKING_MARKERS = new Set(["think", "relax", "zzz", "thinking"]);
 const RESERVED_MARKERS = new Set([
   "model-change", "ref", "unref", "importance", "thinking", "think", "relax", "zzz",
   "memory", "callback", "emotion", "dim", "working", "memory-hotreload", "learn",
-  "recall", "max-context", "sense", "view", "resize", "resummarize", "reboot"
+  "recall", "max-context", "sense", "view", "resize", "resummarize", "reboot", "export"
 ]);
 
 /**

@@ -26,16 +26,56 @@ import { Logger } from "../logger.js";
 const DEFAULT_GRID_WIDTH = 48;
 const DEFAULT_GRID_HEIGHT = 12;
 /**
+ * Word-wrap a single line to fit within `width` characters.
+ * Breaks at spaces when possible, hard-breaks otherwise.
+ */
+function wrapLine(line, width) {
+    if (line.length <= width)
+        return [line];
+    const wrapped = [];
+    let remaining = line;
+    while (remaining.length > width) {
+        // Find last space within width for word-break
+        let breakAt = remaining.lastIndexOf(" ", width);
+        if (breakAt <= 0)
+            breakAt = width; // hard-break if no space
+        wrapped.push(remaining.slice(0, breakAt));
+        remaining = remaining.slice(breakAt).trimStart();
+    }
+    if (remaining)
+        wrapped.push(remaining);
+    return wrapped;
+}
+/**
  * Enforce a fixed-width, fixed-height character grid.
- * Every line is padded/truncated to exactly `width` chars.
- * Total line count is padded/truncated to exactly `height` lines.
+ * - Word-wraps long lines to fit within `width`.
+ * - Every line padded to exactly `width` chars.
+ * - If content exceeds `height`, last visible line ends with `…`.
+ * - If content is shorter than `height`, empty lines padded with spaces.
  */
 function enforceGrid(content, width, height) {
-    const lines = content.split("\n");
+    // Word-wrap all source lines into grid-width lines
+    const sourceLines = content.split("\n");
+    const wrapped = [];
+    for (const line of sourceLines) {
+        wrapped.push(...wrapLine(line, width));
+    }
     const result = [];
     for (let i = 0; i < height; i++) {
-        const raw = i < lines.length ? lines[i] : "";
-        result.push(raw.length > width ? raw.slice(0, width) : raw.padEnd(width));
+        if (i < wrapped.length) {
+            const raw = wrapped[i];
+            // If this is the last visible row and there's overflow, mark with …
+            if (i === height - 1 && wrapped.length > height) {
+                const truncated = raw.length > width - 1 ? raw.slice(0, width - 1) + "…" : raw.padEnd(width - 1) + "…";
+                result.push(truncated);
+            }
+            else {
+                result.push(raw.length > width ? raw.slice(0, width) : raw.padEnd(width));
+            }
+        }
+        else {
+            result.push(" ".repeat(width));
+        }
     }
     return result.join("\n");
 }

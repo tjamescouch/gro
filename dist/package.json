@@ -1,6 +1,6 @@
 {
   "name": "@tjamescouch/gro",
-  "version": "2.9.3",
+  "version": "2.9.4",
   "license": "MIT",
   "description": "Provider-agnostic LLM runtime with context management",
   "bin": {

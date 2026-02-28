@@ -2747,7 +2747,8 @@ if (process.env.GRO_PLASTIC && !process.env.GRO_PLASTIC_BOOTED) {
         main().catch(_mainError);
     });
 }
-else {
-    // Normal path, or overlay already loaded (GRO_PLASTIC_BOOTED=1)
+else if (!process.env.GRO_PLASTIC_BOOTED) {
+    // Normal (non-PLASTIC) path — call main() directly
     main().catch(_mainError);
 }
+// When GRO_PLASTIC_BOOTED=1, bootstrap.ts will call mod.main() — don't auto-call here.

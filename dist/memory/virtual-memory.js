@@ -4,6 +4,7 @@ import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { userInfo, hostname, homedir } from "node:os";
 import { SummarizationQueue } from "./summarization-queue.js";
 import { BatchWorkerManager } from "./batch-worker-manager.js";
 import { Logger } from "../logger.js";
@@ -78,6 +79,10 @@ export class VirtualMemory extends AgentMemory {
         this.metricsCollector = null;
         /** Messages protected from compaction (current-turn tool results + their assistant messages) */
         this.protectedMessages = new Set();
+        /** Cryptographic integrity status from last load() */
+        this.integrityResult = null;
+        /** Environment fields that changed between save and load (empty = same machine) */
+        this.envMismatches = [];
         /**
          * Adjust compaction aggressiveness based on the current thinking budget.
          *
@@ -292,6 +297,7 @@ export class VirtualMemory extends AgentMemory {
             this.messagesBuffer = session.messages;
         }
         this.loadPageIndex();
+        this.verifyIntegrity(id);
     }
     async save(id) {
         ensureGroDir();
@@ -302,6 +308,7 @@ export class VirtualMemory extends AgentMemory {
             createdAt: new Date().toISOString(),
         });
         this.savePageIndex();
+        this.saveIntegrityHash(id);
     }
     /**
      * Force immediate context compaction regardless of watermark level.
@@ -328,11 +335,15 @@ export class VirtualMemory extends AgentMemory {
             from: "System",
         };
         this.messagesBuffer.push(noop);
-        await this.onAfterAdd();
-        // Remove the noop message
-        const idx = this.messagesBuffer.indexOf(noop);
-        if (idx !== -1)
-            this.messagesBuffer.splice(idx, 1);
+        try {
+            await this.onAfterAdd();
+        }
+        finally {
+            // Always remove the noop sentinel, even if onAfterAdd throws
+            const idx = this.messagesBuffer.indexOf(noop);
+            if (idx !== -1)
+                this.messagesBuffer.splice(idx, 1);
+        }
         const after = this.messagesBuffer.filter(m => m.role !== "system");
         const afterTokens = this.msgTokens(after);
         const afterCount = after.length;
@@ -408,6 +419,118 @@ export class VirtualMemory extends AgentMemory {
         catch (err) {
             Logger.error(`[VirtualMemory] Failed to save page index to ${this.indexPath()}: ${err}`);
         }
+    }
+    /** Capture the current environment fingerprint. */
+    static envFingerprint() {
+        return {
+            user: userInfo().username,
+            hostname: hostname(),
+            home: homedir(),
+        };
+    }
+    integrityHashPath() {
+        return join(this.cfg.pagesDir, "integrity.json");
+    }
+    /**
+     * Compute a deterministic SHA-256 hash over the full session state:
+     * version prefix, session ID (salt), messages (in order),
+     * page contents (sorted by ID), active page set.
+     *
+     * The session ID acts as a source-bound salt — the hash can only be
+     * reproduced by someone who possesses the original session directory,
+     * preventing integrity.json from being transplanted between sessions.
+     */
+    computeIntegrityHash(sessionId) {
+        const hash = createHash("sha256");
+        // Version prefix — detects algorithm changes across gro versions
+        hash.update(VirtualMemory.INTEGRITY_VERSION);
+        // Session ID as salt — binds hash to this specific session
+        if (sessionId)
+            hash.update(sessionId);
+        // Environment fingerprint — binds hash to this machine/user
+        hash.update(JSON.stringify(VirtualMemory.envFingerprint()));
+        // Messages in order — hash role + content + tool_call_id
+        for (const msg of this.messagesBuffer) {
+            hash.update(msg.role);
+            hash.update(msg.content ?? "");
+            if (msg.tool_call_id)
+                hash.update(msg.tool_call_id);
+        }
+        // Page contents sorted by ID (deterministic)
+        const sortedPageIds = [...this.pages.keys()].sort();
+        for (const id of sortedPageIds) {
+            const page = this.pages.get(id);
+            hash.update(page.id);
+            hash.update(page.content);
+        }
+        // Active page IDs (sorted)
+        hash.update([...this.activePageIds].sort().join(","));
+        return hash.digest("hex").slice(0, 16);
+    }
+    saveIntegrityHash(sessionId) {
+        try {
+            mkdirSync(this.cfg.pagesDir, { recursive: true });
+            const h = this.computeIntegrityHash(sessionId);
+            writeFileSync(this.integrityHashPath(), JSON.stringify({
+                version: VirtualMemory.INTEGRITY_VERSION,
+                hash: h,
+                env: VirtualMemory.envFingerprint(),
+                savedAt: new Date().toISOString(),
+            }) + "\n");
+        }
+        catch (err) {
+            Logger.error(`[VirtualMemory] Failed to save integrity hash: ${err}`);
+        }
+    }
+    verifyIntegrity(sessionId) {
+        const p = this.integrityHashPath();
+        if (!existsSync(p)) {
+            this.integrityResult = "new_session";
+            return;
+        }
+        try {
+            const data = JSON.parse(readFileSync(p, "utf-8"));
+            // Version mismatch → treat as new (algorithm changed, old hash meaningless)
+            if (data.version !== VirtualMemory.INTEGRITY_VERSION) {
+                Logger.info(`[Integrity] Hash version changed (${data.version} → ${VirtualMemory.INTEGRITY_VERSION}), skipping check`);
+                this.integrityResult = "new_session";
+                return;
+            }
+            // Environment fingerprint comparison (independent of hash)
+            this.envMismatches = [];
+            if (data.env) {
+                const current = VirtualMemory.envFingerprint();
+                for (const key of Object.keys(current)) {
+                    if (data.env[key] !== undefined && data.env[key] !== current[key]) {
+                        this.envMismatches.push(key);
+                    }
+                }
+                if (this.envMismatches.length > 0) {
+                    Logger.warn(`[Integrity] Environment changed: ${this.envMismatches.join(", ")}`);
+                }
+            }
+            // State hash comparison
+            const stored = data.hash;
+            const computed = this.computeIntegrityHash(sessionId);
+            this.integrityResult = computed === stored ? "verified" : "mismatch";
+            if (this.integrityResult === "mismatch") {
+                Logger.warn(`[Integrity] State hash mismatch: stored=${stored} computed=${computed}`);
+            }
+            else {
+                Logger.info(`[Integrity] State hash verified: ${computed}`);
+            }
+        }
+        catch {
+            this.integrityResult = "new_session";
+        }
+    }
+    /** Get the result of the last integrity check (set during load). */
+    getIntegrityStatus() {
+        return this.integrityResult;
+    }
+    /** Get environment fields that differ from when the session was saved. */
+    getEnvironmentMismatches() {
+        return this.envMismatches;
     }
     // --- Page Storage ---
     pagePath(id) {
@@ -510,22 +633,28 @@ export class VirtualMemory extends AgentMemory {
         }
         // Generate summary with embedded ref
         let summary;
-        if (this.cfg.enableBatchSummarization && this.summaryQueue) {
-            // Queue page for async batch summarization
-            this.summaryQueue.enqueue({
-                pageId: page.id,
-                label,
-                lane,
-                queuedAt: Date.now(),
-            });
-            // Return placeholder summary immediately (non-blocking)
-            summary = `[Pending summary: ${messages.length} messages, ${label}] `;
+        try {
+            if (this.cfg.enableBatchSummarization && this.summaryQueue) {
+                // Queue page for async batch summarization
+                this.summaryQueue.enqueue({
+                    pageId: page.id,
+                    label,
+                    lane,
+                    queuedAt: Date.now(),
+                });
+                // Return placeholder summary immediately (non-blocking)
+                summary = `[Pending summary: ${messages.length} messages, ${label}] `;
+            }
+            else if (this.cfg.driver) {
+                summary = await this.summarizeWithRef(messages, page.id, label, lane);
+            }
+            else {
+                // Fallback: simple label + ref without LLM
+                summary = `[Summary of ${messages.length} messages: ${label}] `;
+            }
         }
-        else if (this.cfg.driver) {
-            summary = await this.summarizeWithRef(messages, page.id, label, lane);
-        }
-        else {
-            // Fallback: simple label + ref without LLM
+        catch {
+            // Summarization failed — use fallback so page indexing still works
             summary = `[Summary of ${messages.length} messages: ${label}] `;
         }
         // Store summary on page for semantic indexing and re-save
@@ -746,7 +875,7 @@ export class VirtualMemory extends AgentMemory {
             const page = this.pages.get(id);
             const tokens = this.tokensFor(content);
             if (slotTokens + tokens > budget)
-                continue;
+                break;
             msgs.push({
                 role: "system",
                 from: "VirtualMemory",
@@ -1645,3 +1774,6 @@ export class VirtualMemory extends AgentMemory {
         return this.metricsCollector.generateReport();
     }
 }
+// --- State Integrity Hash ---
+/** Hash version — bump when changing what gets fed into the digest. */
+VirtualMemory.INTEGRITY_VERSION = "v2";

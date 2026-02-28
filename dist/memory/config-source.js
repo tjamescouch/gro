@@ -16,10 +16,18 @@ export class ConfigSource {
     constructor() {
         this.autoFillEnabled = true;
         this.autoFillThreshold = 0.5;
+        this.integrityStatus = null;
+        this.environmentWarning = null;
     }
     setAutoFill(enabled, threshold) {
         this.autoFillEnabled = enabled;
         this.autoFillThreshold = threshold;
+    }
+    setIntegrityStatus(status) {
+        this.integrityStatus = status;
+    }
+    setEnvironmentWarning(warning) {
+        this.environmentWarning = warning;
     }
     async poll() {
         return this.render();
@@ -54,6 +62,13 @@ export class ConfigSource {
             ? `autofill on (threshold=${this.autoFillThreshold.toFixed(2)})`
             : "autofill off";
         lines.push(`memory:     ${snap.config.memoryType}  ${af}`);
+        // State integrity (shown only on resume)
+        if (this.integrityStatus) {
+            lines.push(`integrity:  ${this.integrityStatus}`);
+        }
+        if (this.environmentWarning) {
+            lines.push(`environment: ${this.environmentWarning}`);
+        }
         // Violations one-liner
         if (snap.violations && snap.violations.totalViolations > 0) {
             const v = snap.violations;

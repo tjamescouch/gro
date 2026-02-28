@@ -927,6 +927,31 @@ function unwrapMemory(mem: AgentMemory): AgentMemory {
   return mem instanceof SensoryMemory ? (mem as SensoryMemory).getInner() : mem;
 }
 
+/** After session load, surface the integrity hash check result on the config channel. */
+function surfaceIntegrityStatus(mem: AgentMemory): void {
+  const inner = unwrapMemory(mem);
+  if (!(inner instanceof VirtualMemory) || !(mem instanceof SensoryMemory)) return;
+  const cs = mem.getChannelSource("config");
+  if (!cs || !("setIntegrityStatus" in cs)) return;
+  const configSource = cs as ConfigSource;
+
+  // Hash status
+  const status = inner.getIntegrityStatus();
+  if (status) {
+    const label =
+      status === "verified" ? "✓ verified" :
+      status === "mismatch" ? "✗ MISMATCH" :
+      null;
+    configSource.setIntegrityStatus(label);
+  }
+
+  // Environment fingerprint
+  const envDiffs = inner.getEnvironmentMismatches();
+  if (envDiffs.length > 0) {
+    configSource.setEnvironmentWarning(`⚠ changed: ${envDiffs.join(", ")}`);
+  }
+}
+
 interface SemanticInit {
   retrieval: SemanticRetrieval;
   /** Start a batch re-summarization. Returns null if no embedding provider. */
@@ -2329,6 +2354,7 @@ async function singleShot(
         Logger.telemetry(`Restored model from session: ${cfg.model}`);
       }
     }
+    surfaceIntegrityStatus(memory);
   }
 
   await memory.add({ role: "user", from: "User", content: prompt });
@@ -2456,6 +2482,7 @@ async function interactive(
         Logger.info(C.gray(`Resumed session ${sessionId} (${msgCount} messages)`));
       }
     }
+    surfaceIntegrityStatus(memory);
   }
 
   const rl = readline.createInterface({

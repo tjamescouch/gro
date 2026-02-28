@@ -19,10 +19,20 @@ const TEMP_MAX: Record<string, number> = {
 export class ConfigSource implements SensorySource {
   private autoFillEnabled = true;
   private autoFillThreshold = 0.5;
+  private integrityStatus: string | null = null;
+  private environmentWarning: string | null = null;
 
   setAutoFill(enabled: boolean, threshold: number): void {
     this.autoFillEnabled = enabled;
     this.autoFillThreshold = threshold;
+  }
+
+  setIntegrityStatus(status: string | null): void {
+    this.integrityStatus = status;
+  }
+
+  setEnvironmentWarning(warning: string | null): void {
+    this.environmentWarning = warning;
   }
 
   async poll(): Promise<string | null> {
@@ -63,6 +73,14 @@ export class ConfigSource implements SensorySource {
       ? `autofill on (threshold=${this.autoFillThreshold.toFixed(2)})`
       : "autofill off";
     lines.push(`memory:     ${snap.config.memoryType}  ${af}`);
+
+    // State integrity (shown only on resume)
+    if (this.integrityStatus) {
+      lines.push(`integrity:  ${this.integrityStatus}`);
+    }
+    if (this.environmentWarning) {
+      lines.push(`environment: ${this.environmentWarning}`);
+    }
 
     // Violations one-liner
     if (snap.violations && snap.violations.totalViolations > 0) {

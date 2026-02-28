@@ -613,6 +613,8 @@ function readLineHidden() {
                     return;
                 }
                 if (ch === "\x03") {
+                    if (process.stdin.isTTY)
+                        process.stdin.setRawMode(false);
                     process.exit(1);
                 } // Ctrl-C
                 if (ch === "\x7f" || ch === "\b") {
@@ -682,7 +684,6 @@ function createDriverForModel(provider, model, apiKey, baseUrl, maxTokens, enabl
             Logger.error(`gro: unknown provider "${provider}"`);
             process.exit(1);
     }
-    throw new Error("unreachable");
 }
 function createDriver(cfg) {
     return createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens, cfg.enablePromptCaching);
@@ -871,6 +872,29 @@ function wrapWithSensory(inner) {
 /** Unwrap SensoryMemory decorator to get the underlying memory for duck-typed method calls. */
 function unwrapMemory(mem) {
     return mem instanceof SensoryMemory ? mem.getInner() : mem;
+}
+/** After session load, surface the integrity hash check result on the config channel. */
+function surfaceIntegrityStatus(mem) {
+    const inner = unwrapMemory(mem);
+    if (!(inner instanceof VirtualMemory) || !(mem instanceof SensoryMemory))
+        return;
+    const cs = mem.getChannelSource("config");
+    if (!cs || !("setIntegrityStatus" in cs))
+        return;
+    const configSource = cs;
+    // Hash status
+    const status = inner.getIntegrityStatus();
+    if (status) {
+        const label = status === "verified" ? "✓ verified" :
+            status === "mismatch" ? "✗ MISMATCH" :
+                null;
+        configSource.setIntegrityStatus(label);
+    }
+    // Environment fingerprint
+    const envDiffs = inner.getEnvironmentMismatches();
+    if (envDiffs.length > 0) {
+        configSource.setEnvironmentWarning(`⚠ changed: ${envDiffs.join(", ")}`);
+    }
 }
 /**
  * Initialize semantic retrieval if an embedding API key is available.
@@ -2242,6 +2266,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
                 Logger.telemetry(`Restored model from session: ${cfg.model}`);
             }
         }
+        surfaceIntegrityStatus(memory);
     }
     await memory.add({ role: "user", from: "User", content: prompt });
     // Violation tracker for persistent mode
@@ -2356,6 +2381,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
                 Logger.info(C.gray(`Resumed session ${sessionId} (${msgCount} messages)`));
             }
         }
+        surfaceIntegrityStatus(memory);
     }
     const rl = readline.createInterface({
         input: process.stdin,

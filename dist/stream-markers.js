@@ -40,10 +40,14 @@ const MARKER_RE = /(?<!\\)@@([a-zA-Z][a-zA-Z0-9_-]*)(?:\((?:'([^']*?)'|"([^"]*?)
  * Values must be numeric (integer or decimal). Each name:value pair fires separately.
  */
 const COLON_MARKER_RE = /(?<!\\)@@([a-zA-Z][a-zA-Z0-9_-]*:[0-9.]+(?:,[a-zA-Z][a-zA-Z0-9_-]*:[0-9.]+)*)@@/g;
-/** Partial marker detection — we might be mid-stream in a marker */
-const PARTIAL_MARKER_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*)?$/;
+/** Partial marker detection — we might be mid-stream in a marker.
+ *  The trailing @? catches the case where one char of the closing @@ has arrived
+ *  (e.g. "@@reboot@" waiting for the second "@"). */
+const PARTIAL_MARKER_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*)?@?$/;
 /** Partial colon marker detection for streaming buffering */
-const PARTIAL_COLON_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?::[0-9.]*(?:,[a-zA-Z][a-zA-Z0-9_-]*(?::[0-9.]*)?)*)?$/;
+const PARTIAL_COLON_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?::[0-9.]*(?:,[a-zA-Z][a-zA-Z0-9_-]*(?::[0-9.]*)?)*)?@?$/;
+/** Bare @ or @@ at end of buffer — could be the start of @@marker@@ */
+const PARTIAL_AT_RE = /@{1,2}$/;
 /** Avatar marker: @@[clip name:weight, ...]@@ */
 const AVATAR_MARKER_RE = /@@\[([^\]@]+)\]@@/g;
 /** Partial avatar marker detection for streaming */
@@ -351,10 +355,11 @@ export class StreamMarkerParser {
             this.buffer = "";
         }
         else {
-            // Check if the remainder could be a partial marker (standard, colon, or avatar)
+            // Check if the remainder could be a partial marker (standard, colon, avatar, or bare @/@@)
             const partialMatch = PARTIAL_COLON_RE.exec(remainder)
                 ?? PARTIAL_MARKER_RE.exec(remainder)
-                ?? PARTIAL_AVATAR_RE.exec(remainder);
+                ?? PARTIAL_AVATAR_RE.exec(remainder)
+                ?? PARTIAL_AT_RE.exec(remainder);
             if (partialMatch) {
                 // Hold back the potential partial marker, emit what's before it
                 const safe = remainder.slice(0, partialMatch.index);

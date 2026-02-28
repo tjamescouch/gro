@@ -1841,7 +1841,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                     await memory.add({
                         role: "system",
                         from: "System",
-                        content: "[SYSTEM] You stopped mid-task. If you have more work to do, continue now. Use your tools to complete the task.",
+                        content: "[SYSTEM] You stopped mid-task without explanation. Either continue working now, or tell the user exactly why you're stopping — context pressure, decision ambiguity, unexpected tool output, scope larger than expected, or capability boundary. State what's blocking you and what you need to continue.",
                     });
                     continue;
                 }
@@ -2158,6 +2158,11 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
     // give the model one final turn with no tools so it can produce a closing response.
     if (!brokeCleanly && tools.length > 0) {
         Logger.debug("Max tool rounds reached — final turn with no tools");
+        await memory.add({
+            role: "system",
+            from: "System",
+            content: "[SYSTEM] You've reached the maximum tool rounds for this turn. Tools are now unavailable. Tell the user: what you completed, what remains unfinished, and what's needed to continue (if anything). Be direct — no apologies, just a status report.",
+        });
         const finalOutput = await activeDriver.chat(memory.messages(), {
             model: activeModel,
             temperature: activeTemperature,

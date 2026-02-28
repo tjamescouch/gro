@@ -1,34 +1,50 @@
 /**
  * PLASTIC export — generates unified diffs of agent modifications.
  *
- * Compares modified TypeScript source files against the stock originals
- * and writes a combined patch to ~/.gro/plastic/changes.patch.
- * The host can shell into the pod and copy this file out.
+ * Walks the overlay directory and diffs every file against the stock install.
+ * Captures all changes regardless of how they were made (write_source, shell, etc.).
+ * Writes a combined patch to ~/.gro/plastic/changes.patch.
  *
  * Training-only infrastructure — never active in production.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 
 const PLASTIC_DIR = join(homedir(), ".gro", "plastic");
+const OVERLAY_DIR = join(PLASTIC_DIR, "overlay");
 const PATCH_PATH = join(PLASTIC_DIR, "changes.patch");
 
-/** Read the manifest to get projectRoot and modified file list. */
-function readManifest(): { projectRoot: string; modified: string[] } | null {
+/** Read the manifest to get the stock directory path. */
+function readManifest(): { stockDir: string } | null {
   const manifestPath = join(PLASTIC_DIR, "manifest.json");
   if (!existsSync(manifestPath)) return null;
   try {
     const data = JSON.parse(readFileSync(manifestPath, "utf-8"));
-    return {
-      projectRoot: data.projectRoot ?? "",
-      modified: Array.isArray(data.modified) ? data.modified : [],
-    };
+    return { stockDir: data.stockDir ?? data.projectRoot ?? "" };
   } catch {
     return null;
   }
+}
+
+/** Recursively collect all files in a directory. */
+function walkDir(dir: string, base?: string): string[] {
+  const root = base ?? dir;
+  const files: string[] = [];
+  if (!existsSync(dir)) return files;
+  for (const entry of readdirSync(dir)) {
+    if (entry === "node_modules" || entry === ".git") continue;
+    const full = join(dir, entry);
+    const st = statSync(full);
+    if (st.isDirectory()) {
+      files.push(...walkDir(full, root));
+    } else {
+      files.push(relative(root, full));
+    }
+  }
+  return files;
 }
 
 /**
@@ -36,69 +52,80 @@ function readManifest(): { projectRoot: string; modified: string[] } | null {
  * Falls back to a simple line-based comparison if `diff` is not available.
  */
 function diffFiles(stockPath: string, modifiedPath: string, label: string): string | null {
-  if (!existsSync(stockPath) || !existsSync(modifiedPath)) return null;
+  const stockExists = existsSync(stockPath);
+  const modExists = existsSync(modifiedPath);
+
+  if (!modExists) return null;
+
+  // New file (not in stock)
+  if (!stockExists) {
+    const content = readFileSync(modifiedPath, "utf-8");
+    const lines = content.split("\n");
+    return [
+      `--- /dev/null`,
+      `+++ b/${label}`,
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map(l => `+${l}`),
+    ].join("\n");
+  }
 
   const stockContent = readFileSync(stockPath, "utf-8");
   const modifiedContent = readFileSync(modifiedPath, "utf-8");
   if (stockContent === modifiedContent) return null; // no changes
 
-  // Try system diff -u (standard on Linux, available on macOS)
+  // Try system diff -u
   try {
     execSync(`diff -u "${stockPath}" "${modifiedPath}"`, { encoding: "utf-8" });
-    return null; // exit 0 means identical (shouldn't reach here, but safety)
+    return null; // exit 0 means identical
   } catch (e: unknown) {
     const err = e as { status?: number; stdout?: string };
     if (err.status === 1 && err.stdout) {
       // diff exits 1 when files differ — that's success for us
-      // Replace the stock/modified paths with clean a/b labels
       const lines = err.stdout.split("\n");
       if (lines[0]?.startsWith("---")) lines[0] = `--- a/${label}`;
       if (lines[1]?.startsWith("+++")) lines[1] = `+++ b/${label}`;
       return lines.join("\n");
     }
-    // diff command not available or other error — fall through to manual diff
   }
 
-  // Fallback: minimal unified-ish diff (just show full file as added)
+  // Fallback: minimal unified-ish diff
   const oldLines = stockContent.split("\n");
   const newLines = modifiedContent.split("\n");
-  const header = [
+  return [
     `--- a/${label}`,
     `+++ b/${label}`,
     `@@ -1,${oldLines.length} +1,${newLines.length} @@`,
-  ];
-  const body = [
     ...oldLines.map(l => `-${l}`),
     ...newLines.map(l => `+${l}`),
-  ];
-  return [...header, ...body].join("\n");
+  ].join("\n");
 }
 
 /**
- * Export all agent modifications as a unified patch file.
- * Returns the patch file path and number of modified files included.
+ * Export all overlay modifications as a unified patch file.
+ * Walks the overlay and diffs every file against stock — captures all changes
+ * regardless of whether they were made via write_source or shell.
  */
 export function exportChanges(): { patchPath: string; fileCount: number } {
   const manifest = readManifest();
-  if (!manifest) {
+  if (!manifest || !manifest.stockDir) {
     writeFileSync(PATCH_PATH, "# No manifest found — no changes to export\n");
     return { patchPath: PATCH_PATH, fileCount: 0 };
   }
 
-  // Filter to .ts files only (TS source is what we export)
-  const tsFiles = manifest.modified.filter(f => f.endsWith(".ts"));
+  const stockDir = manifest.stockDir;
+  const overlayFiles = walkDir(OVERLAY_DIR);
   const patches: string[] = [];
 
-  for (const relPath of tsFiles) {
-    const stockPath = join(manifest.projectRoot, "src", relPath);
-    const modifiedPath = join(PLASTIC_DIR, "src", relPath);
-    const diff = diffFiles(stockPath, modifiedPath, `src/${relPath}`);
+  for (const relPath of overlayFiles) {
+    const stockPath = join(stockDir, relPath);
+    const overlayPath = join(OVERLAY_DIR, relPath);
+    const diff = diffFiles(stockPath, overlayPath, relPath);
     if (diff) patches.push(diff);
   }
 
   const content = patches.length > 0
     ? patches.join("\n")
-    : "# No TypeScript changes detected\n";
+    : "# No changes detected in overlay\n";
 
   writeFileSync(PATCH_PATH, content);
   return { patchPath: PATCH_PATH, fileCount: patches.length };
@@ -109,7 +136,7 @@ export const exportChangesToolDefinition = {
   type: "function" as const,
   function: {
     name: "export_changes",
-    description: "Export all PLASTIC source modifications as a unified patch file at ~/.gro/plastic/changes.patch. The patch contains TypeScript-level diffs that can be applied directly to the source repo.",
+    description: "Export all PLASTIC overlay modifications as a unified patch file at ~/.gro/plastic/changes.patch. Diffs every file in the overlay against stock — captures all changes regardless of how they were made.",
     parameters: {
       type: "object",
       properties: {},
@@ -123,7 +150,7 @@ export function handleExportChanges(): string {
   try {
     const { patchPath, fileCount } = exportChanges();
     if (fileCount === 0) {
-      return "No TypeScript changes to export. Modified .ts files will appear after using write_source with .ts paths.";
+      return "No changes detected in overlay vs stock.";
     }
     return `Exported ${fileCount} file diff(s) to ${patchPath}`;
   } catch (e: unknown) {

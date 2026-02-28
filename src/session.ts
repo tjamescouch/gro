@@ -298,14 +298,48 @@ export function saveSensoryState(id: string, state: SensoryState): void {
   }
 }
 
+/** Channels that are valid camera slot targets (excludes canvas-only channels like 'self'). */
+const VALID_SLOT_CHANNELS = new Set([
+  "context", "time", "config", "tasks", "spend", "violations", "social",
+]);
+
+/** Default slot assignments. */
+const DEFAULT_SLOTS: [string, string, string] = ["context", "time", "config"];
+
 /**
  * Load sensory channel state for a session. Returns null if not found.
+ * Validates and heals slot assignments — invalid or null slots are replaced with defaults.
  */
 export function loadSensoryState(id: string): SensoryState | null {
   const path = join(sessionDir(id), "sensory-state.json");
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf-8"));
+    const state = JSON.parse(readFileSync(path, "utf-8")) as SensoryState;
+    // Validate and heal slots
+    if (state.slots && Array.isArray(state.slots)) {
+      const seen = new Set<string>();
+      for (let i = 0; i < 3; i++) {
+        const name = state.slots[i];
+        if (name === null || name === undefined || !VALID_SLOT_CHANNELS.has(name) || seen.has(name)) {
+          state.slots[i] = null;
+        } else {
+          seen.add(name);
+        }
+      }
+      // Backfill nulls from defaults
+      for (let i = 0; i < 3; i++) {
+        if (state.slots[i] === null) {
+          const fallback = DEFAULT_SLOTS[i];
+          if (!seen.has(fallback)) {
+            state.slots[i] = fallback;
+            seen.add(fallback);
+          }
+        }
+      }
+    } else {
+      state.slots = [...DEFAULT_SLOTS] as [string, string, string];
+    }
+    return state;
   } catch (e: unknown) {
     Logger.warn(`Failed to load sensory state for session ${id}: ${asError(e).message}`);
     return null;

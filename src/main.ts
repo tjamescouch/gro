@@ -2064,6 +2064,11 @@ async function executeTurn(
       memory.protectMessage(toolResultMsg);
       await memory.add(toolResultMsg);
     }
+    // All tool results for this round are now in the buffer — release protections.
+    // Protection was only needed to prevent compaction from flattening in-flight
+    // tool_calls before their results arrived. Now that they're paired, the
+    // messages can be compacted normally in future rounds.
+    memory.clearProtectedMessages();
     spendMeter.recordToolCalls(output.toolCalls.length);
 
     // Check for violations (idle + same-tool-loop)

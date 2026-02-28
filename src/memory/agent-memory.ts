@@ -25,6 +25,15 @@ export interface MemoryStats {
   bufferMessages: number;
 }
 
+export interface PageDigestEntry {
+  id: string;
+  label: string;
+  tokens: number;
+  loaded: boolean;
+  pinned: boolean;
+  summary: string;  // short truncation of the page summary
+}
+
 export interface VirtualMemoryStats extends MemoryStats {
   type: "virtual" | "fragmentation" | "hnsw" | "perfect";
   systemTokens: number;
@@ -40,6 +49,8 @@ export interface VirtualMemoryStats extends MemoryStats {
   lanes: { role: string; tokens: number; count: number }[];
   pinnedMessages: number;
   model: string | null;
+  /** Short digest of all pages — id, label, loaded status, truncated summary */
+  pageDigest?: PageDigestEntry[];
 }
 
 /**

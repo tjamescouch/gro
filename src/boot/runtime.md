@@ -74,9 +74,12 @@ Higher = more context retained before compaction. 1m = ~full context window.
 
 **Memory pages:**
 `@@ref('id')@@` — load page into context next turn
+`@@ref('id1,id2,id3')@@` — batch load multiple pages in one marker
 `@@ref('?query')@@` — semantic search: find pages by meaning and auto-load the best matches.
 Pages are also auto-loaded when semantically relevant to your conversation (requires embedding API key).
 `@@unref('id')@@` — release page from context
+`@@unref('id1,id2')@@` — batch release multiple pages
+The sensory `[context]` channel lists all available pages with short summaries. Use it to browse and select pages to load.
 `@@resummarize@@` — trigger batch re-summarization of all pages. Rebuilds the semantic index in the background using a shadow index (no query distortion during rebuild). Yields to interactive turns. Use `@@resummarize('force')@@` to re-summarize all pages regardless of content changes.
 
 **Learn:**

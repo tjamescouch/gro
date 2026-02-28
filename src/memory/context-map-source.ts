@@ -11,7 +11,7 @@
  * Target: under 300 tokens per render.
  */
 
-import type { AgentMemory, MemoryStats, VirtualMemoryStats } from "./agent-memory.js";
+import type { AgentMemory, MemoryStats, VirtualMemoryStats, PageDigestEntry } from "./agent-memory.js";
 import type { SensorySource } from "./sensory-memory.js";
 
 export interface ContextMapConfig {
@@ -116,6 +116,11 @@ export class ContextMapSource implements SensorySource {
     if (stats.model) parts.push(this.shortModel(stats.model));
     lines.push(parts.join(" | "));
 
+    // Page digest — compact listing of all pages with short summaries
+    if (this.config.showPages && stats.pageDigest && stats.pageDigest.length > 0) {
+      lines.push(this.renderPageDigest(stats.pageDigest));
+    }
+
     return lines.join("\n");
   }
 
@@ -157,6 +162,24 @@ export class ContextMapSource implements SensorySource {
       case "tool": return "tool";
       default: return role.slice(0, 4);
     }
+  }
+
+  /** Render page digest as a compact listing the agent can browse and ref from. */
+  private renderPageDigest(pages: PageDigestEntry[]): string {
+    const lines: string[] = ["pages:"];
+    // Show loaded pages first, then unloaded, capped at 12 to stay within token budget
+    const sorted = [...pages].sort((a, b) => (b.loaded ? 1 : 0) - (a.loaded ? 1 : 0));
+    const shown = sorted.slice(0, 12);
+    for (const p of shown) {
+      const status = p.loaded ? "★" : p.pinned ? "📌" : "·";
+      const tokK = (p.tokens / 1000).toFixed(1);
+      lines.push(`  ${status} ${p.id} (${tokK}K) ${p.summary}`);
+    }
+    if (pages.length > 12) {
+      lines.push(`  ... +${pages.length - 12} more`);
+    }
+    lines.push(`load: @@ref('id1,id2')@@  release: @@unref('id')@@`);
+    return lines.join("\n");
   }
 
   private shortModel(model: string): string {

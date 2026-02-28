@@ -87,6 +87,10 @@ export class ContextMapSource {
         if (stats.model)
             parts.push(this.shortModel(stats.model));
         lines.push(parts.join(" | "));
+        // Page digest — compact listing of all pages with short summaries
+        if (this.config.showPages && stats.pageDigest && stats.pageDigest.length > 0) {
+            lines.push(this.renderPageDigest(stats.pageDigest));
+        }
         return lines.join("\n");
     }
     // --- Basic Memory (spatial simplified) ---
@@ -120,6 +124,23 @@ export class ContextMapSource {
             case "tool": return "tool";
             default: return role.slice(0, 4);
         }
+    }
+    /** Render page digest as a compact listing the agent can browse and ref from. */
+    renderPageDigest(pages) {
+        const lines = ["pages:"];
+        // Show loaded pages first, then unloaded, capped at 12 to stay within token budget
+        const sorted = [...pages].sort((a, b) => (b.loaded ? 1 : 0) - (a.loaded ? 1 : 0));
+        const shown = sorted.slice(0, 12);
+        for (const p of shown) {
+            const status = p.loaded ? "★" : p.pinned ? "📌" : "·";
+            const tokK = (p.tokens / 1000).toFixed(1);
+            lines.push(`  ${status} ${p.id} (${tokK}K) ${p.summary}`);
+        }
+        if (pages.length > 12) {
+            lines.push(`  ... +${pages.length - 12} more`);
+        }
+        lines.push(`load: @@ref('id1,id2')@@  release: @@unref('id')@@`);
+        return lines.join("\n");
     }
     shortModel(model) {
         if (model.includes("opus"))

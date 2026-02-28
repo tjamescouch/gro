@@ -1164,19 +1164,27 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations) {
                 }
                 else {
                     // VirtualMemory page ref — load a page into context for next turn
+                    // Supports comma-separated batch: @@ref('id1,id2,id3')@@
                     const inner = unwrapMemory(memory);
                     if ("ref" in inner && typeof inner.ref === "function") {
-                        inner.ref(marker.arg);
-                        Logger.telemetry(`Stream marker: ref('${marker.arg}') — page will load next turn`);
+                        const ids = marker.arg.split(",").map(s => s.trim()).filter(Boolean);
+                        for (const id of ids) {
+                            inner.ref(id);
+                        }
+                        Logger.telemetry(`Stream marker: ref('${marker.arg}') — ${ids.length} page(s) will load next turn`);
                     }
                 }
             }
             else if (marker.name === "unref" && marker.arg) {
-                // VirtualMemory page unref — release a page from context
+                // VirtualMemory page unref — release page(s) from context
+                // Supports comma-separated batch: @@unref('id1,id2,id3')@@
                 const inner = unwrapMemory(memory);
                 if ("unref" in inner && typeof inner.unref === "function") {
-                    inner.unref(marker.arg);
-                    Logger.telemetry(`Stream marker: unref('${marker.arg}') — page released`);
+                    const ids = marker.arg.split(",").map(s => s.trim()).filter(Boolean);
+                    for (const id of ids) {
+                        inner.unref(id);
+                    }
+                    Logger.telemetry(`Stream marker: unref('${marker.arg}') — ${ids.length} page(s) released`);
                 }
             }
             else if (marker.name === "importance" && marker.arg) {

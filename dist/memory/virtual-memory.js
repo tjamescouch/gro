@@ -1488,6 +1488,22 @@ export class VirtualMemory extends AgentMemory {
             if (page)
                 pageSlotUsed += page.tokens;
         }
+        // Build page digest: short summary for each page so the agent can browse
+        const pageDigest = Array.from(this.pages.values()).map(page => {
+            // Truncate summary to ~80 chars for compact display
+            const raw = page.summary || page.label || "";
+            // Strip embedded @@ref(...)@@ markers from summary text
+            const cleaned = raw.replace(/@@\w+\('[^']*'\)@@/g, "").trim();
+            const summary = cleaned.length > 80 ? cleaned.slice(0, 77) + "..." : cleaned;
+            return {
+                id: page.id,
+                label: page.label,
+                tokens: page.tokens,
+                loaded: this.activePageIds.has(page.id),
+                pinned: this.pinnedPageIds.has(page.id),
+                summary,
+            };
+        });
         return {
             type: "virtual",
             totalMessages: this.messagesBuffer.length,
@@ -1506,6 +1522,7 @@ export class VirtualMemory extends AgentMemory {
             lanes,
             pinnedMessages: pinnedCount,
             model: this.model,
+            pageDigest,
         };
     }
     /**

@@ -5,41 +5,8 @@
  * model, uptime, process info. This is the canonical way to confirm an
  * agent is running on gro.
  */
-import { readFileSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { GRO_VERSION } from "../version.js";
 const startTime = Date.now();
-/** Read version from package.json — single source of truth. */
-function readVersion() {
-    // In ESM, __dirname isn't available — derive from import.meta.url
-    let selfDir;
-    try {
-        selfDir = dirname(fileURLToPath(import.meta.url));
-    }
-    catch {
-        return "unknown";
-    }
-    const candidates = [
-        join(selfDir, "..", "package.json"), // from dist/tools/ or src/tools/
-        join(selfDir, "..", "..", "package.json"), // from deeper nesting
-    ];
-    for (const p of candidates) {
-        if (existsSync(p)) {
-            try {
-                const pkg = JSON.parse(readFileSync(p, "utf-8"));
-                if (pkg.name === "@tjamescouch/gro" && pkg.version) {
-                    return pkg.version;
-                }
-            }
-            catch {
-                // try next candidate
-            }
-        }
-    }
-    return "unknown";
-}
-// Cache version at module load
-const GRO_VERSION = readVersion();
 export function getGroVersion() {
     return GRO_VERSION;
 }

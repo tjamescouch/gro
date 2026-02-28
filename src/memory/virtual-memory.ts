@@ -448,10 +448,13 @@ export class VirtualMemory extends AgentMemory {
       from: "System",
     };
     this.messagesBuffer.push(noop);
-    await this.onAfterAdd();
-    // Remove the noop message
-    const idx = this.messagesBuffer.indexOf(noop);
-    if (idx !== -1) this.messagesBuffer.splice(idx, 1);
+    try {
+      await this.onAfterAdd();
+    } finally {
+      // Always remove the noop sentinel, even if onAfterAdd throws
+      const idx = this.messagesBuffer.indexOf(noop);
+      if (idx !== -1) this.messagesBuffer.splice(idx, 1);
+    }
 
     const after = this.messagesBuffer.filter(m => m.role !== "system");
     const afterTokens = this.msgTokens(after);
@@ -668,20 +671,25 @@ export class VirtualMemory extends AgentMemory {
 
     // Generate summary with embedded ref
     let summary: string;
-    if (this.cfg.enableBatchSummarization && this.summaryQueue) {
-      // Queue page for async batch summarization
-      this.summaryQueue.enqueue({
-        pageId: page.id,
-        label,
-        lane,
-        queuedAt: Date.now(),
-      });
-      // Return placeholder summary immediately (non-blocking)
-      summary = `[Pending summary: ${messages.length} messages, ${label}] `;
-    } else if (this.cfg.driver) {
-      summary = await this.summarizeWithRef(messages, page.id, label, lane);
-    } else {
-      // Fallback: simple label + ref without LLM
+    try {
+      if (this.cfg.enableBatchSummarization && this.summaryQueue) {
+        // Queue page for async batch summarization
+        this.summaryQueue.enqueue({
+          pageId: page.id,
+          label,
+          lane,
+          queuedAt: Date.now(),
+        });
+        // Return placeholder summary immediately (non-blocking)
+        summary = `[Pending summary: ${messages.length} messages, ${label}] `;
+      } else if (this.cfg.driver) {
+        summary = await this.summarizeWithRef(messages, page.id, label, lane);
+      } else {
+        // Fallback: simple label + ref without LLM
+        summary = `[Summary of ${messages.length} messages: ${label}] `;
+      }
+    } catch {
+      // Summarization failed — use fallback so page indexing still works
       summary = `[Summary of ${messages.length} messages: ${label}] `;
     }
 
@@ -923,7 +931,7 @@ export class VirtualMemory extends AgentMemory {
       if (!content) continue;
       const page = this.pages.get(id);
       const tokens = this.tokensFor(content);
-      if (slotTokens + tokens > budget) continue;
+      if (slotTokens + tokens > budget) break;
 
       msgs.push({
         role: "system",

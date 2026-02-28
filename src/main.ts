@@ -642,7 +642,7 @@ function readLineHidden(): Promise<string> {
           resolve(buf);
           return;
         }
-        if (ch === "\x03") { process.exit(1); } // Ctrl-C
+        if (ch === "\x03") { if (process.stdin.isTTY) process.stdin.setRawMode(false); process.exit(1); } // Ctrl-C
         if (ch === "\x7f" || ch === "\b") { buf = buf.slice(0, -1); } // backspace
         else { buf += ch; }
       }
@@ -722,7 +722,6 @@ function createDriverForModel(
       Logger.error(`gro: unknown provider "${provider}"`);
       process.exit(1);
   }
-  throw new Error("unreachable");
 }
 
 function createDriver(cfg: GroConfig): ChatDriver {

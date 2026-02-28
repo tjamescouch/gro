@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, accessSync, constants, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -24,9 +24,13 @@ export function cleanupOldSessions(maxAgeMs: number = 48 * 60 * 60 * 1000): numb
     
     if (existsSync(metaPath)) {
       try {
-        const stat = statSync(metaPath);
-        const age = now - stat.mtimeMs;
-        
+        const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+        const createdMs = meta.createdAt ? new Date(meta.createdAt).getTime() : 0;
+        // Fall back to mtime if createdAt is missing or unparseable
+        const age = createdMs > 0
+          ? now - createdMs
+          : now - statSync(metaPath).mtimeMs;
+
         if (age > maxAgeMs) {
           // Delete the entire session directory
           rmSync(sessionPath, { recursive: true, force: true });
@@ -65,14 +69,7 @@ const GRO_DIR = ".gro";
 const CONTEXT_DIR = "context";
 
 function groDir(): string {
-  const cwdBased = join(process.cwd(), GRO_DIR);
-  try {
-    accessSync(process.cwd(), constants.W_OK);
-    return cwdBased;
-  } catch {
-    // cwd isn't writable (e.g. Lima's /home workdir) — use $HOME/.gro
-    return join(homedir(), GRO_DIR);
-  }
+  return join(homedir(), GRO_DIR);
 }
 
 function contextDir(): string {

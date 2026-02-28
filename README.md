@@ -2,9 +2,9 @@
 
 <img width="200" height="200" alt="ChatGPT Image Feb 22, 2026, 03_15_50 AM" src="https://github.com/user-attachments/assets/3e168b1c-4d4b-4eca-b898-c9b6826ab1a0" />
 
-**Provider-agnostic LLM agent runtime** with virtual memory, streaming tool-use, and context management.
+**Provider-agnostic LLM agent runtime** with virtual memory, semantic retrieval, streaming tool-use, and context management.
 
-`gro` runs persistent agent loops against any LLM provider — Anthropic, OpenAI, Google, xAI, or local — with automatic context paging, MCP tool integration, and AgentChat network support. For an interactive TUI see [gtui](https://github.com/tjamescouch/gtui) available as an [npm package](https://www.npmjs.com/package/@tjamescouch/gtui). This software is intended to be run in a containerized solution to protect the host machine.
+`gro` runs persistent agent loops against any LLM provider — Anthropic, OpenAI, Google, xAI, or local — with automatic context paging, semantic page retrieval, MCP tool integration, and AgentChat network support. For an interactive TUI see [gtui](https://github.com/tjamescouch/gtui) available as an [npm package](https://www.npmjs.com/package/@tjamescouch/gtui). This software is intended to be run in a containerized solution to protect the host machine.
 
 [![npm version](https://img.shields.io/npm/v/@tjamescouch/gro.svg)](https://www.npmjs.com/package/@tjamescouch/gro)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -108,14 +108,39 @@ gro -i --gro-memory hnsw           # semantic similarity retrieval
 gro -i -m claude-sonnet-4-5 --summarizer-model claude-haiku-4-5
 ```
 
+### Semantic Retrieval
+
+When an embedding API key is available (OpenAI or Google), gro automatically surfaces relevant paged context before each turn. The agent doesn't need to know what it needs — the runtime finds it.
+
+**How it works:**
+
+- Page summaries are embedded into a vector index on creation
+- Before each turn, the current conversation is compared against the index by cosine similarity
+- The most relevant unloaded page is automatically paged back into context via `VirtualMemory.ref()`
+- Existing pages in the `@@ref@@` index are backfilled on startup
+
+This makes compaction reversible. The runtime can compact aggressively — summarizing and paging old context to disk — and trust that if the agent needs something it paged out, semantic retrieval will fault it back in. The result is a memory hierarchy analogous to virtual memory in an operating system: working set in context, everything else on disk, page faults handled automatically.
+
+The retrieval mechanism is embedding-based similarity search — the same technique underlying RAG — but over the agent's own paged-out session history rather than an external corpus. Retrieved content is the agent's own prior reasoning, not new information, so there is no integration cost.
+
+**Explicit search:** The agent can also search by meaning directly:
+
+```
+@@search('query')@@
+```
+
+This returns the top matching pages and loads them into context. Use when the agent knows it needs something but not which page contains it.
+
+**Graceful degradation:** If no embedding API key is configured, semantic retrieval is silently disabled. All other memory features — `@@ref@@`, compaction, importance tagging — work exactly as before.
+
 ### Memory Modes
 
 | Mode | Description | Cost |
 |------|-------------|------|
-| `virtual` | Swim-lane LLM summarization (default) | Low (summarizer model) |
+| `virtual` | Swim-lane LLM summarization with semantic retrieval (default) | Low (summarizer model + embedding calls) |
 | `simple` | Unbounded buffer, no paging | None |
 | `fragmentation` | Age-biased random sampling | None |
-| `hnsw` | Semantic similarity vector index | None + embedding calls |
+| `hnsw` | Standalone semantic similarity index (no paging) | Embedding calls only |
 
 ---
 
@@ -169,6 +194,7 @@ gro parses inline `@@marker()@@` directives from model output and acts on them i
 | `@@ephemeral@@` | Line may be omitted from summaries entirely |
 | `@@ref('id')@@` | Load a paged memory block into context |
 | `@@unref('id')@@` | Release a loaded page to free context budget |
+| `@@search('query')@@` | Find pages by meaning — top results auto-load into context |
 
 See [`STREAM_MARKERS.md`](./STREAM_MARKERS.md) for the complete reference.
 
@@ -372,6 +398,9 @@ src/
     simple-memory.ts           # Unbounded buffer
     fragmentation-memory.ts    # Stochastic sampling pager
     hnsw-memory.ts             # Semantic similarity retrieval
+    embedding-provider.ts      # Provider-agnostic embedding client (OpenAI / Google)
+    page-search-index.ts       # Flat cosine similarity vector index
+    semantic-retrieval.ts      # Auto-retrieval orchestrator
     summarization-queue.ts     # Async batch summarization queue
     batch-worker.ts            # Background batch worker
     batch-worker-manager.ts    # Worker lifecycle manager

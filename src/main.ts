@@ -839,7 +839,7 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
 function wrapWithSensory(inner: AgentMemory): AgentMemory {
   try {
     const sensory = new SensoryMemory(inner, { totalBudget: 900 });
-    const contextMaxTokens = 500;
+    const contextMaxTokens = 800;
     const contextMap = new ContextMapSource(inner, {
       maxChars: Math.floor(contextMaxTokens * 2.8),
     });
@@ -850,8 +850,8 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       content: "",
       enabled: true,
       source: contextMap,
-      width: 48,
-      height: 24,
+      width: 80,
+      height: 40,
     });
     const temporal = new TemporalSource();
     sensory.addChannel({
@@ -861,7 +861,7 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       content: "",
       enabled: true,
       source: temporal,
-      width: 48,
+      width: 80,
       height: 22,
     });
     // "tasks" channel — agent-switchable via <view:tasks>
@@ -913,7 +913,7 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       content: "",
       enabled: true,
       source: configSource,
-      width: 48,
+      width: 80,
       height: 17,
     });
     // "self" channel — model-writable canvas (via write_self tool)
@@ -925,7 +925,7 @@ function wrapWithSensory(inner: AgentMemory): AgentMemory {
       content: "",
       enabled: false, // model activates with @@view('self')@@ or @@sense('self','on')@@
       source: selfSource,
-      width: 48,
+      width: 80,
       height: 20,
     });
     // Configure default camera slots
@@ -1230,6 +1230,8 @@ async function executeTurn(
    * When cfg.providers is set, selects across multiple providers.
    */
   function thinkingTierModel(budget: number): string | TierSelection {
+    // Local provider has no tier ladder — always use the user-specified model.
+    if (cfg.provider === "local") return cfg.model;
     if (cfg.providers.length > 1) {
       return selectMultiProviderTierModel(budget, cfg.providers, cfg.model, loadModelConfig().aliases, cfg.maxTier ?? undefined);
     }

@@ -1,7 +1,7 @@
 /**
  * TemporalSource — sensory channel that renders temporal position.
  *
- * Box-drawn 48-char-wide panel with five zoom levels:
+ * Box-drawn 80-char-wide panel with five zoom levels:
  *   YEAR  — month within 12
  *   MONTH — day within month
  *   WEEK  — day within Mon–Sun
@@ -13,7 +13,7 @@
  */
 
 import type { SensorySource } from "./sensory-memory.js";
-import { topBorder, bottomBorder, divider, row, bar, lpad } from "./box.js";
+import { topBorder, bottomBorder, divider, row, bar, lpad, IW } from "./box.js";
 
 export interface TemporalSourceConfig {
   /** Max session duration in ms for the session bar scale (default: 2h) */
@@ -28,11 +28,11 @@ const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 const MONTH_ABBR  = ["J","F","M","A","M","J","J","A","S","O","N","D"];
 
 /** Bar width in characters (all time bars use same width). */
-const BAR_W = 26;
+const BAR_W = 50;
 /** Prefix width: ` LABEL ` = 7 chars. */
 const PREFIX_W = 7;
-/** Suffix width: remaining chars after prefix + bar = 46 - 7 - 26 = 13. */
-const SUFFIX_W = 13;
+/** Suffix width: remaining chars after prefix + bar = 78 - 7 - 50 = 21. */
+const SUFFIX_W = 21;
 
 export class TemporalSource implements SensorySource {
   private startTime: number;
@@ -75,7 +75,7 @@ export class TemporalSource implements SensorySource {
     const dateStr = `${dayName} ${now.getDate()} ${MONTH_NAMES[now.getMonth()]} ${now.getFullYear()}`;
     const timeStr = `${lpad(String(now.getHours()), 2).replace(/ /g, "0")}:${lpad(String(now.getMinutes()), 2).replace(/ /g, "0")}`;
     const headerRight = `${dateStr}  ${timeStr}`;
-    const headerInner = ` TIME` + " ".repeat(Math.max(1, 46 - 5 - headerRight.length)) + headerRight;
+    const headerInner = ` TIME` + " ".repeat(Math.max(1, IW - 5 - headerRight.length)) + headerRight;
 
     lines.push(topBorder());
     lines.push(row(headerInner));
@@ -141,12 +141,12 @@ export class TemporalSource implements SensorySource {
 
   /**
    * Render an axis row with labels evenly spaced across the bar area.
-   * Format: 7-char prefix (spaces) + axis labels + padding to 46.
+   * Format: 7-char prefix (spaces) + axis labels + padding to IW.
    * Labels may extend past BAR_W into the suffix area.
    */
   private axisRow(labels: string[], barWidth: number): string {
     const prefix = " ".repeat(PREFIX_W);
-    const totalInner = 46 - PREFIX_W; // remaining chars after prefix
+    const totalInner = IW - PREFIX_W; // remaining chars after prefix
     const chars = new Array(totalInner).fill(" ");
     if (labels.length > 1) {
       const gap = barWidth / labels.length;
@@ -164,7 +164,7 @@ export class TemporalSource implements SensorySource {
   /** Month axis: show key day numbers across the bar. */
   private monthAxisRow(daysInMonth: number): string {
     const prefix = " ".repeat(PREFIX_W);
-    const totalInner = 46 - PREFIX_W;
+    const totalInner = IW - PREFIX_W;
     const ticks = [1, 5, 10, 15, 20, 25, daysInMonth];
     const chars = new Array(totalInner).fill(" ");
     for (const tick of ticks) {
@@ -180,7 +180,7 @@ export class TemporalSource implements SensorySource {
   /** Day axis: 00  06  12  18  24 spaced across BAR_W. */
   private dayAxisRow(): string {
     const prefix = " ".repeat(PREFIX_W);
-    const totalInner = 46 - PREFIX_W;
+    const totalInner = IW - PREFIX_W;
     const ticks = [0, 6, 12, 18, 24];
     const chars = new Array(totalInner).fill(" ");
     for (const tick of ticks) {
@@ -196,7 +196,7 @@ export class TemporalSource implements SensorySource {
   /** Cursor row: ▲ positioned at the fraction point under the bar. */
   private cursorRow(frac: number): string {
     const prefix = " ".repeat(PREFIX_W);
-    const totalInner = 46 - PREFIX_W;
+    const totalInner = IW - PREFIX_W;
     const pos = Math.round(Math.max(0, Math.min(1, frac)) * (BAR_W - 1));
     const cursorLine = " ".repeat(pos) + "▲";
     return row(prefix + cursorLine.padEnd(totalInner));

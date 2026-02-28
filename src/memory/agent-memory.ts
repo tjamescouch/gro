@@ -33,6 +33,9 @@ export interface PageDigestEntry {
   pinned: boolean;
   summary: string;  // short truncation of the page summary
   createdAt: string; // ISO 8601 timestamp
+  messageCount: number;
+  maxImportance: number;
+  lane: string;  // "assistant"|"user"|"system"|"tool"|"mixed"
 }
 
 export interface VirtualMemoryStats extends MemoryStats {

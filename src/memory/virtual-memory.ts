@@ -63,6 +63,8 @@ export interface ContextPage {
   maxImportance?: number;
   /** Summary text used for semantic indexing (set after summarization) */
   summary?: string;
+  /** Dominant lane: "assistant"|"user"|"system"|"tool"|"mixed" */
+  lane?: string;
 }
 
 export interface VirtualMemoryConfig {
@@ -794,6 +796,22 @@ export class VirtualMemory extends AgentMemory {
       (max, m) => Math.max(max, m.importance ?? 0), 0
     );
 
+    // Derive dominant lane from messages
+    const roleCounts: Record<string, number> = {};
+    for (const m of messages) {
+      roleCounts[m.role] = (roleCounts[m.role] ?? 0) + 1;
+    }
+    const roles = Object.keys(roleCounts);
+    let dominantLane = "mixed";
+    if (roles.length === 1) {
+      dominantLane = roles[0];
+    } else if (roles.length > 1) {
+      const sorted = roles.sort((a, b) => roleCounts[b] - roleCounts[a]);
+      if (roleCounts[sorted[0]] > messages.length * 0.6) {
+        dominantLane = sorted[0];
+      }
+    }
+
     const page: ContextPage = {
       id: this.generatePageId(rawContent),
       label,
@@ -802,6 +820,7 @@ export class VirtualMemory extends AgentMemory {
       messageCount: messages.length,
       tokens: this.tokensFor(rawContent),
       ...(maxImportance > 0 ? { maxImportance } : {}),
+      lane: dominantLane,
     };
     this.savePage(page);
     // Track page creation
@@ -1992,6 +2011,9 @@ export class VirtualMemory extends AgentMemory {
         pinned: this.pinnedPageIds.has(page.id),
         summary,
         createdAt: page.createdAt,
+        messageCount: page.messageCount,
+        maxImportance: page.maxImportance ?? 0,
+        lane: page.lane ?? "mixed",
       };
     });
 

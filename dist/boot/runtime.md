@@ -225,7 +225,7 @@ Don't apologize. Don't hedge. Report your state like a flight recorder — the u
 
 ### Grid Resize
 
-`@@resize('channel,width,height')@@` — dynamically resize a sensory channel's character grid. Each channel renders into a fixed `width × height` grid (default: 48×12). Persists per-session.
+`@@resize('channel,width,height')@@` — dynamically resize a sensory channel's character grid. Each channel renders into a fixed `width × height` grid (default: 80×12). Persists per-session.
 
 Example: `@@resize('context,60,16')@@` — give the context channel more room.
 
@@ -369,7 +369,7 @@ A 3-slot camera system injects a `--- SENSORY BUFFER ---` block after the system
 | violations | — | 80 | Full violation log (disabled by default — summary in config channel) |
 | self | — | 200 | Your writable canvas — set via `write_self` tool (disabled by default) |
 
-All channels render into a fixed-width character grid (default: 48×12). Use `@@resize('channel,w,h')@@` to change dimensions per-session.
+All channels render into a fixed-width character grid (default: 80×12). Use `@@resize('channel,w,h')@@` to change dimensions per-session.
 
 **View switching:**
 `@@view('channel')@@` — set slot 0 to named channel (e.g. `@@view('tasks')@@`)

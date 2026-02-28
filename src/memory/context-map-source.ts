@@ -1,10 +1,13 @@
 /**
- * ContextMapSource — sensory channel that renders a memory map.
+ * ContextMapSource — sensory channel that renders a detailed memory page viewer.
  *
- * Box-drawn 48-char-wide panel with three sections:
- *   1. Lane swimlanes — AST/USR/SYS/TOL bars with token + message counts
- *   2. Page dot grid — ● loaded, ○ dark, bucketed by time
- *   3. Active page slots — loaded pages with ID, lane, time, token bar
+ * Box-drawn 80-char-wide panel with six sections:
+ *   1. HEADER   — page count, loaded count, fill bar, active token count
+ *   2. LANES    — per-lane bars with emoji glyphs and token counts
+ *   3. PAGE ROWS — pages grouped by time bucket with columns
+ *   4. ANCHORS  — high-importance pages (maxImportance >= 0.8)
+ *   5. SIZE HISTOGRAM — 4-bucket token distribution
+ *   6. LOAD BUDGET — slot usage bar
  *
  * Drill-down filters (context:today, context:full, context:pg_id) render
  * detailed page info into the same box.
@@ -12,7 +15,38 @@
 
 import type { AgentMemory, MemoryStats, VirtualMemoryStats, PageDigestEntry } from "./agent-memory.js";
 import type { SensorySource } from "./sensory-memory.js";
-import { topBorder, bottomBorder, divider, row, bar, lpad, rpad } from "./box.js";
+import { topBorder, bottomBorder, sectionDivider, row, bar, lpad, rpad, IW } from "./box.js";
+
+// --- Constants ---
+
+/** Fill bar width in the header. */
+const FILL_BAR_W = 27;
+/** Lane bar width. */
+const LANE_BAR_W = 20;
+/** Max page rows per time bucket before truncation. */
+const MAX_ROWS_PER_BUCKET = 11;
+
+// --- Lane glyphs ---
+
+const LANE_GLYPHS: Record<string, string> = {
+  assistant: "🤖",
+  user: "👤",
+  system: "⚙️",
+  tool: "🔧",
+  mixed: "🔀",
+};
+
+function laneGlyph(lane: string): string {
+  return LANE_GLYPHS[lane] ?? "·";
+}
+
+function laneAbbr(lane: string): string {
+  if (lane === "assistant") return "asst";
+  if (lane === "user") return "user";
+  if (lane === "system") return "sys ";
+  if (lane === "tool") return "tool";
+  return "mix ";
+}
 
 // --- Time bucketing helpers ---
 
@@ -20,25 +54,34 @@ function timeBucket(createdAt: string, now: Date): string {
   const d = new Date(createdAt);
   const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000);
   if (diffDays <= 0) return "today";
-  if (diffDays === 1) return "yest";
-  if (diffDays < 7) return `${diffDays}d`;
+  if (diffDays === 1) return "yesterday";
   return "older";
 }
 
 function bucketRank(bucket: string): number {
   if (bucket === "today") return 0;
-  if (bucket === "yest") return 1;
-  if (bucket === "older") return 100;
-  const m = bucket.match(/^(\d+)d$/);
-  return m ? parseInt(m[1], 10) : 50;
+  if (bucket === "yesterday") return 1;
+  return 100;
 }
 
-/** Lane bar width. */
-const LANE_BAR_W = 26;
-/** Dots per page row. */
-const DOTS_PER_ROW = 22;
-/** Page slot bar width. */
-const SLOT_BAR_W = 12;
+function timeRange(pages: PageDigestEntry[]): string {
+  if (pages.length === 0) return "";
+  const times = pages.map(p => new Date(p.createdAt));
+  const earliest = new Date(Math.min(...times.map(t => t.getTime())));
+  const latest = new Date(Math.max(...times.map(t => t.getTime())));
+  return `${fmtHHMM(earliest)}–${fmtHHMM(latest)}`;
+}
+
+function fmtHHMM(d: Date): string {
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function fmtTok(n: number): string {
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return String(n);
+}
 
 export interface ContextMapConfig {
   /** Character budget for the rendered output (default: 0 = unlimited) */
@@ -90,99 +133,131 @@ export class ContextMapSource implements SensorySource {
     return stats.type === "virtual" || stats.type === "fragmentation" || stats.type === "hnsw" || stats.type === "perfect";
   }
 
-  // --- Virtual Memory (lane bars + page grid + page slots) ---
+  // --- Virtual Memory (full page viewer) ---
 
   private renderVirtual(stats: VirtualMemoryStats): string {
     const totalBudget = stats.workingMemoryBudget + stats.pageSlotBudget;
     if (totalBudget === 0) return this.renderBasic(stats);
 
     const totalUsed = stats.systemTokens + stats.pageSlotUsed + stats.workingMemoryUsed;
-    const usePct = totalBudget > 0 ? totalUsed / totalBudget : 0;
+    const pages = stats.pageDigest ?? [];
     const lines: string[] = [];
 
-    // --- Header ---
-    const pgCount = stats.pagesAvailable;
-    const usedK = (totalUsed / 1000).toFixed(0);
-    const budgetK = (totalBudget / 1000).toFixed(0);
-    const fillPct = Math.round(usePct * 100);
-    const headerRight = `${pgCount} pg  ${usedK}K/${budgetK}K  fill:${fillPct}%`;
-    const headerInner = " MEMORY" + " ".repeat(Math.max(1, 46 - 7 - headerRight.length)) + headerRight;
-
-    lines.push(topBorder());
-    lines.push(row(headerInner));
-
-    // --- Check for drill-down ---
+    // --- Check for drill-down first ---
     const filter = this.filter;
-    const pages = stats.pageDigest ?? [];
-
     if (filter && this.isPageIdFilter(filter, pages)) {
       const page = pages.find(p => p.id === filter);
       if (page) {
-        lines.push(divider());
+        lines.push(topBorder());
+        lines.push(row(` CONTEXT  page detail`));
+        lines.push(sectionDivider(`PAGE ${page.id}`));
         lines.push(...this.renderSinglePage(page, pages.length, stats.pagesLoaded));
-        lines.push(row(" reset: view('context')".padEnd(46)));
+        lines.push(row(` reset: view('context')`));
         lines.push(bottomBorder());
         return lines.join("\n");
       }
     }
 
     if (filter && (this.isTimeBucketFilter(filter) || filter === "full")) {
-      lines.push(divider());
+      lines.push(topBorder());
+      lines.push(row(` CONTEXT  drill-down: ${filter}`));
+      lines.push(sectionDivider(filter.toUpperCase()));
       lines.push(...this.renderDrillDown(pages, filter));
-      lines.push(row(" reset: view('context')".padEnd(46)));
+      lines.push(row(` reset: view('context')`));
       lines.push(bottomBorder());
       return lines.join("\n");
     }
 
-    // --- Lane swimlanes ---
-    lines.push(divider());
-    const laneMap = new Map<string, { tokens: number; count: number }>();
-    for (const lane of stats.lanes) {
-      laneMap.set(lane.role, { tokens: lane.tokens, count: lane.count });
-    }
-    const maxLaneTokens = Math.max(1, ...stats.lanes.map(l => l.tokens));
-    for (const [abbr, role] of [["AST", "assistant"], ["USR", "user"], ["SYS", "system"], ["TOL", "tool"]]) {
-      const lane = laneMap.get(role) ?? { tokens: 0, count: 0 };
-      const frac = lane.tokens / maxLaneTokens;
-      const barStr = bar(frac, LANE_BAR_W);
-      const tokStr = lpad(String(lane.tokens), 5);
-      const msgStr = lpad(String(lane.count), 2);
-      const inner = ` ${abbr} ${barStr} ${tokStr} tok  ${msgStr} `;
-      lines.push(row(inner));
-    }
+    // === SECTION 1: HEADER ===
+    const fillFrac = totalBudget > 0 ? totalUsed / totalBudget : 0;
+    const fillBar = bar(fillFrac, FILL_BAR_W);
+    const activeTokens = stats.pageSlotUsed + stats.workingMemoryUsed;
+    const activeTokStr = fmtTok(activeTokens);
+    const hdrLeft = ` PAGES  ${lpad(String(pages.length), 3)} total  ${lpad(String(stats.pagesLoaded), 2)} loaded  `;
+    const hdrRight = `  ${activeTokStr} tok active `;
+    const hdrMid = fillBar;
+    lines.push(topBorder());
+    lines.push(row(hdrLeft + hdrMid + rpad(hdrRight, IW - hdrLeft.length - hdrMid.length)));
 
-    // --- Page dot grid ---
-    lines.push(divider());
-    if (pages.length > 0) {
-      lines.push(...this.renderPageDots(pages));
-    } else {
-      lines.push(row(" PAGES  (none)".padEnd(46)));
-    }
+    // === SECTION 2: LANES ===
+    lines.push(sectionDivider("LANES"));
+    this.renderLanes(stats, pages, lines);
 
-    // --- Active page slots ---
-    const loadedPages = pages.filter(p => p.loaded);
-    if (loadedPages.length > 0) {
-      lines.push(divider());
-      const maxSlotTokens = Math.max(1, ...loadedPages.map(p => p.tokens));
-      for (let i = 0; i < Math.min(4, loadedPages.length); i++) {
-        const p = loadedPages[i];
-        lines.push(this.renderPageSlot(i, p, maxSlotTokens));
+    // === SECTION 3: PAGE ROWS ===
+    this.renderPageRows(pages, lines);
+
+    // === SECTION 4: ANCHORS ===
+    const anchors = pages.filter(p => p.maxImportance >= 0.8);
+    if (anchors.length > 0) {
+      lines.push(sectionDivider("ANCHORS — marked @@important@@"));
+      for (const p of anchors.slice(0, 6)) {
+        const d = new Date(p.createdAt);
+        const snippet = this.compactSummary(p.summary, p.label, 38);
+        const inner = `  ${rpad(p.id, 12)}  ${laneGlyph(p.lane)}  ${fmtHHMM(d)}  ★  "${snippet}"`;
+        lines.push(row(inner));
+      }
+      if (anchors.length > 6) {
+        lines.push(row(`  [+${anchors.length - 6} more anchors]`));
       }
     }
+
+    // === SECTION 5: SIZE HISTOGRAM ===
+    lines.push(sectionDivider("SIZE HISTOGRAM"));
+    this.renderHistogram(pages, lines);
+
+    // === SECTION 6: LOAD BUDGET ===
+    lines.push(sectionDivider("LOAD BUDGET"));
+    this.renderLoadBudget(stats, lines);
 
     lines.push(bottomBorder());
     return lines.join("\n");
   }
 
-  // --- Lane bar row ---
-  // Format: ` AST <bar>  TTTTT tok  MM `
-  // Prefix=5, bar=26, suffix=15 → total 46
+  // --- Section 2: Lane bars ---
 
-  // --- Page dot grid ---
+  private renderLanes(stats: VirtualMemoryStats, pages: PageDigestEntry[], lines: string[]): void {
+    // Aggregate tokens per lane from pages
+    const laneTotals: Record<string, number> = { assistant: 0, user: 0, system: 0, tool: 0 };
+    for (const p of pages) {
+      const l = p.lane === "mixed" ? "assistant" : p.lane;
+      if (l in laneTotals) {
+        laneTotals[l] += p.tokens;
+      } else {
+        laneTotals["assistant"] += p.tokens;
+      }
+    }
+    // Also fold in buffer lane stats
+    for (const lane of stats.lanes) {
+      if (lane.role in laneTotals) {
+        laneTotals[lane.role] += lane.tokens;
+      }
+    }
 
-  private renderPageDots(pages: PageDigestEntry[]): string[] {
+    const maxTok = Math.max(1, ...Object.values(laneTotals));
+
+    // Two lanes per row
+    const laneOrder: [string, string][] = [["assistant", "user"], ["system", "tool"]];
+    for (const [l1, l2] of laneOrder) {
+      const t1 = laneTotals[l1] ?? 0;
+      const t2 = laneTotals[l2] ?? 0;
+      const b1 = bar(t1 / maxTok, LANE_BAR_W);
+      const b2 = bar(t2 / maxTok, LANE_BAR_W);
+      const g1 = laneGlyph(l1);
+      const g2 = laneGlyph(l2);
+      const a1 = laneAbbr(l1);
+      const a2 = laneAbbr(l2);
+      const s1 = rpad(fmtTok(t1), 5);
+      const s2 = rpad(fmtTok(t2), 5);
+      // Layout: `  🤖asst ████...░░░░  4.9k   👤user ████...░░░░  4.4k   `
+      const inner = `  ${g1}${a1} ${b1}  ${s1}   ${g2}${a2} ${b2}  ${s2}`;
+      lines.push(row(inner));
+    }
+  }
+
+  // --- Section 3: Page rows by time bucket ---
+
+  private renderPageRows(pages: PageDigestEntry[], lines: string[]): void {
     const now = new Date();
-    const lines: string[] = [];
 
     // Group by time bucket
     const buckets = new Map<string, PageDigestEntry[]>();
@@ -197,78 +272,117 @@ export class ContextMapSource implements SensorySource {
     }
     bucketOrder.sort((a, b) => bucketRank(a) - bucketRank(b));
 
-    // Render bucket rows
-    const labelWidth = 8; // " PAGES  " or "        "
-    let first = true;
     for (const bucket of bucketOrder) {
       const items = buckets.get(bucket)!;
-      const prefix = first ? " PAGES  " : "        ";
-      first = false;
+      const range = timeRange(items);
+      const bucketLabel = range
+        ? `${bucket.toUpperCase()} ${range}`
+        : bucket.toUpperCase();
+      lines.push(sectionDivider(bucketLabel));
 
-      // Dot string: ● for loaded, ○ for dark
-      const dots = items.map(p => p.loaded ? "●" : "○").join("").slice(0, DOTS_PER_ROW);
-      const paddedDots = dots.padEnd(DOTS_PER_ROW);
+      // Column header
+      lines.push(row("  ID           LANE  TIME   MSGS  TOKS   STATUS  SNIPPET"));
+      lines.push(row("  " + "─".repeat(75)));
 
-      // Bucket label with count, right portion
-      const bucketLabel = ` ${bucket}:${lpad(String(items.length), 2)}`;
-      const suffix = bucketLabel.padEnd(46 - labelWidth - DOTS_PER_ROW);
-
-      lines.push(row(prefix + paddedDots + suffix));
+      const shown = items.slice(0, MAX_ROWS_PER_BUCKET);
+      for (const p of shown) {
+        lines.push(this.renderPageRow(p));
+      }
+      if (items.length > MAX_ROWS_PER_BUCKET) {
+        lines.push(row(`  [+${items.length - MAX_ROWS_PER_BUCKET} more pages]`));
+      }
     }
 
-    // Legend line
-    const legend = "        ●=loaded ○=dark  pin:" + stats_pinnedCount(pages);
-    lines.push(row(legend.padEnd(46)));
-
-    return lines;
+    if (pages.length === 0) {
+      lines.push(sectionDivider("PAGES"));
+      lines.push(row("  (no pages)"));
+    }
   }
 
-  // --- Page slot ---
+  private renderPageRow(p: PageDigestEntry): string {
+    const idShort = rpad(p.id.length > 12 ? p.id.slice(0, 12) : p.id, 12);
+    const glyph = laneGlyph(p.lane);
+    const d = new Date(p.createdAt);
+    const time = fmtHHMM(d);
+    const msgs = lpad(String(p.messageCount), 4);
+    const toks = lpad(fmtTok(p.tokens), 5) + "t";
 
-  private renderPageSlot(idx: number, page: PageDigestEntry, maxTokens: number): string {
-    // Format: ` [N] pg_XXXX  lll HH:MM  TTTTTt  <bar>  `
-    const idShort = page.id.length > 7 ? page.id.slice(0, 7) : page.id;
-    const createdDate = new Date(page.createdAt);
-    const hh = lpad(String(createdDate.getHours()), 2).replace(/ /g, "0");
-    const mm = lpad(String(createdDate.getMinutes()), 2).replace(/ /g, "0");
-    const timeStr = `${hh}:${mm}`;
+    let status: string;
+    if (p.pinned) status = rpad("📌 pin", 8);
+    else if (p.loaded) status = rpad("█ live", 8);
+    else status = rpad("░ dark", 8);
 
-    // Determine lane from page label/summary (heuristic: look for role keywords)
-    const lane = this.guessLane(page);
-    const tokStr = lpad(String(page.tokens), 5) + "t";
-    const frac = page.tokens / maxTokens;
-    const barStr = bar(frac, SLOT_BAR_W);
+    // Snippet — remaining space after fixed columns
+    // Cols: 2 + 12 + 2 + glyph(2) + 2 + 5 + 3 + 4 + 2 + 6 + 3 + 8 + 2 = ~51 → snippet gets ~25 chars
+    const snippet = this.compactSummary(p.summary, p.label, 23);
+    const snippetStr = `"${snippet}"`;
 
-    // ` [0] pg_XXXX  lll HH:MM  TTTTTt  ████░░░░░░░░ `
-    // Build: ` [N] ` (5) + id (7) + `  ` (2) + lane (3) + ` ` (1) + time (5) + `  ` (2) + tok (6) + `  ` (2) + bar (12) + ` ` (1) = 46
-    const inner = ` [${idx}] ${rpad(idShort, 7)}  ${rpad(lane, 3)} ${timeStr}  ${tokStr}  ${barStr} `;
+    const inner = `  ${idShort}  ${glyph}   ${time}  ${msgs}  ${toks}  ${status} ${snippetStr}`;
     return row(inner);
   }
 
-  /** Best-effort lane guess from page content. */
-  private guessLane(page: PageDigestEntry): string {
-    const s = (page.label + " " + page.summary).toLowerCase();
-    if (s.includes("tool") || s.includes("function")) return "tol";
-    if (s.includes("user") || s.includes("human")) return "usr";
-    if (s.includes("system") || s.includes("sys")) return "sys";
-    return "ast";
+  // --- Section 5: Size histogram ---
+
+  private renderHistogram(pages: PageDigestEntry[], lines: string[]): void {
+    if (pages.length === 0) {
+      lines.push(row("  (no pages)"));
+      return;
+    }
+
+    const maxTokens = Math.max(...pages.map(p => p.tokens));
+    const buckets = [
+      { label: "<100", test: (t: number) => t < 100, desc: "tiny — sys/status" },
+      { label: "<1000", test: (t: number) => t >= 100 && t < 1000, desc: "small — summaries" },
+      { label: "<5000", test: (t: number) => t >= 1000 && t < 5000, desc: "medium — working" },
+      { label: String(maxTokens), test: (t: number) => t >= 5000, desc: "MAX — dense output" },
+    ];
+
+    const counts = buckets.map(b => ({
+      ...b,
+      count: pages.filter(p => b.test(p.tokens)).length,
+    }));
+    const maxCount = Math.max(1, ...counts.map(c => c.count));
+
+    for (const c of counts) {
+      const lbl = lpad(c.label, 6);
+      const barStr = bar(c.count / maxCount, 20);
+      const cntStr = rpad(`${c.count} pages`, 10);
+      const desc = `(${c.desc})`;
+      lines.push(row(`  ${lbl}  ${barStr}  ${cntStr} ${desc}`));
+    }
+  }
+
+  // --- Section 6: Load budget ---
+
+  private renderLoadBudget(stats: VirtualMemoryStats, lines: string[]): void {
+    const budget = stats.pageSlotBudget;
+    const used = stats.pageSlotUsed;
+    const usedFrac = budget > 0 ? used / budget : 0;
+    const freeFrac = 1 - usedFrac;
+
+    const usedBar = bar(usedFrac, 20);
+    const freeBar = bar(freeFrac, 20);
+    const usedStr = `${fmtTok(used)}/${fmtTok(budget)} used`;
+    const freeStr = `budget free`;
+
+    lines.push(row(`  slots: ${usedBar}  ${rpad(usedStr, 16)} ${freeBar}  ${freeStr}`));
   }
 
   // --- Single page drill-down ---
 
   private renderSinglePage(page: PageDigestEntry, totalPages: number, loadedCount: number): string[] {
     const lines: string[] = [];
-    lines.push(row(` page: ${page.id}`.padEnd(46)));
-    lines.push(row(`   tokens: ${(page.tokens / 1000).toFixed(1)}K`.padEnd(46)));
+    lines.push(row(`  page: ${page.id}`));
+    lines.push(row(`  tokens: ${fmtTok(page.tokens)}   messages: ${page.messageCount}   lane: ${page.lane}`));
     const status = page.loaded ? "loaded *" : page.pinned ? "pinned" : "unloaded";
-    lines.push(row(`   status: ${status}`.padEnd(46)));
-    lines.push(row(`   created: ${page.createdAt}`.padEnd(46)));
-    const summary = this.compactSummary(page.summary, page.label, 40);
-    lines.push(row(`   ${summary}`.padEnd(46)));
+    lines.push(row(`  status: ${status}   importance: ${page.maxImportance.toFixed(2)}`));
+    lines.push(row(`  created: ${page.createdAt}`));
+    const summary = this.compactSummary(page.summary, page.label, 68);
+    lines.push(row(`  "${summary}"`));
     if (page.loaded) {
-      lines.push(row(`   unload: unref('${page.id}')`.padEnd(46)));
+      lines.push(row(`  unload: unref('${page.id}')`));
     } else {
-      lines.push(row(`   load: ref('${page.id}')`.padEnd(46)));
+      lines.push(row(`  load: ref('${page.id}')`));
     }
     return lines;
   }
@@ -294,26 +408,21 @@ export class ContextMapSource implements SensorySource {
     if (filter === "full") {
       for (const bucket of bucketOrder) {
         const items = buckets.get(bucket)!;
-        lines.push(row(` ${bucket} (${items.length}):`.padEnd(46)));
+        lines.push(row(` ${bucket} (${items.length}):`));
         for (const p of items) {
-          const sym = p.loaded ? "*" : p.pinned ? "+" : ".";
-          const detail = `  ${sym} ${p.id} ${this.compactSummary(p.summary, p.label, 28)}`;
-          lines.push(row(detail.padEnd(46)));
+          lines.push(this.renderPageRow(p));
         }
       }
     } else {
       for (const bucket of bucketOrder) {
         const items = buckets.get(bucket)!;
         if (bucket === filter) {
-          lines.push(row(` ${bucket} (${items.length}):`.padEnd(46)));
+          lines.push(row(` ${bucket} (${items.length}):`));
           for (const p of items) {
-            const sym = p.loaded ? "*" : p.pinned ? "+" : ".";
-            const tokK = (p.tokens / 1000).toFixed(1);
-            const detail = `  ${sym} ${p.id} (${tokK}K) ${this.compactSummary(p.summary, p.label, 22)}`;
-            lines.push(row(detail.padEnd(46)));
+            lines.push(this.renderPageRow(p));
           }
         } else {
-          lines.push(row(` ${bucket} (${items.length})`.padEnd(46)));
+          lines.push(row(` ${bucket} (${items.length})`));
         }
       }
     }
@@ -326,9 +435,8 @@ export class ContextMapSource implements SensorySource {
   private renderBasic(stats: MemoryStats): string {
     const lines: string[] = [];
     const usedK = (stats.totalTokensEstimate / 1000).toFixed(0);
-    const headerInner = ` MEMORY  ${usedK}K  ${stats.totalMessages} msgs`;
     lines.push(topBorder());
-    lines.push(row(headerInner.padEnd(46)));
+    lines.push(row(` MEMORY  ${usedK}K  ${stats.totalMessages} msgs`));
     lines.push(bottomBorder());
     return lines.join("\n");
   }
@@ -344,7 +452,7 @@ export class ContextMapSource implements SensorySource {
       s = label.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*-?\s*/g, "").trim();
       if (!s) s = label;
     }
-    return s.length > maxLen ? s.slice(0, maxLen - 3) + "..." : s;
+    return s.length > maxLen ? s.slice(0, maxLen - 1) + "…" : s;
   }
 
   private isTimeBucketFilter(filter: string): boolean {
@@ -355,10 +463,4 @@ export class ContextMapSource implements SensorySource {
   private isPageIdFilter(filter: string, pages: PageDigestEntry[]): boolean {
     return pages.some(p => p.id === filter);
   }
-}
-
-/** Count pinned pages. */
-function stats_pinnedCount(pages: PageDigestEntry[]): string {
-  const count = pages.filter(p => p.pinned).length;
-  return String(count);
 }

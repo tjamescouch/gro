@@ -1,16 +1,16 @@
 /**
  * SelfSource — writable sensory channel (model's etch-a-sketch).
  *
- * Box-drawn 48-char-wide panel. Content is set via `write_self` tool.
+ * Box-drawn 80-char-wide panel. Content is set via `write_self` tool.
  * When empty, shows a template with labeled zones.
- * Content word-wraps at 44 chars inside the border.
+ * Content word-wraps at 76 chars inside the border.
  */
 
 import type { SensorySource } from "./sensory-memory.js";
 import { topBorder, bottomBorder, divider, row, IW } from "./box.js";
 
-/** Usable content width inside `║ ` and ` ║` = 44 chars. */
-const CONTENT_W = 44;
+/** Usable content width inside `║ ` and ` ║` = 76 chars. */
+const CONTENT_W = 76;
 
 export class SelfSource implements SensorySource {
   private content: string = "";

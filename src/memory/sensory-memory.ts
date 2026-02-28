@@ -41,7 +41,7 @@ export interface SensoryChannel {
   content: string;
   enabled: boolean;
   source?: SensorySource;
-  /** Fixed grid width in characters (default: 48). */
+  /** Fixed grid width in characters (default: 80). */
   width?: number;
   /** Fixed grid height in lines (default: 12). */
   height?: number;

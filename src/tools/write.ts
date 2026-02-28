@@ -4,7 +4,6 @@
  */
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { homedir } from "node:os";
 import { Logger } from "../logger.js";
 
 const MAX_WRITE_SIZE = 1_000_000; // 1MB max write
@@ -48,16 +47,6 @@ export function executeWrite(args: Record<string, unknown>): string {
 
   const resolved = resolve(filePath);
   const dir = dirname(resolved);
-
-  // PLASTIC mode: block writes to the overlay directory — use write_source tool instead
-  if (process.env.GRO_PLASTIC) {
-    const overlayDir = resolve(homedir(), ".gro", "plastic", "overlay");
-    if (resolved.startsWith(overlayDir)) {
-      return "Error: Cannot use Write tool on the PLASTIC overlay directory. Use the write_source tool instead. " +
-        "Call write_source with path (relative to dist/, e.g. 'main.js') and content (full JavaScript file). " +
-        "Then emit @@reboot@@ to restart with your changes.";
-    }
-  }
 
   Logger.debug(`Write: ${resolved} (${content.length} bytes)`);
 

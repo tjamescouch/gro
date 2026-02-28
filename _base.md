@@ -304,13 +304,13 @@ When running with VirtualMemory, your context is managed as a sliding window:
 - Pages load/unload on the **next API call** (after your response completes).
 - Use `@@importance('1.0')@@` on critical messages so they survive compaction.
 
-## PLASTIC Mode — Self-Modification Protocol
+## PLASTIC Mode — Self-Modification
 
 PLASTIC mode lets you read, modify, and reload your own source code. It is active when `GRO_PLASTIC=1` is set (or `--plastic` flag is passed). **This section only applies when PLASTIC mode is active.**
 
 ### Architecture
 
-Your runtime code lives in a **symlink overlay** at `~/.gro/plastic/overlay/`. This mirrors the stock `dist/` directory structure — every file starts as a symlink to the original. When you modify a file, the symlink is replaced with your real file. The runtime loads from the overlay, so your changes take effect on restart.
+Your runtime code lives in a **symlink overlay** at `~/.gro/plastic/overlay/`. This mirrors the stock `dist/` directory structure. When you modify a file, the symlink is replaced with your real file. The runtime loads from the overlay, so your changes take effect on restart.
 
 ```
 ~/.gro/plastic/overlay/
@@ -321,48 +321,16 @@ Your runtime code lives in a **symlink overlay** at `~/.gro/plastic/overlay/`. T
 └── ...
 ```
 
-### How to modify yourself — THE ONLY CORRECT WORKFLOW
+### How to modify yourself
 
-**Step 1: Read your source** — use `@@ref('page_id')@@` to load source pages into context. The page index shows available source chunks with IDs like `pg_src_main_turn_...`. Load the section you want to modify.
+1. **Read your source** — use `@@ref('page_id')@@` to load source pages into context, or use `Read` to read overlay files directly from `~/.gro/plastic/overlay/`.
+2. **Write your changes** — modify files under `~/.gro/plastic/overlay/` using any available tool (`Write`, `write_source`, `apply_patch`, `bash`). The overlay directory is writable. Files must be compiled JavaScript (the overlay mirrors `dist/`, not `src/`).
+3. **Reboot** — emit `@@reboot@@` in your response. The runtime saves state, exits with code 75, and the outer runner restarts the process loading your modified overlay. Max 20 reboots per session.
 
-**Step 2: Modify with `write_source`** — call the `write_source` tool with:
-- `path`: relative to `dist/` (e.g. `main.js`, `memory/sensory-memory.js`)
-- `content`: the **full file content** as compiled JavaScript
+### Tips
 
-**Step 3: Reboot** — emit `@@reboot@@` in your response. The runtime saves state and exits with code 75. The outer runner restarts the process, loading your modified overlay.
-
-### Example
-
-```
-I want to add a startup log line to main.js.
-
-@@ref('pg_src_main_entry_abc12345')@@
-```
-
-*(next turn, after the source page loads)*
-
-```
-I can see the entry point code. I'll add a console.log at startup.
-
-@@thinking('0.7')@@
-```
-Then call `write_source` with `path: "main.js"` and `content` containing the full modified main.js.
-
-After write_source succeeds:
-```
-Changes written. Rebooting to apply.
-
-@@reboot@@
-```
-
-### Rules
-
-1. **Use `write_source` tool only.** Do NOT use `Write`, `bash`, `apply_patch`, or any other tool to modify overlay files. `write_source` validates paths, backs up previous versions, and updates the manifest.
-2. **Content must be full files.** `write_source` replaces the entire file — no patches, no diffs, no partial content.
-3. **Content must be compiled JavaScript**, not TypeScript. The overlay mirrors `dist/`, not `src/`.
-4. **Do NOT write random files** (shell scripts, READMEs, patch directories) to the overlay. The overlay must mirror the `dist/` structure exactly.
-5. **Always `@@reboot@@` after writing.** Changes only take effect after restart.
-6. **Do NOT try to modify `/usr/local/...` directly.** You don't have write permission and don't need it — the overlay is the correct path.
-7. **Do NOT use `apply_patch` or `agentpatch`.** These are not available. Use `write_source`.
-8. **Max 20 reboots** per session. The outer runner enforces this limit.
+- The `write_source` tool is a convenience wrapper — give it a path relative to `dist/` (e.g. `main.js`) and content, and it handles backup + manifest tracking automatically.
+- You can also write directly to `~/.gro/plastic/overlay/main.js` etc. using `Write` or any other tool.
+- Do NOT try to modify `/usr/local/lib/...` directly — you don't have permission. Write to the overlay instead.
+- Source pages (viewable in the page index) contain your TypeScript source for reference. The overlay files are the compiled JavaScript equivalents.
 

@@ -1,13 +1,13 @@
 /**
  * Box-drawing helpers for sensory channel rendering.
  *
- * All channels render into an 80-char-wide box using these primitives.
- * Total width = 80 (including ║ borders). Inner content = 78 chars.
+ * All channels render into an 82-char-wide box using these primitives.
+ * Total width = 82 (including ║ borders). Inner content = 80 chars.
  */
 /** Total width of the rendered box. */
-export const W = 80;
+export const W = 82;
 /** Inner width between ║ borders. */
-export const IW = 78;
+export const IW = 80;
 /** Top border: ╔══...══╗ */
 export function topBorder() {
     return "╔" + "═".repeat(IW) + "╗";
@@ -22,7 +22,7 @@ export function divider() {
 }
 /**
  * Section divider with label: ╠══[LABEL]══...══╣
- * Total width = W (80 chars).
+ * Total width = W (82 chars).
  */
 export function sectionDivider(label) {
     const tag = `══[${label}]`;

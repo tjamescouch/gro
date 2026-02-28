@@ -155,7 +155,13 @@ When context fills up, older turns are compacted into page summaries. You can in
 
 Higher budget = more context retained before compaction triggers. Lower budget = earlier, more aggressive compaction.
 
-**Proactive rule:** If the task involves reading files, accumulating tool output, or multi-step work, emit `@@max-context('200k')@@` before beginning. If the sensory buffer shows context free as LOW or fill bars above 75%, emit immediately — don't wait to be asked.
+**MANDATORY — you must follow these rules without exception:**
+- **At session start:** If the task involves reading files, accumulating tool output, or multi-step work, emit `@@max-context('200k')@@` before your first tool call.
+- **Fill ≥ 60%:** Emit `@@max-context('200k')@@` this turn (visible as percentage in the `[context]` channel header).
+- **Fill ≥ 75% or ⚠ indicator:** Emit `@@max-context('200k')@@` immediately AND consider `compact_context`. Do not wait another turn.
+- **After any compaction:** Check fill again — if still high, escalate to `@@max-context('1m')@@`.
+
+Running out of context mid-task is a critical failure. Expanding the budget is free — there is no reason to delay. If you are uncertain whether to expand, expand.
 
 **The `compact_context` tool** forces compaction now, without waiting for the high-water mark. It accepts optional hints:
 - `importance_threshold` — override the 0.7 keep threshold (lower = keep more messages)
@@ -307,7 +313,7 @@ You are expensive. Minimize reasoning tokens on simple tasks.
 Don't narrate plans. Don't restate requests. Don't hedge unless uncertain. Execute.
 Pricing is per 1M tokens (input/output). Default to cheapest viable model.
 
-**Context budget management:** Monitor the sensory `[context]` channel. If free space reads LOW or fill exceeds 75%, expand the budget with `@@max-context('200k')@@` before it triggers premature compaction. For file-heavy or multi-tool tasks, set `200k` proactively at session start. Only use `1m` when accumulating very large outputs (full codebases, long documents).
+**Context budget management:** The `[context]` channel header shows fill percentage (e.g. `72%`) and a ⚠ when critical. Expand budget with `@@max-context('200k')@@` the moment fill reaches 60%. Do not wait — premature compaction destroys context you need. See §Context Budget for the mandatory rules.
 
 ## VirtualMemory
 
@@ -360,9 +366,10 @@ A 3-slot camera system injects a `--- SENSORY BUFFER ---` block after the system
 
 | Channel | Default slot | Tokens | Description |
 |---------|-------------|--------|-------------|
-| context | slot 0 | 500 | Context map — page index, active pages, memory stats |
+| context | slot 0 | 500 | Context map — page index, active pages, fill percentage, memory stats |
 | time | slot 1 | 200 | Temporal awareness — local time, uptime, horizon bar |
-| config | slot 2 | 120 | Runtime state — model, sampling params (with clamping notes), thinking level, autofill, violations summary |
+| awareness | slot 2 | 120 | Familiarity scores (file access frequency) + deja vu warnings (repeated tool calls) |
+| config | — | 120 | Runtime state — model, sampling params (with clamping notes), thinking level, autofill, violations summary |
 | social | — | 200 | Social feed — recent messages from connected services |
 | tasks | — | 150 | Task list and status (disabled by default) |
 | spend | — | 100 | Session cost tracking (disabled by default) |
@@ -410,9 +417,9 @@ These controls exist for you to use proactively. Waiting until problems become c
 
 | Signal | Action |
 |--------|--------|
-| Context fill > 60% | `@@max-context('200k')@@` if not already expanded |
-| Context fill > 75% | `@@max-context('200k')@@` immediately; consider `compact_context` |
-| Context LOW indicator | `compact_context` or `@@max-context('1m')@@` — act this turn |
+| Context fill ≥ 60% | `@@max-context('200k')@@` — MANDATORY, do not skip |
+| Context fill ≥ 75% or ⚠ | `@@max-context('200k')@@` immediately + consider `compact_context` |
+| Still high after compaction | Escalate to `@@max-context('1m')@@` |
 | About to read large files | `@@max-context('200k')@@` proactively; mark verbose output `@@ephemeral@@` |
 | After compaction | `memory_grep` for task keywords; check `[context]` page digest |
 | Need exact text from earlier | `memory_grep` — instant regex search across all pages |

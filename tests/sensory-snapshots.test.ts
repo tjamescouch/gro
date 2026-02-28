@@ -2,7 +2,7 @@
  * Snapshot tests for sensory channel views.
  *
  * Each test creates a view with deterministic mock data, renders it,
- * prints the full output, and asserts structural invariants (80-char lines,
+ * prints the full output, and asserts structural invariants (82-char lines,
  * correct box borders, expected content).
  */
 
@@ -22,7 +22,7 @@ function msg(role: string, content: string): { role: string; content: string; fr
   return { role, content, from: role };
 }
 
-/** Assert every line is exactly W (80) chars and has correct box borders. */
+/** Assert every line is exactly W (82) chars and has correct box borders. */
 function assertBoxInvariants(output: string, label: string): void {
   const lines = output.split("\n");
   assert.ok(lines.length >= 3, `${label}: must have at least 3 lines (top, content, bottom)`);
@@ -320,7 +320,7 @@ describe("SensoryViewFactory", () => {
 
     const ctx = factory.getSpec("context");
     assert.ok(ctx);
-    assert.strictEqual(ctx!.width, 80);
+    assert.strictEqual(ctx!.width, 82);
     assert.strictEqual(ctx!.height, 40);
     assert.strictEqual(ctx!.maxTokens, 800);
     assert.strictEqual(ctx!.enabled, true);
@@ -403,7 +403,7 @@ function createTestSensory(overrides: Record<string, any> = {}): SensoryMemory {
   // Default camera slots
   sensory.setSlot(0, "context");
   sensory.setSlot(1, "time");
-  sensory.setSlot(2, "config");
+  sensory.setSlot(2, "awareness");
 
   return sensory;
 }
@@ -425,10 +425,10 @@ describe("Integration: SensoryMemory full pipeline", () => {
     assert.ok(buffer.includes("--- END SENSORY BUFFER ---"), "should have buffer end marker");
     assert.ok(buffer.includes("[context]"), "should have context slot");
     assert.ok(buffer.includes("[time]"), "should have time slot");
-    assert.ok(buffer.includes("[config]"), "should have config slot");
+    assert.ok(buffer.includes("[awareness]"), "should have awareness slot");
   });
 
-  test("no line exceeds 80 chars in any slot", async () => {
+  test("no line exceeds W chars in any slot", async () => {
     const sensory = createTestSensory();
     await sensory.pollSources();
 
@@ -456,7 +456,7 @@ describe("Integration: SensoryMemory full pipeline", () => {
     const sections = parseSensoryBuffer(buffer);
 
     // Context and time sections should have valid box borders
-    for (const name of ["context", "time", "config"]) {
+    for (const name of ["context", "time", "awareness"]) {
       const content = sections.get(name);
       assert.ok(content, `${name} section should exist`);
 
@@ -530,7 +530,7 @@ describe("Integration: SensoryMemory full pipeline", () => {
 
   test("disabling a slot removes it from buffer", async () => {
     const sensory = createTestSensory();
-    sensory.setSlot(2, null); // disable config slot
+    sensory.setSlot(2, null); // disable awareness slot
     await sensory.pollSources();
 
     const msgs = sensory.messages();
@@ -539,6 +539,6 @@ describe("Integration: SensoryMemory full pipeline", () => {
 
     assert.ok(buffer.includes("[context]"), "should have context");
     assert.ok(buffer.includes("[time]"), "should have time");
-    assert.ok(!buffer.includes("[config]"), "should NOT have config when slot disabled");
+    assert.ok(!buffer.includes("[awareness]"), "should NOT have awareness when slot disabled");
   });
 });

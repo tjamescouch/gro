@@ -160,12 +160,14 @@ export class ContextMapSource {
         const availableForPages = Math.max(4, maxLines - fixedLines);
         // === SECTION 1: HEADER ===
         const fillFrac = totalBudget > 0 ? totalUsed / totalBudget : 0;
+        const fillPct = Math.round(fillFrac * 100);
         const fillBar = bar(fillFrac, FILL_BAR_W);
+        const fillLabel = fillPct >= 75 ? ` ${fillPct}% ⚠` : fillPct >= 60 ? ` ${fillPct}%` : ` ${fillPct}%`;
         const activeTokens = stats.pageSlotUsed + stats.workingMemoryUsed;
         const activeTokStr = fmtTok(activeTokens);
         const hdrLeft = ` PAGES  ${lpad(String(pages.length), 3)} total  ${lpad(String(stats.pagesLoaded), 2)} loaded  `;
         const hdrRight = `  ${activeTokStr} tok active `;
-        const hdrMid = fillBar;
+        const hdrMid = fillBar + fillLabel;
         lines.push(topBorder());
         lines.push(row(hdrLeft + hdrMid + rpad(hdrRight, IW - hdrLeft.length - hdrMid.length)));
         // === SECTION 2: LANES ===

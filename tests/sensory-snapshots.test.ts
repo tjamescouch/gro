@@ -12,6 +12,7 @@ import { ContextMapSource } from "../src/memory/context-map-source.js";
 import { TemporalSource } from "../src/memory/temporal-source.js";
 import { SelfSource } from "../src/memory/self-source.js";
 import { SimpleMemory } from "../src/memory/simple-memory.js";
+import { SensoryMemory } from "../src/memory/sensory-memory.js";
 import { SensoryViewFactory, createDefaultFactory, type ViewDeps } from "../src/memory/sensory-view-factory.js";
 import { W } from "../src/memory/box.js";
 
@@ -337,3 +338,206 @@ function factory_create(name: string, deps: ViewDeps) {
   const factory = createDefaultFactory();
   return factory.create(name, deps);
 }
+
+// =============================================================================
+// Integration tests — full SensoryMemory pipeline
+// =============================================================================
+
+/**
+ * Assert that every line in a section's content is at most `maxWidth` chars.
+ * This catches character-level slicing that destroys box-drawing structure.
+ */
+function assertNoLineTruncation(sectionContent: string, sectionName: string, maxWidth: number): void {
+  const lines = sectionContent.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Lines should be exactly maxWidth (padded by enforceGrid) or shorter (e.g., section headers)
+    assert.ok(line.length <= maxWidth,
+      `${sectionName} line ${i}: expected ≤${maxWidth} chars, got ${line.length}\n  → "${line}"`);
+  }
+}
+
+/**
+ * Extract individual channel sections from the sensory buffer string.
+ * Returns Map<channelName, contentString>.
+ */
+function parseSensoryBuffer(buffer: string): Map<string, string> {
+  const sections = new Map<string, string>();
+  const regex = /\[(\w+)\]\n([\s\S]*?)(?=\n\n\[|\n--- END SENSORY BUFFER ---)/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(buffer)) !== null) {
+    sections.set(match[1], match[2]);
+  }
+  return sections;
+}
+
+/** Create a SensoryMemory with default factory channels and mock data. */
+function createTestSensory(overrides: Record<string, any> = {}): SensoryMemory {
+  const inner = new SimpleMemory();
+  inner.add(msg("system", "You are a test agent."));
+  inner.add(msg("user", "hello"));
+  inner.add(msg("assistant", "hi there"));
+
+  // Give it virtual memory stats so context view renders the full 6-section panel
+  (inner as any).getStats = () => virtualMemoryStats(overrides);
+
+  const sensory = new SensoryMemory(inner, { totalBudget: 1200 });
+  const factory = createDefaultFactory();
+  const deps: ViewDeps = { memory: inner };
+
+  for (const spec of factory.specs()) {
+    sensory.addChannel({
+      name: spec.name,
+      maxTokens: spec.maxTokens,
+      updateMode: spec.updateMode,
+      content: "",
+      enabled: spec.enabled,
+      source: factory.create(spec.name, deps),
+      width: spec.width,
+      height: spec.height,
+      viewable: spec.viewable,
+    });
+  }
+
+  // Default camera slots
+  sensory.setSlot(0, "context");
+  sensory.setSlot(1, "time");
+  sensory.setSlot(2, "config");
+
+  return sensory;
+}
+
+describe("Integration: SensoryMemory full pipeline", () => {
+  test("all 3 default slots present in sensory buffer", async () => {
+    const sensory = createTestSensory();
+    await sensory.pollSources();
+
+    const msgs = sensory.messages();
+    const sensoryMsg = msgs.find(m => m.from === "SensoryMemory");
+    assert.ok(sensoryMsg, "should inject a SensoryMemory message");
+
+    const buffer = sensoryMsg!.content as string;
+    console.log("\n=== INTEGRATION: full sensory buffer ===");
+    console.log(buffer);
+
+    assert.ok(buffer.includes("--- SENSORY BUFFER ---"), "should have buffer start marker");
+    assert.ok(buffer.includes("--- END SENSORY BUFFER ---"), "should have buffer end marker");
+    assert.ok(buffer.includes("[context]"), "should have context slot");
+    assert.ok(buffer.includes("[time]"), "should have time slot");
+    assert.ok(buffer.includes("[config]"), "should have config slot");
+  });
+
+  test("no line exceeds 80 chars in any slot", async () => {
+    const sensory = createTestSensory();
+    await sensory.pollSources();
+
+    const msgs = sensory.messages();
+    const sensoryMsg = msgs.find(m => m.from === "SensoryMemory");
+    assert.ok(sensoryMsg, "should inject a SensoryMemory message");
+
+    const buffer = sensoryMsg!.content as string;
+    const sections = parseSensoryBuffer(buffer);
+
+    assert.ok(sections.size >= 3, `should have at least 3 sections, got ${sections.size}`);
+
+    for (const [name, content] of sections) {
+      assertNoLineTruncation(content, name, W);
+    }
+  });
+
+  test("box structure intact in each slot after pipeline", async () => {
+    const sensory = createTestSensory();
+    await sensory.pollSources();
+
+    const msgs = sensory.messages();
+    const sensoryMsg = msgs.find(m => m.from === "SensoryMemory");
+    const buffer = sensoryMsg!.content as string;
+    const sections = parseSensoryBuffer(buffer);
+
+    // Context and time sections should have valid box borders
+    for (const name of ["context", "time", "config"]) {
+      const content = sections.get(name);
+      assert.ok(content, `${name} section should exist`);
+
+      // Find the box-drawn portion (lines starting with box chars)
+      const lines = content!.split("\n").filter(l => l.length > 0);
+      const boxLines = lines.filter(l => /^[╔╗╚╝║╠╣═]/.test(l));
+      assert.ok(boxLines.length >= 3,
+        `${name}: should have at least 3 box lines (top, content, bottom), got ${boxLines.length}`);
+
+      // First box line should be top border
+      const firstBox = boxLines[0];
+      assert.ok(firstBox.startsWith("╔"), `${name}: first box line should start with ╔, got '${firstBox[0]}'`);
+      assert.strictEqual(firstBox.length, W, `${name}: top border should be ${W} chars, got ${firstBox.length}`);
+
+      // Last box line should be bottom border
+      const lastBox = boxLines[boxLines.length - 1];
+      assert.ok(lastBox.startsWith("╚"), `${name}: last box line should start with ╚, got '${lastBox[0]}'`);
+      assert.strictEqual(lastBox.length, W, `${name}: bottom border should be ${W} chars, got ${lastBox.length}`);
+
+      // All middle box lines should start with ║ or ╠
+      for (let i = 1; i < boxLines.length - 1; i++) {
+        const ch = boxLines[i][0];
+        assert.ok(ch === "║" || ch === "╠",
+          `${name} box line ${i}: should start with ║ or ╠, got '${ch}'\n  → "${boxLines[i]}"`);
+        assert.strictEqual(boxLines[i].length, W,
+          `${name} box line ${i}: should be ${W} chars, got ${boxLines[i].length}\n  → "${boxLines[i]}"`);
+      }
+    }
+  });
+
+  test("context shows all 6 sections even with many pages", async () => {
+    const now = new Date();
+    const manyPages = Array.from({ length: 100 }, (_, i) => ({
+      id: `pg_${String(i).padStart(8, "0")}`,
+      label: `page ${i + 1}`,
+      tokens: 200 + i * 30,
+      loaded: i < 5,
+      pinned: i === 20,
+      summary: `Discussion topic ${i} about architecture`,
+      createdAt: now.toISOString(),
+      messageCount: 3,
+      maxImportance: i === 20 ? 0.9 : 0.1,
+      lane: ["assistant", "user", "system", "tool"][i % 4],
+    }));
+
+    const sensory = createTestSensory({
+      pageDigest: manyPages,
+      pagesLoaded: 5,
+      pagesAvailable: 100,
+    });
+    await sensory.pollSources();
+
+    const msgs = sensory.messages();
+    const sensoryMsg = msgs.find(m => m.from === "SensoryMemory");
+    const buffer = sensoryMsg!.content as string;
+    const sections = parseSensoryBuffer(buffer);
+    const contextContent = sections.get("context")!;
+
+    console.log("\n=== INTEGRATION: context with 100 pages ===");
+    // Print just the box lines (skip enforceGrid padding)
+    const boxLines = contextContent.split("\n").filter(l => /^[╔╗╚╝║╠╣═]/.test(l));
+    console.log(boxLines.join("\n"));
+
+    assert.ok(contextContent.includes("PAGES"), "should have PAGES header");
+    assert.ok(contextContent.includes("LANES"), "should have LANES section");
+    assert.ok(contextContent.includes("ANCHORS"), "should have ANCHORS");
+    assert.ok(contextContent.includes("SIZE HISTOGRAM"), "should have histogram");
+    assert.ok(contextContent.includes("LOAD BUDGET"), "should have load budget");
+    assert.ok(contextContent.includes("100 total"), "should show 100 total pages");
+  });
+
+  test("disabling a slot removes it from buffer", async () => {
+    const sensory = createTestSensory();
+    sensory.setSlot(2, null); // disable config slot
+    await sensory.pollSources();
+
+    const msgs = sensory.messages();
+    const sensoryMsg = msgs.find(m => m.from === "SensoryMemory");
+    const buffer = sensoryMsg!.content as string;
+
+    assert.ok(buffer.includes("[context]"), "should have context");
+    assert.ok(buffer.includes("[time]"), "should have time");
+    assert.ok(!buffer.includes("[config]"), "should NOT have config when slot disabled");
+  });
+});

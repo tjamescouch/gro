@@ -351,28 +351,13 @@ export class SensoryMemory extends AgentMemory {
                 .map(ch => ({ name: ch.name, content: ch.content }));
         if (items.length === 0)
             return "";
-        const maxChars = this.totalBudget * this.avgCharsPerToken;
-        // Guarantee each slot gets at least 1/N of the budget so later slots aren't starved
-        const perSlotBudget = Math.floor(maxChars / items.length);
+        // Each channel's content is already grid-enforced (width × height).
+        // Include all slot contents — per-channel budgets are the responsibility
+        // of enforceGrid and the source's own maxLines/maxChars config.
+        // No character-level slicing here — that destroys box-drawing structure.
         const parts = [];
-        let totalChars = 0;
-        for (let i = 0; i < items.length; i++) {
-            const section = `[${items[i].name}]\n${items[i].content}`;
-            // Each slot gets at least perSlotBudget; earlier slots can use more
-            // only if there's remaining budget after reserving for later slots
-            const remainingSlots = items.length - i - 1;
-            const reservedForLater = remainingSlots * perSlotBudget;
-            const myBudget = maxChars - reservedForLater - totalChars;
-            if (section.length > myBudget && parts.length > 0) {
-                // Truncate this slot's content to fit within its budget
-                const truncated = section.slice(0, Math.max(perSlotBudget, myBudget));
-                parts.push(truncated);
-                totalChars += truncated.length;
-            }
-            else {
-                parts.push(section);
-                totalChars += section.length;
-            }
+        for (const item of items) {
+            parts.push(`[${item.name}]\n${item.content}`);
         }
         return `--- SENSORY BUFFER ---\n${parts.join("\n\n")}\n--- END SENSORY BUFFER ---`;
     }

@@ -57,6 +57,12 @@ export class SensoryMemory extends AgentMemory {
   private avgCharsPerToken: number;
   /** Three camera slots — all agent-switchable. null = slot disabled. */
   private slots: [string | null, string | null, string | null] = [null, null, null];
+  /** Saved slot state during full-screen expand. */
+  private savedSlots: [string | null, string | null, string | null] | null = null;
+  /** Saved maxTokens per channel during full-screen expand. */
+  private savedMaxTokens: Map<string, number> = new Map();
+  /** Countdown for full-screen expand restoration. */
+  private expandTurnsRemaining = 0;
 
   constructor(inner: AgentMemory, config: SensoryMemoryConfig = {}) {
     // Don't pass systemPrompt — inner already has it
@@ -142,8 +148,52 @@ export class SensoryMemory extends AgentMemory {
     this.setSlot(0, names[idx]);
   }
 
+  /**
+   * Full-screen expand: commandeer all 3 slots for a single channel for one turn.
+   * Saves current slot config and boosts the channel's token budget to the total budget.
+   * Automatically restores after the next pollSources() cycle.
+   */
+  expandForOneTurn(channelName: string): void {
+    const ch = this.channels.get(channelName);
+    if (!ch) {
+      Logger.warn(`[Sensory] expandForOneTurn: unknown channel '${channelName}'`);
+      return;
+    }
+    // Save current state
+    this.savedSlots = [...this.slots] as [string | null, string | null, string | null];
+    this.savedMaxTokens.set(channelName, ch.maxTokens);
+    // Expand: all budget to this channel, clear other slots
+    ch.maxTokens = this.totalBudget;
+    this.slots = [channelName, null, null];
+    // 2 = next poll renders expanded, then restore before the poll after that
+    this.expandTurnsRemaining = 2;
+    Logger.telemetry(`[Sensory] Full-screen expand: ${channelName} (budget: ${this.totalBudget})`);
+  }
+
+  /** Restore slot config and channel budgets after full-screen expand. */
+  private restoreFromExpand(): void {
+    if (this.savedSlots) {
+      this.slots = this.savedSlots;
+      this.savedSlots = null;
+    }
+    for (const [name, maxTok] of this.savedMaxTokens) {
+      const ch = this.channels.get(name);
+      if (ch) ch.maxTokens = maxTok;
+    }
+    this.savedMaxTokens.clear();
+    Logger.telemetry(`[Sensory] Restored from full-screen expand`);
+  }
+
   /** Poll all every_turn sources for fresh content. Call before driver.chat(). */
   async pollSources(): Promise<void> {
+    // Handle full-screen expand lifecycle
+    if (this.expandTurnsRemaining > 0) {
+      this.expandTurnsRemaining--;
+      if (this.expandTurnsRemaining === 0) {
+        this.restoreFromExpand();
+      }
+    }
+
     for (const [name, ch] of this.channels) {
       if (!ch.enabled || ch.updateMode !== "every_turn" || !ch.source) continue;
       try {

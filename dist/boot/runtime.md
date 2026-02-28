@@ -191,7 +191,17 @@ The `[context]` sensory channel shows all pages with summaries — browse it to 
 
 `@@view('channel')@@` — switch slot 0 camera to a named channel. See §Sensory Memory for channel list and syntax.
 `@@view('channel','1')@@` — switch slot 1. Use `'2'` for slot 2.
+`@@view('channel:filter')@@` — drill-down into a channel with a filter. One-shot: reverts after one turn.
+`@@view('context:full')@@` — full-screen expand: commandeers all 3 slots for one turn to show a complete listing.
 `@@sense('channel','on|off')@@` — enable/disable a sensory channel.
+
+**Context drill-down filters:**
+- `@@view('context:today')@@` — expand only today's pages
+- `@@view('context:yesterday')@@` — expand yesterday's pages
+- `@@view('context:2d ago')@@` — expand pages from 2 days ago (also `3d ago`, etc.)
+- `@@view('context:older')@@` — expand pages older than 7 days
+- `@@view('context:pg_xxxx')@@` — show detailed metadata for a single page
+- `@@view('context:full')@@` — expand all time buckets, using the full sensory budget
 
 ### Emotion State
 
@@ -329,6 +339,11 @@ A 3-slot camera system injects a `--- SENSORY BUFFER ---` block after the system
 `@@view('off')@@` — clear slot 0. `@@view('off','1')@@` — clear slot 1.
 `@@view('next')@@` — cycle slot 0 to next channel.
 `@@view('prev')@@` — cycle slot 0 to previous channel.
+
+**Drill-down (one-shot, auto-reverts):**
+`@@view('context:today')@@` — filter pages to a specific time bucket (today, yesterday, 2d ago, older)
+`@@view('context:pg_xxxx')@@` — show detailed metadata for a single page
+`@@view('context:full')@@` — full-screen: commandeers all 3 slots, expands token budget, shows all buckets expanded
 
 **Channel enable/disable:**
 `@@sense('channel','on')@@` — enable a channel (makes it available for viewing).

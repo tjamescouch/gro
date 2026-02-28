@@ -45,6 +45,8 @@ export interface ContextMapConfig {
 export class ContextMapSource implements SensorySource {
   private memory: AgentMemory;
   private config: Required<ContextMapConfig>;
+  /** One-shot filter for drill-down views. Cleared after next render. */
+  private filter: string | null = null;
 
   constructor(memory: AgentMemory, config?: ContextMapConfig) {
     this.memory = memory;
@@ -60,8 +62,16 @@ export class ContextMapSource implements SensorySource {
     this.memory = memory;
   }
 
+  /** Set a one-shot drill-down filter. Cleared after the next render. */
+  setFilter(filter: string | null): void {
+    this.filter = filter;
+  }
+
   async poll(): Promise<string | null> {
-    return this.render();
+    const result = this.render();
+    // One-shot: clear filter after rendering
+    if (this.filter) this.filter = null;
+    return result;
   }
 
   destroy(): void {
@@ -186,6 +196,9 @@ export class ContextMapSource implements SensorySource {
   /** Render page digest as a time-grouped tree the agent can browse and ref from. */
   private renderPageDigest(pages: PageDigestEntry[]): string {
     const now = new Date();
+    const filter = this.filter;
+
+    // Build page collections
     const loaded: PageDigestEntry[] = [];
     const unloaded: PageDigestEntry[] = [];
     let totalTokens = 0;
@@ -198,6 +211,13 @@ export class ContextMapSource implements SensorySource {
 
     const budgetK = "18"; // page slot budget ~18K
     const usedK = (totalTokens / 1000).toFixed(1);
+
+    // --- Single page drill-down ---
+    if (filter && this.isPageIdFilter(filter, pages)) {
+      const page = pages.find(p => p.id === filter);
+      if (page) return this.renderSinglePage(page, pages.length, loaded.length, usedK, budgetK);
+    }
+
     const lines: string[] = [`pages: ${pages.length} total, ${loaded.length} loaded (${usedK}K/${budgetK}K budget)`];
 
     // Loaded/pinned pages always shown individually
@@ -223,28 +243,93 @@ export class ContextMapSource implements SensorySource {
       // Sort bucket order: today first, then yesterday, then Nd ago ascending, then older
       bucketOrder.sort((a, b) => bucketRank(a) - bucketRank(b));
 
-      let firstBucketExpanded = false;
-      for (const bucket of bucketOrder) {
-        const items = buckets.get(bucket)!;
-        if (!firstBucketExpanded) {
-          // Expand the most recent bucket with up to 5 entries
-          firstBucketExpanded = true;
+      if (filter === "full") {
+        // Full mode: expand all buckets (cap per bucket to stay within budget)
+        for (const bucket of bucketOrder) {
+          const items = buckets.get(bucket)!;
           lines.push(`  ${bucket} (${items.length}):`);
-          const shown = items.slice(0, 5);
+          const shown = items.slice(0, 15);
           for (const p of shown) {
             const tokK = (p.tokens / 1000).toFixed(1);
             lines.push(`    · ${p.id} (${tokK}K) ${p.summary}`);
           }
-          if (items.length > 5) lines.push(`    ... +${items.length - 5} more`);
-        } else {
-          // Collapse older buckets to count only
-          lines.push(`  ${bucket} (${items.length})`);
+          if (items.length > 15) lines.push(`    ... +${items.length - 15} more`);
+        }
+      } else if (filter && this.isTimeBucketFilter(filter)) {
+        // Time bucket filter: expand only matching bucket, collapse others
+        for (const bucket of bucketOrder) {
+          const items = buckets.get(bucket)!;
+          if (bucket === filter) {
+            lines.push(`  ${bucket} (${items.length}):`);
+            for (const p of items) {
+              const tokK = (p.tokens / 1000).toFixed(1);
+              lines.push(`    · ${p.id} (${tokK}K) ${p.summary}`);
+            }
+          } else {
+            lines.push(`  ${bucket} (${items.length})`);
+          }
+        }
+      } else {
+        // Normal mode: expand most recent bucket only (up to 5 entries)
+        let firstBucketExpanded = false;
+        for (const bucket of bucketOrder) {
+          const items = buckets.get(bucket)!;
+          if (!firstBucketExpanded) {
+            firstBucketExpanded = true;
+            lines.push(`  ${bucket} (${items.length}):`);
+            const shown = items.slice(0, 5);
+            for (const p of shown) {
+              const tokK = (p.tokens / 1000).toFixed(1);
+              lines.push(`    · ${p.id} (${tokK}K) ${p.summary}`);
+            }
+            if (items.length > 5) lines.push(`    ... +${items.length - 5} more`);
+          } else {
+            lines.push(`  ${bucket} (${items.length})`);
+          }
         }
       }
     }
 
-    lines.push(`load: @@ref('id1,id2')@@  search: memory_grep`);
+    // Hint line — include back navigation when filtered
+    if (filter) {
+      lines.push(`back: @@view('context')@@  load: @@ref('id')@@  search: memory_grep`);
+    } else {
+      lines.push(`drill: @@view('context:today')@@  full: @@view('context:full')@@  search: memory_grep`);
+    }
     return lines.join("\n");
+  }
+
+  /** Render detailed view of a single page. */
+  private renderSinglePage(
+    page: PageDigestEntry,
+    totalPages: number,
+    loadedCount: number,
+    usedK: string,
+    budgetK: string,
+  ): string {
+    const lines: string[] = [];
+    lines.push(`page detail: ${page.id} (${totalPages} total, ${loadedCount} loaded)`);
+    lines.push(`  label: ${page.label}`);
+    lines.push(`  tokens: ${(page.tokens / 1000).toFixed(1)}K`);
+    lines.push(`  status: ${page.loaded ? "loaded ★" : page.pinned ? "pinned 📌" : "unloaded"}`);
+    lines.push(`  created: ${page.createdAt}`);
+    lines.push(`  summary: ${page.summary}`);
+    if (page.loaded) {
+      lines.push(`  unload: @@unref('${page.id}')@@  back: @@view('context')@@`);
+    } else {
+      lines.push(`  load: @@ref('${page.id}')@@  back: @@view('context')@@`);
+    }
+    return lines.join("\n");
+  }
+
+  /** Check if a filter string matches a time bucket name. */
+  private isTimeBucketFilter(filter: string): boolean {
+    return filter === "today" || filter === "yesterday" || filter === "older" || /^\d+d ago$/.test(filter);
+  }
+
+  /** Check if a filter string looks like a page ID (exists in pages list). */
+  private isPageIdFilter(filter: string, pages: PageDigestEntry[]): boolean {
+    return pages.some(p => p.id === filter);
   }
 
   private shortModel(model: string): string {

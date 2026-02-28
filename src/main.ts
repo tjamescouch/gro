@@ -1539,6 +1539,24 @@ async function executeTurn(
         } else if (viewName === "off" || viewName === "") {
           memory.setSlot(slot, null);
           Logger.telemetry(`Stream marker: view('off','${slot}') → slot${slot} cleared`);
+        } else if (viewName.includes(":")) {
+          // Drill-down: @@view('context:today')@@, @@view('context:full')@@, @@view('context:pg_abc')@@
+          const colonIdx = viewName.indexOf(":");
+          const channelName = viewName.slice(0, colonIdx);
+          const filter = viewName.slice(colonIdx + 1);
+          if (channelName && filter) {
+            memory.switchView(channelName, slot);
+            // Set filter on the channel source if it supports it
+            const source = memory.getChannelSource(channelName);
+            if (source && "setFilter" in source && typeof (source as any).setFilter === "function") {
+              (source as any).setFilter(filter);
+            }
+            // Full-screen expand: commandeer all slots for this channel
+            if (filter === "full") {
+              memory.expandForOneTurn(channelName);
+            }
+            Logger.telemetry(`Stream marker: view('${channelName}:${filter}') → drill-down on slot${slot}`);
+          }
         } else {
           memory.switchView(viewName, slot);
           Logger.telemetry(`Stream marker: view('${viewName}','${slot}') → slot${slot}=${viewName}`);

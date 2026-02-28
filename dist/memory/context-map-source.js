@@ -270,12 +270,12 @@ export class ContextMapSource {
                 }
             }
         }
-        // Hint line — include back navigation when filtered
+        // Hint line — compact syntax reminder
         if (filter) {
-            lines.push(`back: @@view('context')@@  load: @@ref('id')@@`);
+            lines.push(`@@view('context')@@ to reset`);
         }
         else {
-            lines.push(`drill: @@view('context:today')@@  full: @@view('context:full')@@`);
+            lines.push(`view('context:today|full|pg_id')`);
         }
         return lines.join("\n");
     }

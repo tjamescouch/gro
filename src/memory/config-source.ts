@@ -40,17 +40,19 @@ export class ConfigSource implements SensorySource {
     // Model
     lines.push(`model:      ${this.shortModel(turn.activeModel)}`);
 
-    // Temperature with clamping note
-    if (turn.activeTemperature !== undefined) {
-      const raw = turn.activeTemperature;
-      const max = TEMP_MAX[provider] ?? 2;
-      const effective = Math.max(0, Math.min(max, raw));
-      const note = effective !== raw ? `  (clamped from ${raw})` : "";
+    // Temperature — always shown, with clamping note when adjusted
+    const rawTemp = turn.activeTemperature;
+    const max = TEMP_MAX[provider] ?? 2;
+    if (rawTemp !== undefined) {
+      const effective = Math.max(0, Math.min(max, rawTemp));
+      const note = effective !== rawTemp ? `  (clamped from ${rawTemp})` : "";
       lines.push(`temp:       ${effective}${note}`);
+    } else {
+      lines.push(`temp:       —  (provider default)`);
     }
 
-    // top_p / top_k — only show if set
-    if (turn.activeTopP !== undefined) lines.push(`top_p:      ${turn.activeTopP}`);
+    // top_p / top_k — show value or dash
+    lines.push(`top_p:      ${turn.activeTopP !== undefined ? turn.activeTopP : "—"}`);
     if (turn.activeTopK !== undefined) lines.push(`top_k:      ${turn.activeTopK}`);
 
     // Thinking level

@@ -8,19 +8,39 @@
  * Training-only infrastructure — never active in production.
  */
 
-import { existsSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
 const PLASTIC_DIR = join(homedir(), ".gro", "plastic");
 const OVERLAY_DIR = join(PLASTIC_DIR, "overlay");
 const CRASH_LOG = join(PLASTIC_DIR, "crash.log");
 
+/** Read GRO_VERSION from a version.js file. */
+function readVersionFrom(dir: string): string | null {
+  const vFile = join(dir, "version.js");
+  if (!existsSync(vFile)) return null;
+  const m = readFileSync(vFile, "utf-8").match(/GRO_VERSION\s*=\s*"([^"]+)"/);
+  return m ? m[1] : null;
+}
+
 export async function boot(): Promise<void> {
   mkdirSync(PLASTIC_DIR, { recursive: true });
 
-  // Initialize overlay if it doesn't exist
+  // Check if overlay is stale (stock version upgraded since overlay was created).
+  // Stock dist/ is one level up from this file (dist/plastic/bootstrap.js → dist/).
+  const stockDir = dirname(dirname(fileURLToPath(import.meta.url)));
+  if (existsSync(OVERLAY_DIR)) {
+    const stockVersion = readVersionFrom(stockDir);
+    const overlayVersion = readVersionFrom(OVERLAY_DIR);
+    if (stockVersion && overlayVersion && stockVersion !== overlayVersion) {
+      console.log(`[PLASTIC] Stock upgraded ${overlayVersion} → ${stockVersion} — re-initializing overlay.`);
+      try { rmSync(OVERLAY_DIR, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  // Initialize overlay if it doesn't exist (or was just wiped)
   if (!existsSync(OVERLAY_DIR)) {
     console.log("[PLASTIC] No overlay found — initializing...");
     const { init } = await import("./init.js");

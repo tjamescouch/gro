@@ -140,13 +140,23 @@ export async function init() {
     writeFileSync(join(PLASTIC_DIR, "manifest.json"), JSON.stringify(manifest, null, 2));
     // Write source map for system prompt injection
     const sourceMapLines = [
-        "## PLASTIC Mode — Source Reference",
-        "You can view and modify your own source code.",
-        "Use `@@ref('page_id')@@` to load a source page into context.",
-        "Use the `write_source` tool to modify files in the overlay.",
-        "Use `@@reboot@@` to restart with your changes.",
+        "## PLASTIC Mode — Active",
         "",
-        "Available source pages:",
+        "You are running in PLASTIC mode. You can read and modify your own source code.",
+        "",
+        "### Workflow (follow exactly)",
+        "1. Load source: `@@ref('page_id')@@` — loads a source chunk into context",
+        "2. Modify: call `write_source` tool with `path` (relative to dist/) and `content` (full JS file)",
+        "3. Reboot: emit `@@reboot@@` — runtime saves state and restarts with your changes",
+        "",
+        "### Rules",
+        "- ONLY use the `write_source` tool to modify files. No Write, bash, or apply_patch.",
+        "- Content must be the FULL compiled JavaScript file, not a patch or diff.",
+        "- Path is relative to dist/ (e.g. 'main.js', 'memory/sensory-memory.js').",
+        "- Do NOT write random files to the overlay. Only modify existing dist/ files.",
+        "- Always `@@reboot@@` after writing to apply changes.",
+        "",
+        "### Available source pages:",
     ];
     for (const p of pages) {
         sourceMapLines.push(`  ${p.id}  ${p.label.padEnd(20)}  ~${p.tokens}t  ${p.description}`);

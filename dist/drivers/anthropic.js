@@ -285,26 +285,64 @@ function parseResponseContent(data, onToken, onReasoningToken) {
     return { text, toolCalls, reasoning: reasoning || undefined, usage };
 }
 /**
- * Determine if a model supports Anthropic adaptive/extended thinking.
- * Conservative allowlist approach: if we don't recognize the model,
- * we omit thinking (safe default — API works fine without it).
+ * Models that have rejected thinking at runtime — cached per-process to avoid
+ * double API calls on every turn. Keyed by model name.
+ */
+const thinkingRejectedModels = new Set();
+/**
+ * Determine if a model supports adaptive thinking ({ type: "adaptive" }).
+ * Only Opus 4.6 and Sonnet 4.6 support adaptive mode.
+ * Older models require manual mode ({ type: "enabled", budget_tokens: N }).
  */
 function supportsAdaptiveThinking(model) {
+    if (thinkingRejectedModels.has(model))
+        return false;
     const m = model.toLowerCase();
-    // Opus 4.x — supports thinking
-    if (/claude-opus-4/.test(m))
+    // Opus 4.6 — adaptive thinking
+    if (/claude-opus-4-6/.test(m))
         return true;
-    // Sonnet 4 dated builds (e.g. claude-sonnet-4-20250514) — supports thinking
-    // Sonnet 4.5 (claude-sonnet-4-5) does NOT support adaptive thinking
-    if (/claude-sonnet-4-\d{8}/.test(m))
+    // Sonnet 4.6 — adaptive thinking
+    if (/claude-sonnet-4-6/.test(m))
         return true;
-    // Claude 3.7 Sonnet — supports thinking
+    return false;
+}
+/**
+ * Determine if a model supports manual extended thinking ({ type: "enabled", budget_tokens: N }).
+ * Older Claude models that support thinking but NOT adaptive mode.
+ */
+function supportsManualThinking(model) {
+    if (thinkingRejectedModels.has(model))
+        return false;
+    const m = model.toLowerCase();
+    // Opus 4.5 and earlier 4.x — manual thinking
+    if (/claude-opus-4-[0-5]/.test(m) || /claude-opus-4-\d{8}/.test(m))
+        return true;
+    // Sonnet 4.5 and earlier 4.x — manual thinking
+    if (/claude-sonnet-4-[0-5]/.test(m) || /claude-sonnet-4-\d{8}/.test(m))
+        return true;
+    // Haiku 4.5 — manual thinking
+    if (/claude-haiku-4-5/.test(m))
+        return true;
+    // Claude 3.7 Sonnet — manual thinking
     if (/claude-3[.-]7/.test(m))
         return true;
-    // Claude 3.5 Sonnet (Oct 2024) — supports thinking
+    // Claude 3.5 Sonnet (Oct 2024) — manual thinking
     if (/claude-3[.-]5-sonnet.*20241022/.test(m))
         return true;
     return false;
+}
+/**
+ * Map a thinking budget (0.0–1.0) to an Anthropic effort level.
+ * Used with adaptive thinking on 4.6 models.
+ */
+function budgetToEffort(budget) {
+    if (budget >= 0.9)
+        return "max";
+    if (budget >= 0.6)
+        return "high";
+    if (budget >= 0.3)
+        return "medium";
+    return "low";
 }
 export function makeAnthropicDriver(cfg) {
     const base = (cfg.baseUrl ?? "https://api.anthropic.com").replace(/\/+$/, "");
@@ -349,24 +387,32 @@ export function makeAnthropicDriver(cfg) {
             }
         }
         const thinkingBudget = opts?.thinkingBudget ?? 0;
-        // Reserve 30% of max_tokens for completion output, allocate 70% to thinking budget.
-        // E.g., maxTokens=4096, thinkingBudget=0.8 → thinking gets ~2293 tokens, output ~1803
-        const thinkingConfig = thinkingBudget > 0
-            ? { type: "enabled", budget_tokens: Math.round(maxTokens * Math.min(1, thinkingBudget) * 0.7) }
-            : { type: "disabled" };
         const body = {
             model: resolvedModel,
             max_tokens: maxTokens,
             messages: apiMessages,
             stream: true,
         };
-        // Apply thinking config: explicit budget takes priority, else adaptive if supported
-        if (thinkingBudget > 0) {
-            body.thinking = thinkingConfig;
-        }
-        else if (supportsAdaptiveThinking(resolvedModel)) {
+        // Thinking configuration — model-dependent:
+        // 4.6 models: adaptive thinking + effort parameter (budget_tokens is deprecated)
+        // Older models: manual thinking with budget_tokens
+        if (supportsAdaptiveThinking(resolvedModel)) {
+            // Opus 4.6 / Sonnet 4.6 — always use adaptive mode, control depth via effort
             body.thinking = { type: "adaptive" };
+            if (thinkingBudget > 0) {
+                const effort = budgetToEffort(thinkingBudget);
+                // "max" effort is Opus 4.6 only — downgrade to "high" for Sonnet 4.6
+                const safeEffort = (effort === "max" && !/opus/i.test(resolvedModel)) ? "high" : effort;
+                body.output_config = { effort: safeEffort };
+            }
         }
+        else if (thinkingBudget > 0 && supportsManualThinking(resolvedModel)) {
+            // Older models — manual mode with explicit budget_tokens
+            // Reserve 30% of max_tokens for completion output, allocate 70% to thinking budget.
+            const budgetTokens = Math.round(maxTokens * Math.min(1, thinkingBudget) * 0.7);
+            body.thinking = { type: "enabled", budget_tokens: budgetTokens };
+        }
+        // else: no thinking (model doesn't support it, or budget is 0 on non-adaptive model)
         // Sampling parameters (optional runtime overrides) — clamped to Anthropic ranges
         if (opts?.temperature !== undefined)
             body.temperature = Math.max(0, Math.min(1, opts.temperature));
@@ -496,10 +542,12 @@ export function makeAnthropicDriver(cfg) {
                     continue;
                 }
                 const text = await res.text().catch(() => "");
-                // If 400 due to thinking not supported, retry without thinking params
+                // If 400 due to thinking not supported, cache rejection and retry without thinking
                 if (res.status === 400 && body.thinking && /thinking|not supported/i.test(text)) {
-                    Logger.warn(`Model ${resolvedModel} rejected adaptive thinking — retrying without`);
+                    Logger.warn(`Model ${resolvedModel} rejected thinking — caching rejection, retrying without`);
+                    thinkingRejectedModels.add(resolvedModel);
                     delete body.thinking;
+                    delete body.output_config;
                     continue;
                 }
                 const ge = groError("provider_error", `Anthropic API failed (${res.status}): ${text}`, {

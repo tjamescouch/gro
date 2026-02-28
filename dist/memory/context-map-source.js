@@ -50,6 +50,12 @@ function timeBucket(createdAt, now) {
         return "today";
     if (diffDays === 1)
         return "yesterday";
+    if (diffDays === 2)
+        return "2d ago";
+    if (diffDays === 3)
+        return "3d ago";
+    if (diffDays <= 7)
+        return "this week";
     return "older";
 }
 function bucketRank(bucket) {
@@ -57,6 +63,12 @@ function bucketRank(bucket) {
         return 0;
     if (bucket === "yesterday")
         return 1;
+    if (bucket === "2d ago")
+        return 2;
+    if (bucket === "3d ago")
+        return 3;
+    if (bucket === "this week")
+        return 4;
     return 100;
 }
 function timeRange(pages) {
@@ -458,7 +470,8 @@ export class ContextMapSource {
     }
     isTimeBucketFilter(filter) {
         return filter === "today" || filter === "yest" || filter === "yesterday" ||
-            filter === "older" || /^\d+d$/.test(filter) || /^\d+d ago$/.test(filter);
+            filter === "older" || filter === "2d ago" || filter === "3d ago" || filter === "this week" ||
+            /^\d+d$/.test(filter) || /^\d+d ago$/.test(filter);
     }
     isPageIdFilter(filter, pages) {
         return pages.some(p => p.id === filter);

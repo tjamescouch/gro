@@ -128,7 +128,7 @@ export function createDefaultFactory(): SensoryViewFactory {
   );
 
   factory.register(
-    { name: "config", maxTokens: 120, width: 82, height: 17, enabled: true, updateMode: "every_turn", viewable: true },
+    { name: "config", maxTokens: 140, width: 82, height: 20, enabled: true, updateMode: "every_turn", viewable: true },
     () => new ConfigSource(),
   );
 

@@ -6,11 +6,13 @@
  *   - Sampling params (temp, top_p, top_k) with bars when set
  *   - Thinking level bar
  *   - Memory mode + autofill
+ *   - Spend (cost + tokens)
  *   - Violations count + sleep state
  */
 
 import type { SensorySource } from "./sensory-memory.js";
 import { runtimeState } from "../runtime/state-manager.js";
+import { GRO_VERSION } from "../version.js";
 import { topBorder, bottomBorder, divider, row, bar, IW } from "./box.js";
 
 /** Bar width for sampling/thinking bars. */
@@ -50,7 +52,7 @@ export class ConfigSource implements SensorySource {
     const integ = this.integrityStatus
       ? `integrity:${this.integrityStatus === "verified" ? "\u2713" : this.integrityStatus}`
       : "";
-    const headerRight = `gro  ${integ}`;
+    const headerRight = `gro v${GRO_VERSION}  ${integ}`;
     const headerInner = " RUNTIME" + " ".repeat(Math.max(1, IW - 8 - headerRight.length)) + headerRight;
     lines.push(topBorder());
     lines.push(row(headerInner));
@@ -103,15 +105,33 @@ export class ConfigSource implements SensorySource {
     const threshStr = this.autoFillThreshold.toFixed(2);
     lines.push(row(` thresh   ${threshBar}  ${threshStr}`.padEnd(IW)));
 
+    // --- Spend ---
+    lines.push(divider());
+    const cost = snap.spend.cost;
+    const tokIn = snap.spend.tokensIn;
+    const tokOut = snap.spend.tokensOut;
+    const costStr = typeof cost === "number" ? `$${cost.toFixed(4)}` : "$0.0000";
+    const tokInStr = this.formatTokens(tokIn);
+    const tokOutStr = this.formatTokens(tokOut);
+    lines.push(row(` spend    ${costStr}   in: ${tokInStr}  out: ${tokOutStr}`.padEnd(IW)));
+
     // --- Violations + Sleep ---
     lines.push(divider());
     const vCount = snap.violations ? snap.violations.totalViolations : 0;
     lines.push(row(` violations  ${vCount} this session`.padEnd(IW)));
-    // Sleep state: based on whether yield tool is available (no persistent state)
+    // Sleep state
     lines.push(row(" sleep       OFF   wake: ON".padEnd(IW)));
 
     lines.push(bottomBorder());
     return lines.join("\n");
+  }
+
+  /** Format token count with k/M suffix */
+  private formatTokens(n: number): string {
+    if (typeof n !== "number" || isNaN(n)) return "0";
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+    if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+    return String(n);
   }
 
   /** Render a parameter bar row: ` label    <bar>  value ` */

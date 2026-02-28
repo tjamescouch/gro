@@ -55,12 +55,18 @@ function timeBucket(createdAt: string, now: Date): string {
   const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000);
   if (diffDays <= 0) return "today";
   if (diffDays === 1) return "yesterday";
+  if (diffDays === 2) return "2d ago";
+  if (diffDays === 3) return "3d ago";
+  if (diffDays <= 7) return "this week";
   return "older";
 }
 
 function bucketRank(bucket: string): number {
   if (bucket === "today") return 0;
   if (bucket === "yesterday") return 1;
+  if (bucket === "2d ago") return 2;
+  if (bucket === "3d ago") return 3;
+  if (bucket === "this week") return 4;
   return 100;
 }
 
@@ -518,7 +524,8 @@ export class ContextMapSource implements SensorySource {
 
   private isTimeBucketFilter(filter: string): boolean {
     return filter === "today" || filter === "yest" || filter === "yesterday" ||
-           filter === "older" || /^\d+d$/.test(filter) || /^\d+d ago$/.test(filter);
+           filter === "older" || filter === "2d ago" || filter === "3d ago" || filter === "this week" ||
+           /^\d+d$/.test(filter) || /^\d+d ago$/.test(filter);
   }
 
   private isPageIdFilter(filter: string, pages: PageDigestEntry[]): boolean {

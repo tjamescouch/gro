@@ -20,11 +20,15 @@ const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 const LABEL_WIDTH = 9; // "session" + 2 spaces
 export class TemporalSource {
     constructor(config) {
-        this.startTime = Date.now();
+        this.startTime = config?.sessionOrigin ?? Date.now();
         this.config = {
             barWidth: config?.barWidth ?? 32,
             maxSessionMs: config?.maxSessionMs ?? 2 * 60 * 60 * 1000,
         };
+    }
+    /** Update the session origin (e.g., after restoring a session). */
+    setSessionOrigin(epochMs) {
+        this.startTime = epochMs;
     }
     async poll() {
         return this.render();

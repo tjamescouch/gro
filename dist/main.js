@@ -873,27 +873,37 @@ function wrapWithSensory(inner) {
 function unwrapMemory(mem) {
     return mem instanceof SensoryMemory ? mem.getInner() : mem;
 }
-/** After session load, surface the integrity hash check result on the config channel. */
-function surfaceIntegrityStatus(mem) {
+/** After session load, surface integrity status and restore session origin for temporal bar. */
+function surfaceResumeState(mem, sessionCreatedAt) {
+    if (!(mem instanceof SensoryMemory))
+        return;
     const inner = unwrapMemory(mem);
-    if (!(inner instanceof VirtualMemory) || !(mem instanceof SensoryMemory))
-        return;
-    const cs = mem.getChannelSource("config");
-    if (!cs || !("setIntegrityStatus" in cs))
-        return;
-    const configSource = cs;
-    // Hash status
-    const status = inner.getIntegrityStatus();
-    if (status) {
-        const label = status === "verified" ? "✓ verified" :
-            status === "mismatch" ? "✗ MISMATCH" :
-                null;
-        configSource.setIntegrityStatus(label);
+    // Integrity hash + environment fingerprint → config channel
+    if (inner instanceof VirtualMemory) {
+        const cs = mem.getChannelSource("config");
+        if (cs && "setIntegrityStatus" in cs) {
+            const configSource = cs;
+            const status = inner.getIntegrityStatus();
+            if (status) {
+                const label = status === "verified" ? "✓ verified" :
+                    status === "mismatch" ? "✗ MISMATCH" :
+                        null;
+                configSource.setIntegrityStatus(label);
+            }
+            const envDiffs = inner.getEnvironmentMismatches();
+            if (envDiffs.length > 0) {
+                configSource.setEnvironmentWarning(`⚠ changed: ${envDiffs.join(", ")}`);
+            }
+        }
     }
-    // Environment fingerprint
-    const envDiffs = inner.getEnvironmentMismatches();
-    if (envDiffs.length > 0) {
-        configSource.setEnvironmentWarning(`⚠ changed: ${envDiffs.join(", ")}`);
+    // Session origin → temporal source (so session bar shows true age, not process uptime)
+    if (sessionCreatedAt) {
+        const ts = mem.getChannelSource("time");
+        if (ts && "setSessionOrigin" in ts) {
+            const originMs = new Date(sessionCreatedAt).getTime();
+            if (originMs > 0)
+                ts.setSessionOrigin(originMs);
+        }
     }
 }
 /**
@@ -2266,7 +2276,7 @@ async function singleShot(cfg, driver, mcp, sessionId, positionalArgs) {
                 Logger.telemetry(`Restored model from session: ${cfg.model}`);
             }
         }
-        surfaceIntegrityStatus(memory);
+        surfaceResumeState(memory, sess?.meta.createdAt);
     }
     await memory.add({ role: "user", from: "User", content: prompt });
     // Violation tracker for persistent mode
@@ -2381,7 +2391,7 @@ async function interactive(cfg, driver, mcp, sessionId) {
                 Logger.info(C.gray(`Resumed session ${sessionId} (${msgCount} messages)`));
             }
         }
-        surfaceIntegrityStatus(memory);
+        surfaceResumeState(memory, sess?.meta.createdAt);
     }
     const rl = readline.createInterface({
         input: process.stdin,

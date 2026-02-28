@@ -927,28 +927,38 @@ function unwrapMemory(mem: AgentMemory): AgentMemory {
   return mem instanceof SensoryMemory ? (mem as SensoryMemory).getInner() : mem;
 }
 
-/** After session load, surface the integrity hash check result on the config channel. */
-function surfaceIntegrityStatus(mem: AgentMemory): void {
+/** After session load, surface integrity status and restore session origin for temporal bar. */
+function surfaceResumeState(mem: AgentMemory, sessionCreatedAt?: string): void {
+  if (!(mem instanceof SensoryMemory)) return;
   const inner = unwrapMemory(mem);
-  if (!(inner instanceof VirtualMemory) || !(mem instanceof SensoryMemory)) return;
-  const cs = mem.getChannelSource("config");
-  if (!cs || !("setIntegrityStatus" in cs)) return;
-  const configSource = cs as ConfigSource;
 
-  // Hash status
-  const status = inner.getIntegrityStatus();
-  if (status) {
-    const label =
-      status === "verified" ? "✓ verified" :
-      status === "mismatch" ? "✗ MISMATCH" :
-      null;
-    configSource.setIntegrityStatus(label);
+  // Integrity hash + environment fingerprint → config channel
+  if (inner instanceof VirtualMemory) {
+    const cs = mem.getChannelSource("config");
+    if (cs && "setIntegrityStatus" in cs) {
+      const configSource = cs as ConfigSource;
+      const status = inner.getIntegrityStatus();
+      if (status) {
+        const label =
+          status === "verified" ? "✓ verified" :
+          status === "mismatch" ? "✗ MISMATCH" :
+          null;
+        configSource.setIntegrityStatus(label);
+      }
+      const envDiffs = inner.getEnvironmentMismatches();
+      if (envDiffs.length > 0) {
+        configSource.setEnvironmentWarning(`⚠ changed: ${envDiffs.join(", ")}`);
+      }
+    }
   }
 
-  // Environment fingerprint
-  const envDiffs = inner.getEnvironmentMismatches();
-  if (envDiffs.length > 0) {
-    configSource.setEnvironmentWarning(`⚠ changed: ${envDiffs.join(", ")}`);
+  // Session origin → temporal source (so session bar shows true age, not process uptime)
+  if (sessionCreatedAt) {
+    const ts = mem.getChannelSource("time");
+    if (ts && "setSessionOrigin" in ts) {
+      const originMs = new Date(sessionCreatedAt).getTime();
+      if (originMs > 0) (ts as TemporalSource).setSessionOrigin(originMs);
+    }
   }
 }
 
@@ -2354,7 +2364,7 @@ async function singleShot(
         Logger.telemetry(`Restored model from session: ${cfg.model}`);
       }
     }
-    surfaceIntegrityStatus(memory);
+    surfaceResumeState(memory, sess?.meta.createdAt);
   }
 
   await memory.add({ role: "user", from: "User", content: prompt });
@@ -2482,7 +2492,7 @@ async function interactive(
         Logger.info(C.gray(`Resumed session ${sessionId} (${msgCount} messages)`));
       }
     }
-    surfaceIntegrityStatus(memory);
+    surfaceResumeState(memory, sess?.meta.createdAt);
   }
 
   const rl = readline.createInterface({

@@ -22,6 +22,8 @@ export interface TemporalSourceConfig {
   barWidth?: number;
   /** Max session duration in ms for the session bar scale (default: 2h) */
   maxSessionMs?: number;
+  /** Session origin epoch ms — set when restoring a session so the bar shows true age */
+  sessionOrigin?: number;
 }
 
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -31,14 +33,19 @@ const LABEL_WIDTH = 9; // "session" + 2 spaces
 
 export class TemporalSource implements SensorySource {
   private startTime: number;
-  private config: Required<TemporalSourceConfig>;
+  private config: Required<Omit<TemporalSourceConfig, "sessionOrigin">>;
 
   constructor(config?: TemporalSourceConfig) {
-    this.startTime = Date.now();
+    this.startTime = config?.sessionOrigin ?? Date.now();
     this.config = {
       barWidth: config?.barWidth ?? 32,
       maxSessionMs: config?.maxSessionMs ?? 2 * 60 * 60 * 1000,
     };
+  }
+
+  /** Update the session origin (e.g., after restoring a session). */
+  setSessionOrigin(epochMs: number): void {
+    this.startTime = epochMs;
   }
 
   async poll(): Promise<string | null> {

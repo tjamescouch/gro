@@ -93,7 +93,7 @@ export function createDefaultFactory(): SensoryViewFactory {
 
   factory.register(
     { name: "context", maxTokens: 800, width: 80, height: 40, enabled: true, updateMode: "every_turn", viewable: true },
-    (deps) => new ContextMapSource(deps.memory, { maxChars: Math.floor(800 * 2.8) }),
+    (deps) => new ContextMapSource(deps.memory, { maxChars: Math.floor(800 * 2.8), maxLines: 40 }),
   );
 
   factory.register(

@@ -836,7 +836,7 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
  */
 function wrapWithSensory(inner: AgentMemory): AgentMemory {
   try {
-    const sensory = new SensoryMemory(inner, { totalBudget: 900 });
+    const sensory = new SensoryMemory(inner, { totalBudget: 1200 });
     const factory = createDefaultFactory();
     const deps = { memory: inner, spendMeter };
 

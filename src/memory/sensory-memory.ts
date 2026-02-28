@@ -402,15 +402,29 @@ export class SensoryMemory extends AgentMemory {
 
     if (items.length === 0) return "";
 
+    const maxChars = this.totalBudget * this.avgCharsPerToken;
+    // Guarantee each slot gets at least 1/N of the budget so later slots aren't starved
+    const perSlotBudget = Math.floor(maxChars / items.length);
+
     const parts: string[] = [];
     let totalChars = 0;
-    const maxChars = this.totalBudget * this.avgCharsPerToken;
 
-    for (const item of items) {
-      const section = `[${item.name}]\n${item.content}`;
-      if (totalChars + section.length > maxChars && parts.length > 0) break;
-      parts.push(section);
-      totalChars += section.length;
+    for (let i = 0; i < items.length; i++) {
+      const section = `[${items[i].name}]\n${items[i].content}`;
+      // Each slot gets at least perSlotBudget; earlier slots can use more
+      // only if there's remaining budget after reserving for later slots
+      const remainingSlots = items.length - i - 1;
+      const reservedForLater = remainingSlots * perSlotBudget;
+      const myBudget = maxChars - reservedForLater - totalChars;
+      if (section.length > myBudget && parts.length > 0) {
+        // Truncate this slot's content to fit within its budget
+        const truncated = section.slice(0, Math.max(perSlotBudget, myBudget));
+        parts.push(truncated);
+        totalChars += truncated.length;
+      } else {
+        parts.push(section);
+        totalChars += section.length;
+      }
     }
 
     return `--- SENSORY BUFFER ---\n${parts.join("\n\n")}\n--- END SENSORY BUFFER ---`;

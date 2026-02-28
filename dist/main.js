@@ -780,7 +780,7 @@ async function createMemory(cfg, driver, requestedMode, sessionId) {
  */
 function wrapWithSensory(inner) {
     try {
-        const sensory = new SensoryMemory(inner, { totalBudget: 900 });
+        const sensory = new SensoryMemory(inner, { totalBudget: 1200 });
         const factory = createDefaultFactory();
         const deps = { memory: inner, spendMeter };
         for (const spec of factory.specs()) {

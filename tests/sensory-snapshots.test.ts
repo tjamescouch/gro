@@ -135,6 +135,46 @@ describe("Context view snapshots", () => {
     assert.ok(output.includes("no pages"), "should indicate no pages");
   });
 
+  test("many pages — all 6 sections within 40 lines", () => {
+    const now = new Date();
+    // Generate 50 pages to force height budgeting
+    const manyPages = Array.from({ length: 50 }, (_, i) => ({
+      id: `pg_${String(i).padStart(8, "0")}`,
+      label: `page ${i + 1}`,
+      tokens: 200 + i * 50,
+      loaded: i < 3,
+      pinned: i === 10,
+      summary: `Page ${i + 1} content about topic ${i}`,
+      createdAt: now.toISOString(),
+      messageCount: 2 + (i % 5),
+      maxImportance: i === 10 ? 0.95 : 0.2,
+      lane: ["assistant", "user", "system", "tool"][i % 4],
+    }));
+
+    const inner = new SimpleMemory();
+    (inner as any).getStats = () => virtualMemoryStats({
+      pageDigest: manyPages,
+      pagesLoaded: 3,
+      pagesAvailable: 50,
+    });
+
+    const source = new ContextMapSource(inner, { maxLines: 40 });
+    const output = source.render();
+
+    console.log("\n=== CONTEXT: 50 pages (height-budgeted) ===");
+    console.log(output);
+
+    const lines = output.split("\n");
+    assert.ok(lines.length <= 40, `should fit in 40 lines, got ${lines.length}`);
+    assertBoxInvariants(output, "context-many");
+    assert.ok(output.includes("PAGES"), "should have PAGES header");
+    assert.ok(output.includes("LANES"), "should have LANES section");
+    assert.ok(output.includes("ANCHORS"), "should have ANCHORS (page 10 has importance 0.95)");
+    assert.ok(output.includes("SIZE HISTOGRAM"), "should have histogram");
+    assert.ok(output.includes("LOAD BUDGET"), "should have load budget");
+    assert.ok(output.includes("+"), "should show truncation indicator for remaining pages");
+  });
+
   test("drill-down filter for single page", () => {
     const inner = new SimpleMemory();
     (inner as any).getStats = () => virtualMemoryStats();

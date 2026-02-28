@@ -56,7 +56,7 @@ export class SensoryViewFactory {
 /** Create the default factory with all built-in sensory views registered. */
 export function createDefaultFactory() {
     const factory = new SensoryViewFactory();
-    factory.register({ name: "context", maxTokens: 800, width: 80, height: 40, enabled: true, updateMode: "every_turn", viewable: true }, (deps) => new ContextMapSource(deps.memory, { maxChars: Math.floor(800 * 2.8) }));
+    factory.register({ name: "context", maxTokens: 800, width: 80, height: 40, enabled: true, updateMode: "every_turn", viewable: true }, (deps) => new ContextMapSource(deps.memory, { maxChars: Math.floor(800 * 2.8), maxLines: 40 }));
     factory.register({ name: "time", maxTokens: 200, width: 80, height: 22, enabled: true, updateMode: "every_turn", viewable: true }, () => new TemporalSource());
     factory.register({ name: "tasks", maxTokens: 150, width: 48, height: 12, enabled: false, updateMode: "every_turn", viewable: true }, () => new TaskSource());
     factory.register({ name: "social", maxTokens: 200, width: 48, height: 12, enabled: true, updateMode: "every_turn", viewable: true }, () => new SocialSource());

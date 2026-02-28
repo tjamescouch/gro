@@ -86,6 +86,8 @@ function fmtTok(n: number): string {
 export interface ContextMapConfig {
   /** Character budget for the rendered output (default: 0 = unlimited) */
   maxChars?: number;
+  /** Maximum lines for the rendered output (default: 40) */
+  maxLines?: number;
 }
 
 export class ContextMapSource implements SensorySource {
@@ -98,6 +100,7 @@ export class ContextMapSource implements SensorySource {
     this.memory = memory;
     this.config = {
       maxChars: config?.maxChars ?? 0,
+      maxLines: config?.maxLines ?? 40,
     };
   }
 
@@ -168,6 +171,21 @@ export class ContextMapSource implements SensorySource {
       return lines.join("\n");
     }
 
+    // --- Budget line counts so all 6 sections always fit ---
+    const maxLines = this.config.maxLines;
+    const anchors = pages.filter(p => p.maxImportance >= 0.8);
+    // Fixed overhead: topBorder(1) + header(1) + lanesDivider(1) + laneRows(2)
+    //   + histogram divider(1) + histogram rows(4 or 1 if no pages)
+    //   + budget divider(1) + budget row(1) + bottomBorder(1) = 13
+    // Anchors: divider(1) + min(anchors, 6) + overflow line(0-1)
+    // Page rows: at least divider(1) + colhdr(1) + separator(1) = 3 per bucket
+    const anchorLines = anchors.length > 0
+      ? 1 + Math.min(anchors.length, 6) + (anchors.length > 6 ? 1 : 0)
+      : 0;
+    const histLines = pages.length > 0 ? 5 : 2; // divider + 4 rows or divider + "(no pages)"
+    const fixedLines = 1 + 1 + 1 + 2 + anchorLines + histLines + 1 + 1 + 1;
+    const availableForPages = Math.max(4, maxLines - fixedLines);
+
     // === SECTION 1: HEADER ===
     const fillFrac = totalBudget > 0 ? totalUsed / totalBudget : 0;
     const fillBar = bar(fillFrac, FILL_BAR_W);
@@ -183,11 +201,10 @@ export class ContextMapSource implements SensorySource {
     lines.push(sectionDivider("LANES"));
     this.renderLanes(stats, pages, lines);
 
-    // === SECTION 3: PAGE ROWS ===
-    this.renderPageRows(pages, lines);
+    // === SECTION 3: PAGE ROWS (height-budgeted) ===
+    this.renderPageRows(pages, lines, availableForPages);
 
     // === SECTION 4: ANCHORS ===
-    const anchors = pages.filter(p => p.maxImportance >= 0.8);
     if (anchors.length > 0) {
       lines.push(sectionDivider("ANCHORS — marked @@important@@"));
       for (const p of anchors.slice(0, 6)) {
@@ -256,7 +273,7 @@ export class ContextMapSource implements SensorySource {
 
   // --- Section 3: Page rows by time bucket ---
 
-  private renderPageRows(pages: PageDigestEntry[], lines: string[]): void {
+  private renderPageRows(pages: PageDigestEntry[], lines: string[], maxPageLines: number): void {
     const now = new Date();
 
     // Group by time bucket
@@ -272,7 +289,21 @@ export class ContextMapSource implements SensorySource {
     }
     bucketOrder.sort((a, b) => bucketRank(a) - bucketRank(b));
 
+    // Distribute page line budget across buckets
+    // Each bucket needs: divider(1) + colhdr(1) + separator(1) + overflow(1) = 4 overhead
+    const bucketCount = bucketOrder.length;
+    const overheadPerBucket = 4; // includes "+N more" line
+    const totalOverhead = bucketCount * overheadPerBucket;
+    const linesForRows = Math.max(0, maxPageLines - totalOverhead);
+    // Split row lines evenly across buckets, at least 2 per bucket (1 page + summary)
+    const rowsPerBucket = Math.max(2, Math.floor(linesForRows / Math.max(1, bucketCount)));
+    // Each page takes 2 lines (row + summary), so max pages per bucket:
+    const maxPagesPerBucket = Math.max(1, Math.floor(rowsPerBucket / 2));
+
+    let linesUsed = 0;
+
     for (const bucket of bucketOrder) {
+      if (linesUsed >= maxPageLines) break;
       const items = buckets.get(bucket)!;
       const range = timeRange(items);
       const bucketLabel = range
@@ -283,15 +314,21 @@ export class ContextMapSource implements SensorySource {
       // Column header
       lines.push(row("  ID           LANE  TIME   MSGS  TOKS   STATUS  SNIPPET"));
       lines.push(row("  " + "─".repeat(75)));
+      linesUsed += 3;
 
-      const shown = items.slice(0, MAX_ROWS_PER_BUCKET);
-      for (const p of shown) {
-        lines.push(this.renderPageRow(p));
-        const sumLine = this.renderSummaryLine(p);
-        if (sumLine) lines.push(sumLine);
+      const cap = Math.min(items.length, maxPagesPerBucket);
+      for (let i = 0; i < cap && linesUsed < maxPageLines; i++) {
+        lines.push(this.renderPageRow(items[i]));
+        linesUsed++;
+        const sumLine = this.renderSummaryLine(items[i]);
+        if (sumLine && linesUsed < maxPageLines) {
+          lines.push(sumLine);
+          linesUsed++;
+        }
       }
-      if (items.length > MAX_ROWS_PER_BUCKET) {
-        lines.push(row(`  [+${items.length - MAX_ROWS_PER_BUCKET} more pages]`));
+      if (items.length > cap) {
+        lines.push(row(`  [+${items.length - cap} more pages]`));
+        linesUsed++;
       }
     }
 

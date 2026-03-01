@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, writeFileSync, copyFileSync, readFileSync } from
 import { join, dirname, normalize } from "node:path";
 import { homedir } from "node:os";
 import { exportChanges } from "./export.js";
+import { commitToSourceRepo } from "./init.js";
 
 const PLASTIC_DIR = join(homedir(), ".gro", "plastic");
 const OVERLAY_DIR = join(PLASTIC_DIR, "overlay");
@@ -114,6 +115,9 @@ export function handleEditSource(args: { path: string; old_string: string; new_s
     const { fileCount } = exportChanges();
     if (fileCount > 0) patchMsg = `. Patch updated (${fileCount} file${fileCount > 1 ? "s" : ""})`;
   } catch {}
+
+  // Commit to source repo for wormhole-pipeline sync
+  commitToSourceRepo(normalizedPath, `PLASTIC: edit ${normalizedPath}`, false);
 
   const byteDelta = args.new_string.length - args.old_string.length;
   const deltaStr = byteDelta >= 0 ? `+${byteDelta}` : `${byteDelta}`;

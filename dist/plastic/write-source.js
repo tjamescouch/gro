@@ -13,6 +13,7 @@ import { join, dirname, normalize } from "node:path";
 import { homedir } from "node:os";
 import { transpileTS } from "./transpile.js";
 import { exportChanges } from "./export.js";
+import { commitToSourceRepo } from "./init.js";
 const PLASTIC_DIR = join(homedir(), ".gro", "plastic");
 const OVERLAY_DIR = join(PLASTIC_DIR, "overlay");
 const SRC_DIR = join(PLASTIC_DIR, "src");
@@ -115,6 +116,8 @@ function handleTSWrite(tsPath, content) {
             patchMsg = `. Patch updated (${fileCount} file${fileCount > 1 ? "s" : ""})`;
     }
     catch { }
+    // Commit to source repo for wormhole-pipeline sync
+    commitToSourceRepo(tsPath, `PLASTIC: write ${tsPath}`, true);
     return `OK: wrote ${content.length} bytes to src/${tsPath}${transpileMsg}${patchMsg}. Use @@reboot@@ to restart with changes.`;
 }
 /** Write JS directly to overlay (backward compat). */
@@ -145,6 +148,8 @@ function handleJSWrite(jsPath, content) {
         updateManifest(jsPath);
     }
     catch { }
+    // Commit to source repo for wormhole-pipeline sync
+    commitToSourceRepo(jsPath, `PLASTIC: write ${jsPath}`, false);
     return `OK: wrote ${content.length} bytes to overlay/${jsPath}. Use @@reboot@@ to restart with changes.`;
 }
 function updateManifest(modifiedPath) {

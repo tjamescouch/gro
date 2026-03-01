@@ -12,8 +12,11 @@ import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { execSync } from "node:child_process";
 const PLASTIC_DIR = join(homedir(), ".gro", "plastic");
 const OVERLAY_DIR = join(PLASTIC_DIR, "overlay");
+/** Git repo for pipeline sync — wormhole-pipeline discovers this and pushes to GitHub. */
+export const SOURCE_REPO_DIR = join(homedir(), "gro");
 /** Resolve the stock dist/ directory from this module's location. */
 function getStockDistDir() {
     // This file compiles to dist/plastic/init.js
@@ -133,6 +136,35 @@ function getProjectRoot(stockDir) {
     // Fallback: assume dist is one level below root
     return dirname(stockDir);
 }
+/**
+ * Initialize a git repo at ~/gro/ with the stock TypeScript source.
+ * The wormhole-pipeline discovers git repos under the container home
+ * directory and auto-pushes changes to GitHub.
+ */
+function initSourceRepo(projectRoot) {
+    if (existsSync(join(SOURCE_REPO_DIR, ".git")))
+        return; // already initialized
+    const stockSrcDir = join(projectRoot, "src");
+    if (!existsSync(stockSrcDir))
+        return; // no source to copy
+    mkdirSync(SOURCE_REPO_DIR, { recursive: true });
+    // Copy TS source into repo
+    mirrorWithCopies(stockSrcDir, join(SOURCE_REPO_DIR, "src"));
+    // Copy project metadata files
+    for (const f of ["package.json", "tsconfig.json", "models.json"]) {
+        const src = join(projectRoot, f);
+        if (existsSync(src))
+            safeCopy(src, join(SOURCE_REPO_DIR, f));
+    }
+    // Initialize git repo with stock source as initial commit
+    try {
+        execSync('git init && git add -A && git commit -m "PLASTIC: stock source" && git checkout -b feature/plastic-changes', { cwd: SOURCE_REPO_DIR, stdio: "ignore" });
+    }
+    catch {
+        // git may not be available in all environments — non-fatal
+        console.error("[PLASTIC] Failed to initialize source repo (git not available?)");
+    }
+}
 export async function init() {
     const stockDir = getStockDistDir();
     // Create overlay with copies of stock dist files
@@ -223,6 +255,33 @@ export async function init() {
         sourceMapLines.push(`  ${p.id}  ${p.label.padEnd(20)}  ~${p.tokens}t  ${p.description}`);
     }
     writeFileSync(join(PLASTIC_DIR, "source-map.txt"), sourceMapLines.join("\n"));
+    // Initialize git repo for wormhole-pipeline sync
+    initSourceRepo(projectRoot);
+}
+/**
+ * Commit a modified file to the source repo for pipeline sync.
+ * @param relPath  Path relative to src/ (e.g. "main.ts", "memory/virtual-memory.ts")
+ * @param message  Commit message
+ * @param isTs     True for TypeScript source, false for JS overlay files
+ */
+export function commitToSourceRepo(relPath, message, isTs = true) {
+    if (!existsSync(join(SOURCE_REPO_DIR, ".git")))
+        return;
+    const srcFile = isTs
+        ? join(PLASTIC_DIR, "src", relPath)
+        : join(OVERLAY_DIR, relPath);
+    const prefix = isTs ? "src" : "dist";
+    const destFile = join(SOURCE_REPO_DIR, prefix, relPath);
+    if (!existsSync(srcFile))
+        return;
+    mkdirSync(dirname(destFile), { recursive: true });
+    copyFileSync(srcFile, destFile);
+    try {
+        execSync(`git add "${prefix}/${relPath}" && git diff --cached --quiet || git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: SOURCE_REPO_DIR, stdio: "ignore" });
+    }
+    catch {
+        // Non-fatal — commit may fail if no changes or git unavailable
+    }
 }
 /**
  * Inject pre-generated source pages into a VirtualMemory instance.

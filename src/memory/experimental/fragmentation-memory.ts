@@ -12,10 +12,10 @@
  * - Faster paging (no API latency)
  */
 
-import type { ChatDriver, ChatMessage } from "../drivers/types.js";
-import { VirtualMemory, type VirtualMemoryConfig, type ContextPage } from "./virtual-memory.js";
+import type { ChatDriver, ChatMessage } from "../../drivers/types.js";
+import { VirtualMemory, type VirtualMemoryConfig, type ContextPage } from "../virtual-memory.js";
 import { RandomSamplingFragmenter, type Fragmenter, type FragmenterConfig } from "./random-sampling-fragmenter.js";
-import { Logger } from "../logger.js";
+import { Logger } from "../../logger.js";
 import { createHash } from "node:crypto";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";

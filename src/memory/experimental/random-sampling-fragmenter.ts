@@ -12,7 +12,7 @@
  * - older messages have higher sampling probability
  */
 
-import type { ChatMessage } from "../drivers/types.js";
+import type { ChatMessage } from "../../drivers/types.js";
 
 export interface Fragment {
   messages: ChatMessage[];

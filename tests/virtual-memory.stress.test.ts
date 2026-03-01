@@ -13,7 +13,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert";
 import type { ChatDriver, ChatMessage, ChatOutput } from "../src/drivers/types.js";
-import { AdvancedMemory } from "../src/memory/advanced-memory.js";
+import { AdvancedMemory } from "../src/memory/experimental/advanced-memory.js";
 
 /** Mock driver that returns summaries with controlled length */
 function mockDriver(response = "Summary."): ChatDriver {

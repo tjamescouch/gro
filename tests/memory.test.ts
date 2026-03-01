@@ -6,7 +6,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert";
 import type { ChatDriver, ChatMessage, ChatOutput } from "../src/drivers/types.js";
 import { SimpleMemory } from "../src/memory/simple-memory.js";
-import { AdvancedMemory } from "../src/memory/advanced-memory.js";
+import { AdvancedMemory } from "../src/memory/experimental/advanced-memory.js";
 import { VirtualMemory } from "../src/memory/virtual-memory.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

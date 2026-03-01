@@ -21,9 +21,9 @@ import { spendMeter } from "./spend-meter.js";
 import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
 import { makeAnthropicDriver } from "./drivers/anthropic.js";
 import { SimpleMemory } from "./memory/simple-memory.js";
-import { AdvancedMemory } from "./memory/advanced-memory.js";
+import { AdvancedMemory } from "./memory/experimental/advanced-memory.js";
 import { VirtualMemory } from "./memory/virtual-memory.js";
-import { FragmentationMemory } from "./memory/fragmentation-memory.js";
+import { FragmentationMemory } from "./memory/experimental/fragmentation-memory.js";
 import { McpManager } from "./mcp/index.js";
 import { newSessionId, findLatestSession, loadSession, ensureGroDir, saveSensoryState, loadSensoryState } from "./session.js";
 // Register all memory types in the registry (side-effect import)
@@ -813,7 +813,7 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
   // Fragmentation memory (stochastic sampling)
   if (memoryMode === "fragmentation") {
     Logger.telemetry(`${C.cyan("MemoryMode=Fragmentation")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens`)}`);
-    const { FragmentationMemory } = await import("./memory/fragmentation-memory.js");
+    const { FragmentationMemory } = await import("./memory/experimental/fragmentation-memory.js");
     const fm = new FragmentationMemory({
       systemPrompt: cfg.systemPrompt || undefined,
       workingMemoryTokens: cfg.contextTokens,
@@ -826,7 +826,7 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
   // HNSW memory (semantic similarity retrieval)
   if (memoryMode === "hnsw") {
     Logger.telemetry(`${C.cyan("MemoryMode=HNSW")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, semantic retrieval`)}`);
-    const { HNSWMemory } = await import("./memory/hnsw-memory.js");
+    const { HNSWMemory } = await import("./memory/experimental/hnsw-memory.js");
     const hm = new HNSWMemory({
       driver: summarizerDriver ?? driver,
       summarizerModel: effectiveSummarizerModel,
@@ -841,7 +841,7 @@ async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: 
   // PerfectMemory (fork-based persistent recall)
   if (memoryMode === "perfect") {
     Logger.telemetry(`${C.cyan("MemoryMode=Perfect")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, fork-based recall`)}`);
-    const { PerfectMemory } = await import("./memory/perfect-memory.js");
+    const { PerfectMemory } = await import("./memory/experimental/perfect-memory.js");
     const pm = new PerfectMemory({
       driver: summarizerDriver ?? driver,
       summarizerModel: effectiveSummarizerModel,
@@ -1301,10 +1301,10 @@ async function executeTurn(
       } else if (targetType === "fragmentation") {
         newMemory = new FragmentationMemory({ systemPrompt: cfg.systemPrompt || undefined });
       } else if (targetType === "hnsw") {
-        const { HNSWMemory } = await import("./memory/hnsw-memory.js");
+        const { HNSWMemory } = await import("./memory/experimental/hnsw-memory.js");
         newMemory = new HNSWMemory({ systemPrompt: cfg.systemPrompt || undefined });
       } else if (targetType === "perfect") {
-        const { PerfectMemory } = await import("./memory/perfect-memory.js");
+        const { PerfectMemory } = await import("./memory/experimental/perfect-memory.js");
         newMemory = new PerfectMemory({
           driver,
           summarizerModel: cfg.summarizerModel ?? "llama-3.3-70b-versatile",

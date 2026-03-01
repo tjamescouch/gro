@@ -1,6 +1,6 @@
-import type { ChatMessage } from "../drivers/types.js";
-import { VirtualMemory, type VirtualMemoryConfig } from "./virtual-memory.js";
-import { Logger } from "../logger.js";
+import type { ChatMessage } from "../../drivers/types.js";
+import { VirtualMemory, type VirtualMemoryConfig } from "../virtual-memory.js";
+import { Logger } from "../../logger.js";
 import { writeFileSync, readFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";

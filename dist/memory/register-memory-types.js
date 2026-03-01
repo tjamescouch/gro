@@ -4,9 +4,9 @@
  */
 import { memoryRegistry } from "./memory-registry.js";
 import { SimpleMemory } from "./simple-memory.js";
-import { AdvancedMemory } from "./advanced-memory.js";
+import { AdvancedMemory } from "./experimental/advanced-memory.js";
 import { VirtualMemory } from "./virtual-memory.js";
-import { FragmentationMemory } from "./fragmentation-memory.js";
+import { FragmentationMemory } from "./experimental/fragmentation-memory.js";
 // --- Simple Memory ---
 memoryRegistry.register({
     type: "simple",
@@ -175,7 +175,7 @@ memoryRegistry.register({
     label: "HNSW Memory",
     description: "Hierarchical Navigable Small World vector-based memory with semantic retrieval.",
     factory: async (config) => {
-        const { HNSWMemory } = await import("./hnsw-memory.js");
+        const { HNSWMemory } = await import("./experimental/hnsw-memory.js");
         return new HNSWMemory({
             systemPrompt: config.systemPrompt,
             dimension: config.dimension,

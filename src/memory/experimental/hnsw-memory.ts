@@ -1,10 +1,10 @@
-import type { ChatDriver, ChatMessage } from "../drivers/types.js";
-import { VirtualMemory, type VirtualMemoryConfig } from "./virtual-memory.js";
+import type { ChatDriver, ChatMessage } from "../../drivers/types.js";
+import { VirtualMemory, type VirtualMemoryConfig } from "../virtual-memory.js";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { Logger } from "../logger.js";
+import { Logger } from "../../logger.js";
 
 /**
  * HNSWMemory — semantic similarity-based memory (flat index fallback).

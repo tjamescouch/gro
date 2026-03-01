@@ -9,7 +9,7 @@
  * `createAgentHnswIndex()` will throw a clear error.
  */
 
-import type { VectorIndex, VectorRecord, VectorSearchResult, Vector } from "./vector-index.js";
+import type { VectorIndex, VectorRecord, VectorSearchResult, Vector } from "../vector-index.js";
 
 // ── Dynamic loader ──────────────────────────────────────────────────────────
 

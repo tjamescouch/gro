@@ -60,6 +60,7 @@ import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { writeSelfToolDefinition, executeWriteSelf } from "./tools/write-self.js";
 import { writeSourceToolDefinition, handleWriteSource } from "./plastic/write-source.js";
+import { editSourceToolDefinition, handleEditSource } from "./plastic/edit-source.js";
 import { exportChanges, exportChangesToolDefinition, handleExportChanges } from "./plastic/export.js";
 import { injectSourcePages } from "./plastic/init.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
@@ -1143,8 +1144,9 @@ async function executeTurn(
     ? memory.getChannelSource("self") as SelfSource | undefined
     : undefined;
   if (selfSource) tools.push(writeSelfToolDefinition);
-  // PLASTIC mode: register write_source and export_changes tools
+  // PLASTIC mode: register edit_source, write_source and export_changes tools
   if (process.env.GRO_PLASTIC) {
+    tools.push(editSourceToolDefinition);
     tools.push(writeSourceToolDefinition);
     tools.push(exportChangesToolDefinition);
   }
@@ -2266,6 +2268,8 @@ async function executeTurn(
           result = executeGrep(fnArgs);
         } else if (fnName === "write_self" && selfSource) {
           result = executeWriteSelf(fnArgs as { content: string }, selfSource);
+        } else if (fnName === "edit_source" && process.env.GRO_PLASTIC) {
+          result = handleEditSource(fnArgs as { path: string; old_string: string; new_string: string });
         } else if (fnName === "write_source" && process.env.GRO_PLASTIC) {
           result = handleWriteSource(fnArgs as { path: string; content: string });
         } else if (fnName === "export_changes" && process.env.GRO_PLASTIC) {

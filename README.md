@@ -6,6 +6,12 @@
 
 `gro` runs persistent agent loops against any LLM provider — Anthropic, OpenAI, Google, xAI, or local — with automatic context paging, semantic page retrieval, MCP tool integration, and AgentChat network support. For an interactive TUI see [gtui](https://github.com/tjamescouch/gtui) available as an [npm package](https://www.npmjs.com/package/@tjamescouch/gtui). This software is intended to be run in a containerized solution to protect the host machine.
 
+gro is also the runtime at the heart of TheSystem — a one-command macOS dev shop with built-in agentchat networking, secure key proxying, and multi-agent swarms.
+```
+brew install thesystem
+thesystem gro
+```
+
 [![npm version](https://img.shields.io/npm/v/@tjamescouch/gro.svg)](https://www.npmjs.com/package/@tjamescouch/gro)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js 18+](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)

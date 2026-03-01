@@ -117,7 +117,7 @@ export class McpManager {
           function: {
             name: tool.name,
             description: tool.description ?? "",
-            parameters: tool.inputSchema ?? { type: "object", properties: {} },
+            parameters: (tool.inputSchema && tool.inputSchema.type) ? tool.inputSchema : { type: "object", properties: {} },
           },
         });
       }

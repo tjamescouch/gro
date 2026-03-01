@@ -847,8 +847,9 @@ export class VirtualMemory extends AgentMemory {
         // Fallback: simple label + ref without LLM
         summary = `[Summary of ${messages.length} messages: ${label}] `;
       }
-    } catch {
-      // Summarization failed — use fallback so page indexing still works
+    } catch (err: unknown) {
+      const emsg = err instanceof Error ? err.message : String(err);
+      Logger.warn(`[VirtualMemory] summarization failed: ${emsg}`);
       summary = `[Summary of ${messages.length} messages: ${label}] `;
     }
 
@@ -919,7 +920,9 @@ export class VirtualMemory extends AgentMemory {
         text += `\n`;
       }
       return text;
-    } catch {
+    } catch (err: unknown) {
+      const emsg = err instanceof Error ? err.message : String(err);
+      Logger.warn(`[VirtualMemory] summarizeWithRef failed: ${emsg}`);
       return `[Summary of ${messages.length} messages: ${label}] `;
     }
   }

@@ -670,8 +670,9 @@ export class VirtualMemory extends AgentMemory {
                 summary = `[Summary of ${messages.length} messages: ${label}] `;
             }
         }
-        catch {
-            // Summarization failed — use fallback so page indexing still works
+        catch (err) {
+            const emsg = err instanceof Error ? err.message : String(err);
+            Logger.warn(`[VirtualMemory] summarization failed: ${emsg}`);
             summary = `[Summary of ${messages.length} messages: ${label}] `;
         }
         // Store summary on page for semantic indexing and re-save
@@ -729,7 +730,9 @@ export class VirtualMemory extends AgentMemory {
             }
             return text;
         }
-        catch {
+        catch (err) {
+            const emsg = err instanceof Error ? err.message : String(err);
+            Logger.warn(`[VirtualMemory] summarizeWithRef failed: ${emsg}`);
             return `[Summary of ${messages.length} messages: ${label}] `;
         }
     }

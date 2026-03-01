@@ -551,7 +551,7 @@ function loadConfig() {
 function defaultBaseUrl(provider) {
     switch (provider) {
         case "openai": return process.env.OPENAI_BASE_URL || "https://api.openai.com";
-        case "groq": return process.env.GROQ_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.groq.com/openai";
+        case "groq": return process.env.GROQ_BASE_URL || "https://api.groq.com/openai";
         case "google": return process.env.GOOGLE_BASE_URL || "https://generativelanguage.googleapis.com";
         case "xai": return process.env.XAI_BASE_URL || "https://api.x.ai";
         case "local": return "http://127.0.0.1:11434";

@@ -5,6 +5,7 @@
  *   - plain_text: agent emitted text without a tool call
  *   - idle: agent called listen-only tools without follow-up action
  *   - same_tool_loop: agent called the same tool N+ times consecutively
+ *   - read_only_drift: agent spent many rounds reading without any writes
  *
  * Violations are logged to stderr in a parseable format for niki/supervisor
  * consumption and injected as system warnings into context.
@@ -13,7 +14,7 @@
 import { Logger } from "./logger.js";
 import type { AgentMemory } from "./memory/agent-memory.js";
 
-export type ViolationType = "plain_text" | "idle" | "same_tool_loop" | "context_pressure";
+export type ViolationType = "plain_text" | "idle" | "same_tool_loop" | "context_pressure" | "read_only_drift";
 
 // Tool names that count as "listening" (not productive work)
 const LISTEN_TOOLS = new Set([
@@ -21,24 +22,34 @@ const LISTEN_TOOLS = new Set([
   "agentchat_inbox",
 ]);
 
+// Tool names that count as "writing" — state-changing operations
+const WRITE_TOOLS = new Set([
+  "Write", "Edit", "apply_patch", "agentpatch", "write_self",
+  "edit_source", "write_source", "export_changes", "NotebookEdit",
+]);
+
 export class ViolationTracker {
   plainTextResponses = 0;
   idleRounds = 0;
   sameToolLoops = 0;
   contextPressures = 0;
+  readOnlyDrifts = 0;
   totalViolations = 0;
   private consecutiveListenOnly = 0;
   private consecutiveSameToolCount = 0;
   private consecutiveContextPressure = 0;
+  private consecutiveReadOnlyRounds = 0;
   private lastToolName: string | null = null;
   private readonly idleThreshold: number;
   private readonly sameToolThreshold: number;
+  private readonly readOnlyDriftThreshold: number;
   /** When true, agent has declared it is intentionally sleeping — suppress idle/loop violations. */
   private sleeping = false;
 
-  constructor(opts?: { idleThreshold?: number; sameToolThreshold?: number }) {
+  constructor(opts?: { idleThreshold?: number; sameToolThreshold?: number; readOnlyDriftThreshold?: number }) {
     this.idleThreshold = opts?.idleThreshold ?? 10;
     this.sameToolThreshold = opts?.sameToolThreshold ?? 5;
+    this.readOnlyDriftThreshold = opts?.readOnlyDriftThreshold ?? 10;
   }
 
   /**
@@ -53,6 +64,8 @@ export class ViolationTracker {
       this.sameToolLoops++;
     } else if (type === "context_pressure") {
       this.contextPressures++;
+    } else if (type === "read_only_drift") {
+      this.readOnlyDrifts++;
     }
     this.totalViolations++;
 
@@ -60,6 +73,7 @@ export class ViolationTracker {
     const count = type === "plain_text" ? this.plainTextResponses
                 : type === "idle" ? this.idleRounds
                 : type === "context_pressure" ? this.contextPressures
+                : type === "read_only_drift" ? this.readOnlyDrifts
                 : this.sameToolLoops;
     process.stderr.write(
       `VIOLATION: type=${type} count=${count} total=${this.totalViolations}\n`
@@ -83,6 +97,8 @@ export class ViolationTracker {
       msg = `[VIOLATION #${this.totalViolations}: idle. You have been listening for many consecutive rounds. If there is pending work, act on it. If not, emit @@sleep@@ before your next listen call to suppress this warning.]`;
     } else if (type === "context_pressure") {
       msg = `[VIOLATION #${this.totalViolations}: context_pressure. Context usage is HIGH for ${this.consecutiveContextPressure} consecutive rounds with no remediation. You MUST act now: emit @@max-context('200k')@@ to expand budget, or call compact_context to free space. Runtime controls are autonomous — no permission needed.]`;
+    } else if (type === "read_only_drift") {
+      msg = `[VIOLATION #${this.totalViolations}: read_only_drift. You have spent ${this.readOnlyDriftThreshold}+ consecutive rounds reading without writing. You are in a read-only investigation loop. STOP reading and ACT: write code, apply a patch, or explain to the user why you cannot proceed. Reading more of the same files will not help.]`;
     } else {
       msg = `[VIOLATION #${this.totalViolations}: same_tool_loop. You have ${this.totalViolations} violations this session. You have called ${toolName} ${this.consecutiveSameToolCount} times consecutively without doing any work. Do one work slice (bash/tool) now before calling ${toolName} again.]`;
     }
@@ -216,6 +232,29 @@ export class ViolationTracker {
   }
 
   /**
+   * Check for sustained read-only rounds (no file writes or patches).
+   * Detects investigation loops where the agent reads endlessly without acting.
+   * Returns true if a read_only_drift violation should fire.
+   */
+  checkReadOnlyDrift(toolNames: string[]): boolean {
+    if (this.sleeping) return false;
+    if (toolNames.length === 0) return false;
+
+    const hasWrite = toolNames.some(n => WRITE_TOOLS.has(n));
+    if (hasWrite) {
+      this.consecutiveReadOnlyRounds = 0;
+      return false;
+    }
+
+    this.consecutiveReadOnlyRounds++;
+    if (this.consecutiveReadOnlyRounds >= this.readOnlyDriftThreshold) {
+      this.consecutiveReadOnlyRounds = 0; // reset after firing (can fire again)
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Get current violation statistics.
    */
   getStats(): {
@@ -230,6 +269,7 @@ export class ViolationTracker {
         idle: this.idleRounds,
         same_tool_loop: this.sameToolLoops,
         context_pressure: this.contextPressures,
+        read_only_drift: this.readOnlyDrifts,
       },
       penaltyFactor: this.penaltyFactor(),
     };
@@ -250,6 +290,7 @@ export class ViolationTracker {
       idleRounds: this.idleRounds,
       sameToolLoops: this.sameToolLoops,
       contextPressures: this.contextPressures,
+      readOnlyDrifts: this.readOnlyDrifts,
       totalViolations: this.totalViolations,
       sleeping: this.sleeping,
     };
@@ -261,6 +302,7 @@ export class ViolationTracker {
     this.idleRounds = snap.idleRounds;
     this.sameToolLoops = snap.sameToolLoops;
     this.contextPressures = snap.contextPressures;
+    this.readOnlyDrifts = snap.readOnlyDrifts ?? 0;
     this.totalViolations = snap.totalViolations;
     this.sleeping = snap.sleeping;
   }
@@ -271,6 +313,7 @@ export interface ViolationSnapshot {
   idleRounds: number;
   sameToolLoops: number;
   contextPressures: number;
+  readOnlyDrifts: number;
   totalViolations: number;
   sleeping: boolean;
 }

@@ -23,7 +23,9 @@ export interface ActionSignature {
 
 export class DejaVuTracker {
   private history = new Map<string, ActionSignature>();
-  private insertOrder: string[] = [];  // for FIFO eviction
+  private fileHistory = new Map<string, ActionSignature>();  // fuzzy file-access tracking
+  private insertOrder: string[] = [];  // for FIFO eviction (exact match)
+  private fileInsertOrder: string[] = [];  // for FIFO eviction (fuzzy)
   private readonly windowSize: number;
   private readonly minCountForWarning: number;
 
@@ -75,6 +77,31 @@ export class DejaVuTracker {
       this.history.delete(oldKey);
     }
 
+    // Also track fuzzy file-access pattern (ignores offset/range variations)
+    const fileKey = extractFileKey(toolName, args);
+    if (fileKey) {
+      const existing2 = this.fileHistory.get(fileKey);
+      if (existing2) {
+        existing2.count++;
+        existing2.turn = turn;
+      } else {
+        const fsig: ActionSignature = {
+          key: fileKey,
+          toolName: "file-access",
+          argsSnippet: fileKey.replace(/^[^:]+:/, ""),
+          resultPreview: "",
+          turn,
+          count: 1,
+        };
+        this.fileHistory.set(fileKey, fsig);
+        this.fileInsertOrder.push(fileKey);
+        while (this.fileInsertOrder.length > this.windowSize) {
+          const oldKey = this.fileInsertOrder.shift()!;
+          this.fileHistory.delete(oldKey);
+        }
+      }
+    }
+
     return null;
   }
 
@@ -83,6 +110,12 @@ export class DejaVuTracker {
     const result: ActionSignature[] = [];
     for (const sig of this.history.values()) {
       if (sig.count >= this.minCountForWarning) {
+        result.push(sig);
+      }
+    }
+    // Include fuzzy file-access warnings (threshold 3 — higher than exact match)
+    for (const sig of this.fileHistory.values()) {
+      if (sig.count >= 3) {
         result.push(sig);
       }
     }
@@ -103,17 +136,33 @@ export class DejaVuTracker {
   }
 
   /** Capture state for warm state transfer. */
-  snapshot(): { history: Record<string, ActionSignature>; insertOrder: string[] } {
+  snapshot(): {
+    history: Record<string, ActionSignature>;
+    insertOrder: string[];
+    fileHistory: Record<string, ActionSignature>;
+    fileInsertOrder: string[];
+  } {
     return {
       history: Object.fromEntries(this.history),
       insertOrder: [...this.insertOrder],
+      fileHistory: Object.fromEntries(this.fileHistory),
+      fileInsertOrder: [...this.fileInsertOrder],
     };
   }
 
   /** Restore state from a warm state snapshot. */
-  restore(snap: { history: Record<string, ActionSignature>; insertOrder: string[] }): void {
+  restore(snap: {
+    history: Record<string, ActionSignature>;
+    insertOrder: string[];
+    fileHistory?: Record<string, ActionSignature>;
+    fileInsertOrder?: string[];
+  }): void {
     this.history = new Map(Object.entries(snap.history));
     this.insertOrder = [...snap.insertOrder];
+    if (snap.fileHistory) {
+      this.fileHistory = new Map(Object.entries(snap.fileHistory));
+      this.fileInsertOrder = [...(snap.fileInsertOrder ?? [])];
+    }
   }
 }
 
@@ -122,6 +171,31 @@ function hashArgs(args: Record<string, any>): string {
   // Sort keys for deterministic hashing
   const sorted = JSON.stringify(args, Object.keys(args).sort());
   return createHash("sha256").update(sorted).digest("hex").slice(0, 8);
+}
+
+/**
+ * Extract a fuzzy file-access key from a tool call, ignoring offset/range details.
+ * Returns null if the tool call doesn't represent a file read.
+ */
+function extractFileKey(toolName: string, args: Record<string, any>): string | null {
+  // Read tool — key on filepath, ignore offset/limit
+  if ((toolName === "Read" || toolName === "read") && (args.file_path || args.path)) {
+    return `read:${args.file_path ?? args.path}`;
+  }
+  // Grep — key on path + pattern
+  if (toolName === "Grep" && args.pattern) {
+    const path = args.path || "(all)";
+    return `grep:${path}:${String(args.pattern).slice(0, 40)}`;
+  }
+  // Shell commands that read files: sed, cat, head, tail, awk, less
+  if ((toolName === "shell" || toolName === "Bash") && args.command) {
+    const cmd = String(args.command);
+    const readMatch = cmd.match(/(?:sed|cat|head|tail|awk|less)\s+.*?([~\/][\w.\-\/]+)/);
+    if (readMatch) {
+      return `shell-read:${readMatch[1]}`;
+    }
+  }
+  return null;
 }
 
 /** Create a human-readable snippet of tool args for display. */

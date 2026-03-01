@@ -2394,6 +2394,10 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turn
             if (loopTool) {
                 await violations.inject(memory, "same_tool_loop", loopTool);
             }
+            // Check for read-only drift (investigation loop without writes)
+            if (violations.checkReadOnlyDrift(toolNames)) {
+                await violations.inject(memory, "read_only_drift");
+            }
             // Check for sustained context pressure without remediation
             const mStats = memory.getStats();
             if (mStats.type === "virtual" || mStats.type === "fragmentation" || mStats.type === "hnsw" || mStats.type === "perfect") {

@@ -12,8 +12,6 @@
 import { readFileSync, existsSync, appendFileSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
-import { envVarName } from "./keychain.js";
 import { Logger, C } from "./logger.js";
 import { spendMeter } from "./spend-meter.js";
 import { createDriverForModel, createDriver, defaultBaseUrl, resolveApiKey } from "./drivers/driver-factory.js";
@@ -22,23 +20,20 @@ import { AdvancedMemory } from "./memory/experimental/advanced-memory.js";
 import { VirtualMemory } from "./memory/virtual-memory.js";
 import { FragmentationMemory } from "./memory/experimental/fragmentation-memory.js";
 import { McpManager } from "./mcp/index.js";
-import { newSessionId, findLatestSession, loadSession, ensureGroDir, saveSensoryState, loadSensoryState } from "./session.js";
+import { newSessionId, findLatestSession, loadSession, ensureGroDir } from "./session.js";
 // Register all memory types in the registry (side-effect import)
 import "./memory/register-memory-types.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
 import { withConnectionRecovery } from "./utils/connection-recovery.js";
 import { WARM_STATE_VERSION } from "./warm-state.js";
 import type { WarmState, WorkerMessage, SupervisorMessage } from "./warm-state.js";
-import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/types.js";
 import type { AgentMemory, VirtualMemoryStats } from "./memory/agent-memory.js";
 import { SensoryMemory } from "./memory/sensory-memory.js";
-import { ContextMapSource } from "./memory/context-map-source.js";
 import { TemporalSource } from "./memory/temporal-source.js";
 import { ConfigSource } from "./memory/config-source.js";
 import { SelfSource } from "./memory/self-source.js";
 import { ViolationsSource } from "./memory/violations-source.js";
-import { createDefaultFactory } from "./memory/sensory-view-factory.js";
 import { tryCreateEmbeddingProvider } from "./memory/embedding-provider.js";
 import { PageSearchIndex } from "./memory/page-search-index.js";
 import { SemanticRetrieval } from "./memory/semantic-retrieval.js";
@@ -62,7 +57,6 @@ import { writeSelfToolDefinition, executeWriteSelf } from "./tools/write-self.js
 import { writeSourceToolDefinition, handleWriteSource } from "./plastic/write-source.js";
 import { editSourceToolDefinition, handleEditSource } from "./plastic/edit-source.js";
 import { exportChanges, exportChangesToolDefinition, handleExportChanges } from "./plastic/export.js";
-import { injectSourcePages } from "./plastic/init.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
 import { ViolationTracker, ThinkingLoopDetector } from "./violations.js";
 import { thinkingTierModel as selectTierModel, selectMultiProviderTierModel, inferModelTier } from "./tier-loader.js";
@@ -71,7 +65,6 @@ import {
   loadModelConfig,
   resolveModelAlias,
   isKnownAlias,
-  defaultModel,
   modelIdPrefixPattern,
   inferProvider,
 } from "./model-config.js";
@@ -79,12 +72,11 @@ import { parseDirectives, executeDirectives } from "./runtime/index.js";
 import { runtimeConfig, runtimeState } from "./runtime/index.js";
 import { FamiliarityTracker } from "./runtime/familiarity.js";
 import { DejaVuTracker } from "./runtime/deja-vu.js";
-import type { AwarenessSource } from "./memory/awareness-source.js";
 import type { Provider, GroConfig, McpToolRoles } from "./gro-types.js";
 import { detectToolRoles } from "./gro-types.js";
-import { loadRuntimeBoot, assembleSystemPrompt, discoverExtensions } from "./boot/system-prompt.js";
-import type { BootLayers } from "./boot/system-prompt.js";
+import { loadConfig, usage } from "./cli/config.js";
 import { runSetKey, readLine } from "./cli/key-management.js";
+import { createMemory, wrapWithSensory, unwrapMemory, injectPlasticSourcePages, saveSensorySnapshot, restoreSensorySnapshot } from "./memory/memory-factory.js";
 
 const VERSION = getGroVersion();
 
@@ -116,521 +108,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Wake notes: a runner-global file that is prepended to the system prompt on process start
-// so agents reliably see dev workflow + memory pointers on wake.
-const WAKE_NOTES_DEFAULT_PATH = join(process.env.HOME || "", ".gro", "WAKE.md");
-
-// Boot layers, system prompt assembly, and extension discovery are in
-// src/boot/system-prompt.ts — imported above.
-
-const __filename_url = import.meta.url;
-const __dirname_resolved = dirname(fileURLToPath(__filename_url));
+// Config loading (loadConfig, usage) is in src/cli/config.ts — imported above.
+// Memory factory (createMemory, wrapWithSensory, etc.) is in src/memory/memory-factory.ts — imported above.
 
 // ---------------------------------------------------------------------------
-// Config
+// Warm state & semantic retrieval
 // ---------------------------------------------------------------------------
 
-// Types (Provider, GroConfig, McpToolRoles) and detectToolRoles are in
-// src/gro-types.ts — imported above.
-
-
-function loadMcpServers(mcpConfigPaths: string[], autodiscover: boolean): Record<string, McpServerConfig> {
-  const merged: Record<string, McpServerConfig> = {};
-
-  for (const p of mcpConfigPaths) {
-    try {
-      let raw: string;
-      if (p.startsWith("{")) {
-        raw = p; // inline JSON
-      } else if (existsSync(p)) {
-        raw = readFileSync(p, "utf-8");
-      } else {
-        Logger.warn(`MCP config not found: ${p}`);
-        continue;
-      }
-      const parsed = JSON.parse(raw);
-      const servers = parsed.mcpServers || parsed;
-      if (typeof servers === "object") {
-        Object.assign(merged, servers);
-      }
-    } catch (e: unknown) {
-      const ge = groError("config_error", `Failed to parse MCP config ${p}: ${asError(e).message}`, { cause: e });
-      Logger.warn(ge.message, errorLogFields(ge));
-    }
-  }
-
-  // --autodiscover-mcp: also check ~/.gro/mcp.json
-  if (autodiscover) {
-    const autoPath = join(homedir(), ".gro", "mcp.json");
-    if (existsSync(autoPath) && !mcpConfigPaths.includes(autoPath)) {
-      try {
-        const raw = readFileSync(autoPath, "utf-8");
-        const parsed = JSON.parse(raw);
-        const servers = parsed.mcpServers || parsed;
-        if (typeof servers === "object" && Object.keys(servers).length > 0) {
-          Logger.info(`Auto-discovered MCP config: ${autoPath} (${Object.keys(servers).length} server(s))`);
-          Object.assign(merged, servers);
-        }
-      } catch (e: unknown) {
-        Logger.warn(`Failed to parse auto-discovered MCP config ${autoPath}: ${asError(e).message}`);
-      }
-    }
-  }
-
-  return merged;
-}
-
-// Flags that claude supports but we don't yet — accept gracefully
-const UNSUPPORTED_VALUE_FLAGS = new Set([
-  "--effort", "--agent", "--agents", "--betas", "--fallback-model",
-  "--permission-prompt-tool", "--permission-mode", "--tools",
-  "--allowedTools", "--allowed-tools", "--disallowedTools", "--disallowed-tools",
-  "--add-dir", "--plugin-dir", "--settings", "--setting-sources",
-  "--json-schema", "--input-format", "--file",
-  "--resume-session-at", "--rewind-files", "--session-id",
-  "--debug-file", "--sdk-url",
-]);
-
-const UNSUPPORTED_BOOL_FLAGS = new Set([
-  "--include-partial-messages", "--replay-user-messages",
-  "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions",
-  "--fork-session", "--from-pr", "--strict-mcp-config", "--mcp-debug",
-  "--ide", "--chrome", "--no-chrome", "--disable-slash-commands",
-  "--init", "--init-only", "--maintenance", "--enable-auth-status",
-]);
-
-function loadConfig(): GroConfig {
-  const args = process.argv.slice(2);
-  const flags: Record<string, string> = {};
-  const positional: string[] = [];
-  const mcpConfigPaths: string[] = [];
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-
-    // --- gro native flags ---
-    if (arg === "--provider" || arg === "-P") { flags.provider = args[++i]; }
-    else if (arg === "--model" || arg === "-m") { flags.model = args[++i]; }
-    else if (arg === "--base-url") { flags.baseUrl = args[++i]; }
-    else if (arg === "--system-prompt") { flags.systemPrompt = args[++i]; }
-    else if (arg === "--system-prompt-file") { flags.systemPromptFile = args[++i]; }
-    else if (arg === "--append-system-prompt") { flags.appendSystemPrompt = args[++i]; }
-    else if (arg === "--append-system-prompt-file") { flags.appendSystemPromptFile = args[++i]; }
-    else if (arg === "--wake-notes") { flags.wakeNotes = args[++i]; }
-    else if (arg === "--no-wake-notes") { flags.noWakeNotes = "true"; }
-    else if (arg === "--context-tokens") { flags.contextTokens = args[++i]; }
-    else if (arg === "--max-tokens") { flags.maxTokens = args[++i]; }
-    else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
-    else if (arg === "--bash") { flags.bash = "true"; }
-    else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
-    else if (arg === "--supervised") { flags.supervised = "true"; }
-    else if (arg === "--max-idle-nudges") { flags.maxIdleNudges = args[++i]; }
-    else if (arg === "--lfs") { flags.lfs = args[++i]; }
-    else if (arg === "--retry-base-ms") { process.env.GRO_RETRY_BASE_MS = args[++i]; }
-    else if (arg === "--max-thinking-tokens") { flags.maxThinkingTokens = args[++i]; } // accepted, not used yet
-    else if (arg === "--max-budget-usd" || arg === "--max-cost") { flags.maxBudgetUsd = args[++i]; }
-    else if (arg === "--max-tier") { flags.maxTier = args[++i]; }
-    else if (arg === "--providers") { flags.providers = args[++i]; }
-    else if (arg === "--summarizer-model") { flags.summarizerModel = args[++i]; }
-    else if (arg === "--output-format") { flags.outputFormat = args[++i]; }
-    else if (arg === "--batch-summarization") { flags.batchSummarization = "true"; }
-    else if (arg === "--no-cache") { flags.noCache = "true"; }
-    else if (arg === "--mcp-config") { mcpConfigPaths.push(args[++i]); }
-    else if (arg === "--autodiscover-mcp") { flags.autodiscoverMcp = "true"; }
-    else if (arg === "-i" || arg === "--interactive") { flags.interactive = "true"; }
-    else if (arg === "-p" || arg === "--print") { flags.print = "true"; }
-    else if (arg === "-c" || arg === "--continue") { flags.continue = "true"; }
-    else if (arg === "-r" || arg === "--resume") {
-      // --resume can have optional value
-      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        flags.resume = args[++i];
-      } else {
-        flags.resume = "latest";
-      }
-    }
-    else if (arg === "--no-mcp") { flags.noMcp = "true"; }
-    else if (arg === "--no-session-persistence") { flags.noSessionPersistence = "true"; }
-    else if (arg === "--verbose") { flags.verbose = "true"; }
-    else if (arg === "--show-diffs") { flags.showDiffs = "true"; }
-    else if (arg === "--plastic") { /* handled at boot, before main() */ }
-    else if (arg === "--name") { flags.name = args[++i]; }
-    else if (arg === "-d" || arg === "--debug" || arg === "-d2e" || arg === "--debug-to-stderr") {
-      flags.verbose = "true";
-      // --debug may have optional filter value
-      if (arg === "-d" || arg === "--debug") {
-        if (i + 1 < args.length && !args[i + 1].startsWith("-")) { i++; } // consume filter
-      }
-    }
-    else if (arg === "--set-key") { flags.setKey = args[++i]; }
-    else if (arg === "-V" || arg === "--version") { Logger.info(`gro ${VERSION}`); process.exit(0); }
-    else if (arg === "-h" || arg === "--help") { usage(); process.exit(0); }
-    // --- graceful degradation for unsupported claude flags ---
-    else if (UNSUPPORTED_VALUE_FLAGS.has(arg)) {
-      Logger.warn(`${arg} not yet supported, ignoring`);
-      if (i + 1 < args.length && !args[i + 1].startsWith("-")) i++; // skip value
-    }
-    else if (UNSUPPORTED_BOOL_FLAGS.has(arg)) {
-      Logger.warn(`${arg} not yet supported, ignoring`);
-    }
-    else if (!arg.startsWith("-")) { positional.push(arg); }
-    else { Logger.warn(`Unknown flag: ${arg}`); }
-  }
-
-  const provider = inferProvider(flags.provider || process.env.AGENT_PROVIDER, flags.model || process.env.AGENT_MODEL);
-  const apiKey = resolveApiKey(provider);
-  const noMcp = flags.noMcp === "true";
-  const autodiscoverMcp = flags.autodiscoverMcp === "true";
-  const mcpServers = noMcp ? {} : loadMcpServers(mcpConfigPaths, autodiscoverMcp);
-
-  // --- Layered system prompt assembly ---
-  // Layer 1: Runtime boot (gro internal, always loaded)
-  const runtime = loadRuntimeBoot();
-
-  // Layer 2: Extensions (_base.md, SKILL.md, --append-system-prompt-file, --append-system-prompt)
-  const extensions = discoverExtensions(mcpConfigPaths);
-  if (flags.appendSystemPromptFile) {
-    try {
-      const extra = readFileSync(flags.appendSystemPromptFile, "utf-8").trim();
-      if (extra) extensions.push(extra);
-    } catch (e: unknown) {
-      const ge = groError("config_error", `Failed to read append system prompt file: ${asError(e).message}`, { cause: e });
-      Logger.error(ge.message, errorLogFields(ge));
-      process.exit(1);
-    }
-  }
-  if (flags.appendSystemPrompt) {
-    extensions.push(flags.appendSystemPrompt);
-  }
-
-  // Layer 3: Role/Personality (WAKE.md, --system-prompt, --system-prompt-file)
-  const role: string[] = [];
-
-  // WAKE.md (runner-global) — loaded once, not twice
-  const wakeNotesPath = flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH;
-  const wakeNotesEnabled = flags.noWakeNotes !== "true";
-  if (wakeNotesEnabled && wakeNotesPath && existsSync(wakeNotesPath)) {
-    try {
-      const wake = readFileSync(wakeNotesPath, "utf-8").trim();
-      if (wake) role.push(wake);
-    } catch (e) {
-      Logger.warn(`Failed to read wake notes at ${wakeNotesPath}: ${asError(e).message}`);
-    }
-  }
-
-  // --system-prompt-file overrides --system-prompt (not additive)
-  if (flags.systemPromptFile) {
-    try {
-      role.push(readFileSync(flags.systemPromptFile, "utf-8").trim());
-    } catch (e: unknown) {
-      const ge = groError("config_error", `Failed to read system prompt file: ${asError(e).message}`, { cause: e });
-      Logger.error(ge.message, errorLogFields(ge));
-      process.exit(1);
-    }
-  } else if (flags.systemPrompt) {
-    role.push(flags.systemPrompt);
-  }
-
-  const systemPrompt = assembleSystemPrompt({ runtime, extensions, role });
-
-  // Mode resolution: -p forces non-interactive, -i forces interactive
-  // Default: interactive if TTY and no prompt given
-  const printMode = flags.print === "true";
-  const interactiveMode = printMode ? false
-    : flags.interactive === "true" ? true
-    : (positional.length === 0 && process.stdin.isTTY === true);
-
-  return {
-    provider,
-    model: flags.model || process.env.AGENT_MODEL || defaultModel(provider),
-    baseUrl: flags.baseUrl || defaultBaseUrl(provider),
-    apiKey,
-    systemPrompt,
-    wakeNotes: flags.wakeNotes || WAKE_NOTES_DEFAULT_PATH,
-    wakeNotesEnabled: flags.noWakeNotes !== "true",
-    contextTokens: parseInt(flags.contextTokens || "32000"),
-    maxTokens: parseInt(flags.maxTokens || "16384"),
-    interactive: interactiveMode,
-    print: printMode,
-    maxToolRounds: parseInt(flags.maxToolRounds || "100"),
-    persistent: flags.persistent === "true",
-    supervised: flags.supervised === "true" || typeof process.send === "function",
-    persistentPolicy: (flags.persistentPolicy as "listen-only" | "work-first") || "listen-only",
-    maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
-    bash: flags.bash === "true" || interactiveMode,
-    lfs: flags.lfs || process.env.GRO_LFS || null,
-    summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
-    outputFormat: (flags.outputFormat as GroConfig["outputFormat"]) || "text",
-    continueSession: flags.continue === "true",
-    resumeSession: flags.resume || null,
-    sessionPersistence: flags.noSessionPersistence !== "true",
-    verbose: flags.verbose === "true",
-    name: flags.name || null,
-    batchSummarization: flags.batchSummarization === "true",
-    showDiffs: flags.showDiffs === "true",
-    mcpServers,
-    maxBudgetUsd: flags.maxBudgetUsd ? parseFloat(flags.maxBudgetUsd) : null,
-    maxTier: (flags.maxTier || process.env.GRO_MAX_TIER || null) as GroConfig["maxTier"],
-    providers: (flags.providers || process.env.GRO_PROVIDERS || "").split(",").filter(Boolean),
-    // toolRoles auto-detected after MCP connect — placeholder here
-    toolRoles: { idleTool: null, idleToolDefaultArgs: {}, idleToolArgStrategy: "last-call", sendTool: null, sendToolMessageField: "message" },
-    enablePromptCaching: flags.noCache !== "true",
-  };
-}
-
-// defaultBaseUrl, resolveApiKey, createDriverForModel, createDriver are in
-// src/drivers/driver-factory.ts — imported above.
-
-function usage() {
-  Logger.info(`gro ${VERSION} — provider-agnostic LLM runtime
-
-usage:
-  gro [options] "prompt"
-  echo "prompt" | gro [options]
-  gro -i                        # interactive mode
-
-options:
-  --set-key <provider>   store API key in macOS Keychain (anthropic | openai | groq | google | xai)
-  -P, --provider         openai | anthropic | groq | google | xai | local (default: anthropic)
-  -m, --model            model name (auto-infers provider)
-  --base-url             API base URL
-  --system-prompt        system prompt text
-  --system-prompt-file   read system prompt from file
-  --append-system-prompt append to system prompt
-  --append-system-prompt-file  append system prompt from file
-  --wake-notes           path to wake notes file (default: ~/.gro/WAKE.md)
-  --no-wake-notes        disable auto-prepending wake notes
-  --context-tokens       context window budget (default: 8192)
-  --max-tokens           max response tokens per turn (default: 16384)
-  --max-turns            max agentic rounds per turn (default: 100)
-  --max-tool-rounds      alias for --max-turns
-  --bash                 enable built-in bash tool for shell command execution
-  --persistent           nudge model to keep using tools instead of exiting
-  --lfs <url>            enable LLM-Face Streaming to personas server (e.g. http://localhost:3100)
-  --max-retries          max API retry attempts on 429/5xx (default: 3, env: GRO_MAX_RETRIES)
-  --retry-base-ms        base backoff delay in ms (default: 1000, env: GRO_RETRY_BASE_MS)
-  --max-tier             low | mid | high — cap tier promotion (env: GRO_MAX_TIER)
-  --providers            comma-separated providers for cross-provider tier selection (env: GRO_PROVIDERS)
-  --summarizer-model     model for context summarization (default: same as --model)
-  --output-format        text | json | stream-json (default: text)
-  --mcp-config           load MCP servers from JSON file or string
-  --autodiscover-mcp     also load ~/.gro/mcp.json if it exists
-  --max-cost             alias for --max-budget-usd
-  --no-cache             disable Anthropic prompt caching
-  --no-mcp               disable MCP server connections
-  --no-session-persistence  don't save sessions to .gro/
-  -p, --print            print response and exit (non-interactive)
-  -c, --continue         continue most recent session
-  -r, --resume [id]      resume a session by ID
-  -i, --interactive      interactive conversation mode
-  --plastic              PLASTIC mode: self-modifying agent (training only)
-  --verbose              verbose output
-  -V, --version          show version
-  -h, --help             show this help
-
-session state is stored in .gro/context/<session-id>/`);
-}
-
-// Key management (runSetKey, readLine) is in src/cli/key-management.ts — imported above.
-
-// ---------------------------------------------------------------------------
-// Memory factory
-// ---------------------------------------------------------------------------
-
-async function createMemory(cfg: GroConfig, driver: ChatDriver, requestedMode?: string, sessionId?: string): Promise<AgentMemory> {
-  const memoryMode = requestedMode ?? process.env.GRO_MEMORY ?? "virtual";
-
-  // Opt-out: SimpleMemory only if explicitly requested
-  if (memoryMode === "simple") {
-    Logger.telemetry(`${C.cyan("MemoryMode=Simple")} ${C.gray("(GRO_MEMORY=simple)")}`);
-    const mem = new SimpleMemory(cfg.systemPrompt || undefined);
-    mem.setMeta(cfg.provider, cfg.model);
-    return mem;
-  }
-
-  // Default: VirtualMemory (safe, cost-controlled)
-  // Default summarizer: Groq llama-3.3-70b-versatile (free tier).
-  // Falls back to main driver if no Groq key is available.
-  const DEFAULT_SUMMARIZER_MODEL = "llama-3.3-70b-versatile";
-  const summarizerModel = cfg.summarizerModel ?? DEFAULT_SUMMARIZER_MODEL;
-  const summarizerProvider = inferProvider(undefined, summarizerModel);
-  const summarizerApiKey = resolveApiKey(summarizerProvider);
-
-  let summarizerDriver: ChatDriver | undefined;
-  let effectiveSummarizerModel = summarizerModel;
-  if (summarizerApiKey) {
-    summarizerDriver = createDriverForModel(
-      summarizerProvider,
-      summarizerModel,
-      summarizerApiKey,
-      defaultBaseUrl(summarizerProvider),
-    );
-    Logger.telemetry(`Summarizer: ${summarizerProvider}/${summarizerModel}`);
-  } else {
-    // No key for the desired summarizer provider — fall back to main driver.
-    // Use the main model name so the driver doesn't reject an incompatible model name.
-    effectiveSummarizerModel = cfg.model;
-    Logger.telemetry(`Summarizer: no ${summarizerProvider} key — using main driver (${cfg.provider}/${cfg.model})`);
-  }
-
-  // Fragmentation memory (stochastic sampling)
-  if (memoryMode === "fragmentation") {
-    Logger.telemetry(`${C.cyan("MemoryMode=Fragmentation")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens`)}`);
-    const { FragmentationMemory } = await import("./memory/experimental/fragmentation-memory.js");
-    const fm = new FragmentationMemory({
-      systemPrompt: cfg.systemPrompt || undefined,
-      workingMemoryTokens: cfg.contextTokens,
-    });
-    fm.setProvider(cfg.provider);
-    fm.setModel(cfg.model);
-    return fm;
-  }
-
-  // HNSW memory (semantic similarity retrieval)
-  if (memoryMode === "hnsw") {
-    Logger.telemetry(`${C.cyan("MemoryMode=HNSW")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, semantic retrieval`)}`);
-    const { HNSWMemory } = await import("./memory/experimental/hnsw-memory.js");
-    const hm = new HNSWMemory({
-      driver: summarizerDriver ?? driver,
-      summarizerModel: effectiveSummarizerModel,
-      systemPrompt: cfg.systemPrompt || undefined,
-      workingMemoryTokens: cfg.contextTokens,
-    });
-    hm.setProvider(cfg.provider);
-    hm.setModel(cfg.model);
-    return hm;
-  }
-
-  // PerfectMemory (fork-based persistent recall)
-  if (memoryMode === "perfect") {
-    Logger.telemetry(`${C.cyan("MemoryMode=Perfect")} ${C.gray(`workingMemory=${cfg.contextTokens} tokens, fork-based recall`)}`);
-    const { PerfectMemory } = await import("./memory/experimental/perfect-memory.js");
-    const pm = new PerfectMemory({
-      driver: summarizerDriver ?? driver,
-      summarizerModel: effectiveSummarizerModel,
-      systemPrompt: cfg.systemPrompt || undefined,
-      workingMemoryTokens: cfg.contextTokens,
-      enableBatchSummarization: cfg.batchSummarization,
-    });
-    pm.setProvider(cfg.provider);
-    pm.setModel(cfg.model);
-    return pm;
-  }
-
-    Logger.telemetry(`${C.cyan("MemoryMode=Virtual")} ${C.gray(`(default) workingMemory=${cfg.contextTokens} tokens`)}`);
-  const vm = new VirtualMemory({
-    driver: summarizerDriver ?? driver,
-    summarizerModel: effectiveSummarizerModel,
-    systemPrompt: cfg.systemPrompt || undefined,
-    workingMemoryTokens: cfg.contextTokens,
-    enableBatchSummarization: cfg.batchSummarization,
-    sessionId,
-  });
-  vm.setProvider(cfg.provider);
-  vm.setModel(cfg.model);
-  return vm;
-}
-
-/**
- * Wrap an AgentMemory with SensoryMemory decorator + ContextMapSource.
- * Two-slot camera system:
- *   slot0 = "context" (fill bars, runtime health)
- *   slot1 = "time"    (wall clock, uptime, channel staleness)
- * Both slots are agent-switchable via <view:X> marker.
- * Returns the wrapped memory. If wrapping fails, returns the original.
- */
-function wrapWithSensory(inner: AgentMemory): AgentMemory {
-  try {
-    const sensory = new SensoryMemory(inner, { totalBudget: 1200 });
-    const factory = createDefaultFactory();
-    const deps = { memory: inner, spendMeter };
-
-    for (const spec of factory.specs()) {
-      sensory.addChannel({
-        name: spec.name,
-        maxTokens: spec.maxTokens,
-        updateMode: spec.updateMode,
-        content: "",
-        enabled: spec.enabled,
-        source: factory.create(spec.name, deps),
-        width: spec.width,
-        height: spec.height,
-        viewable: spec.viewable,
-      });
-    }
-
-    // Wire awareness trackers
-    const awarenessSource = sensory.getChannelSource("awareness") as AwarenessSource | undefined;
-    if (awarenessSource) {
-      awarenessSource.setFamiliarity(familiarityTracker);
-      awarenessSource.setDejaVu(dejaVuTracker);
-    }
-
-    // Default camera slots
-    sensory.setSlot(0, "context");
-    sensory.setSlot(1, "time");
-    sensory.setSlot(2, "awareness");
-    return sensory;
-  } catch (err) {
-    Logger.warn(`Failed to initialize sensory memory: ${err}`);
-    return inner;
-  }
-}
-
-/** Unwrap SensoryMemory decorator to get the underlying memory for duck-typed method calls. */
-function unwrapMemory(mem: AgentMemory): AgentMemory {
-  return mem instanceof SensoryMemory ? (mem as SensoryMemory).getInner() : mem;
-}
-
-/** In PLASTIC mode, inject source pages into VirtualMemory so the agent can @@ref@@ them. */
-function injectPlasticSourcePages(mem: AgentMemory): void {
-  if (!process.env.GRO_PLASTIC) return;
-  const inner = unwrapMemory(mem);
-  if (inner instanceof VirtualMemory) {
-    const count = injectSourcePages(inner);
-    if (count > 0) Logger.telemetry(`[PLASTIC] Injected ${count} source pages into virtual memory`);
-  }
-}
-
-/** Capture and save sensory channel state alongside session data. */
-function saveSensorySnapshot(mem: AgentMemory, sessionId: string): void {
-  if (!(mem instanceof SensoryMemory)) return;
-  const sensory = mem as SensoryMemory;
-  const selfSrc = sensory.getChannelSource("self");
-  const selfContent = selfSrc && "getContent" in selfSrc
-    ? (selfSrc as SelfSource).getContent()
-    : "";
-  saveSensoryState(sessionId, {
-    selfContent,
-    channelDimensions: sensory.getChannelDimensions(),
-    slotAssignments: [sensory.getSlot(0), sensory.getSlot(1), sensory.getSlot(2)],
-  });
-}
-
-/** Restore sensory channel state after session load. */
-function restoreSensorySnapshot(mem: AgentMemory, sessionId: string): void {
-  if (!(mem instanceof SensoryMemory)) return;
-  const state = loadSensoryState(sessionId);
-  if (!state) return;
-  const sensory = mem as SensoryMemory;
-  // Restore self content
-  if (state.selfContent) {
-    const selfSrc = sensory.getChannelSource("self");
-    if (selfSrc && "setContent" in selfSrc) {
-      (selfSrc as SelfSource).setContent(state.selfContent);
-    }
-  }
-  // Restore channel dimensions
-  if (state.channelDimensions) {
-    sensory.restoreChannelDimensions(state.channelDimensions);
-  }
-  // Restore slot assignments
-  if (state.slotAssignments) {
-    state.slotAssignments.forEach((ch, i) => {
-      if (ch) sensory.setSlot(i as 0 | 1 | 2, ch);
-    });
-  }
-  Logger.debug(`Restored sensory state for session ${sessionId}`);
-}
+// REMOVED: loadMcpServers, UNSUPPORTED flags, loadConfig, usage — now in src/cli/config.ts
+// REMOVED: createMemory, wrapWithSensory, unwrapMemory, etc. — now in src/memory/memory-factory.ts
 
 /** Capture all runtime state into a WarmState snapshot for IPC transfer. */
 function captureWarmState(
@@ -2272,7 +1758,7 @@ async function singleShot(
     process.exit(1);
   }
 
-  let memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
+  let memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId), { familiarityTracker, dejaVuTracker });
   injectPlasticSourcePages(memory);
 
   // Initialize runtime control system
@@ -2301,7 +1787,7 @@ async function singleShot(
         cfg.apiKey = resolveApiKey(cfg.provider);
         cfg.baseUrl = defaultBaseUrl(cfg.provider);
         driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens, cfg.enablePromptCaching);
-        memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
+        memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId), { familiarityTracker, dejaVuTracker });
         await memory.load(sessionId);
       } else if (sess.meta.provider === cfg.provider && !wasModelExplicitlyPassed()) {
         cfg.model = sess.meta.model;
@@ -2378,7 +1864,7 @@ async function interactive(
   mcp: McpManager,
   sessionId: string,
 ): Promise<void> {
-  let memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
+  let memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId), { familiarityTracker, dejaVuTracker });
   injectPlasticSourcePages(memory);
   const readline = await import("readline");
 
@@ -2472,7 +1958,7 @@ async function interactive(
         cfg.apiKey = resolveApiKey(cfg.provider);
         cfg.baseUrl = defaultBaseUrl(cfg.provider);
         driver = createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens, cfg.enablePromptCaching);
-        memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId));
+        memory = wrapWithSensory(await createMemory(cfg, driver, undefined, sessionId), { familiarityTracker, dejaVuTracker });
         await memory.load(sessionId);
         const msgCount = sess.messages.filter((m: any) => m.role !== "system").length;
         Logger.info(C.gray(`Resumed cross-provider session ${sessionId} (${msgCount} messages)`));

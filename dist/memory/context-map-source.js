@@ -1,25 +1,19 @@
 /**
- * ContextMapSource — sensory channel that renders a detailed memory page viewer.
+ * ContextMapSource — sensory channel that renders a compact memory page viewer.
  *
- * Box-drawn 80-char-wide panel with six sections:
+ * Box-drawn 80-char-wide panel with sections:
  *   1. HEADER   — page count, loaded count, fill bar, active token count
- *   2. LANES    — per-lane bars with emoji glyphs and token counts
- *   3. PAGE ROWS — pages grouped by time bucket with columns
- *   4. ANCHORS  — high-importance pages (maxImportance >= 0.8)
- *   5. SIZE HISTOGRAM — 4-bucket token distribution
- *   6. LOAD BUDGET — slot usage bar
+ *   2. LOADED   — loaded/pinned pages with expanded summaries (if any)
+ *   3. PAGES    — all pages grouped by time bucket, compact single-line format
+ *   4. BUDGET   — slot usage bar + navigation hints
  *
  * Drill-down filters (context:today, context:full, context:pg_id) render
  * detailed page info into the same box.
  */
 import { topBorder, bottomBorder, sectionDivider, row, bar, lpad, rpad, IW } from "./box.js";
 // --- Constants ---
-/** Fill bar width in the header. */
 const FILL_BAR_W = 27;
-/** Lane bar width. */
-const LANE_BAR_W = 20;
-/** Max page rows per time bucket before truncation. */
-const MAX_ROWS_PER_BUCKET = 11;
+const LANE_BAR_W = 12;
 // --- Lane glyphs ---
 const LANE_GLYPHS = {
     assistant: "🤖",
@@ -37,10 +31,10 @@ function laneAbbr(lane) {
     if (lane === "user")
         return "user";
     if (lane === "system")
-        return "sys ";
+        return "sys";
     if (lane === "tool")
         return "tool";
-    return "mix ";
+    return "mix";
 }
 // --- Time bucketing helpers ---
 function timeBucket(createdAt, now) {
@@ -139,10 +133,9 @@ export class ContextMapSource {
             const page = pages.find(p => p.id === filter);
             if (page) {
                 lines.push(topBorder());
-                lines.push(row(` CONTEXT  page detail`));
-                lines.push(sectionDivider(`PAGE ${page.id}`));
-                lines.push(...this.renderSinglePage(page, pages.length, stats.pagesLoaded));
-                lines.push(row(` reset: view('context')`));
+                lines.push(row(` PAGE ${page.id}`));
+                lines.push(sectionDivider("DETAIL"));
+                lines.push(...this.renderSinglePage(page, stats));
                 lines.push(bottomBorder());
                 return lines.join("\n");
             }
@@ -152,103 +145,76 @@ export class ContextMapSource {
             lines.push(row(` CONTEXT  drill-down: ${filter}`));
             lines.push(sectionDivider(filter.toUpperCase()));
             lines.push(...this.renderDrillDown(pages, filter));
-            lines.push(row(` reset: view('context')`));
             lines.push(bottomBorder());
             return lines.join("\n");
         }
-        // --- Budget line counts so all 6 sections always fit ---
-        const maxLines = this.config.maxLines;
-        const anchors = pages.filter(p => p.maxImportance >= 0.8);
-        // Fixed overhead: topBorder(1) + header(1) + lanesDivider(1) + laneRows(2)
-        //   + histogram divider(1) + histogram rows(4 or 1 if no pages)
-        //   + budget divider(1) + budget row(1) + bottomBorder(1) = 13
-        // Anchors: divider(1) + min(anchors, 6) + overflow line(0-1)
-        // Page rows: at least divider(1) + colhdr(1) + separator(1) = 3 per bucket
-        const anchorLines = anchors.length > 0
-            ? 1 + Math.min(anchors.length, 6) + (anchors.length > 6 ? 1 : 0)
-            : 0;
-        const histLines = pages.length > 0 ? 5 : 2; // divider + 4 rows or divider + "(no pages)"
-        const fixedLines = 1 + 1 + 1 + 2 + anchorLines + histLines + 1 + 1 + 1;
-        const availableForPages = Math.max(4, maxLines - fixedLines);
-        // === SECTION 1: HEADER ===
+        // --- Normal view ---
+        // === SECTION 1: HEADER (fill bar + lanes inline) ===
         const fillFrac = totalBudget > 0 ? totalUsed / totalBudget : 0;
         const fillPct = Math.round(fillFrac * 100);
         const fillBar = bar(fillFrac, FILL_BAR_W);
-        const fillLabel = fillPct >= 75 ? ` ${fillPct}% ⚠` : fillPct >= 60 ? ` ${fillPct}%` : ` ${fillPct}%`;
+        const warn = fillPct >= 75 ? " ⚠" : "";
         const activeTokens = stats.pageSlotUsed + stats.workingMemoryUsed;
-        const activeTokStr = fmtTok(activeTokens);
-        const hdrLeft = ` PAGES  ${lpad(String(pages.length), 3)} total  ${lpad(String(stats.pagesLoaded), 2)} loaded  `;
-        const hdrRight = `  ${activeTokStr} tok active `;
-        const hdrMid = fillBar + fillLabel;
         lines.push(topBorder());
-        lines.push(row(hdrLeft + hdrMid + rpad(hdrRight, IW - hdrLeft.length - hdrMid.length)));
-        // === SECTION 2: LANES ===
-        lines.push(sectionDivider("LANES"));
-        this.renderLanes(stats, pages, lines);
-        // === SECTION 3: PAGE ROWS (height-budgeted) ===
-        this.renderPageRows(pages, lines, availableForPages);
-        // === SECTION 4: ANCHORS ===
-        if (anchors.length > 0) {
-            lines.push(sectionDivider("ANCHORS — marked @@important@@"));
-            for (const p of anchors.slice(0, 6)) {
+        lines.push(row(` PAGES  ${lpad(String(pages.length), 3)} total  ${lpad(String(stats.pagesLoaded), 2)} loaded  ${fillBar} ${fillPct}%${warn}  ${fmtTok(activeTokens)} active`));
+        // Lane summary — single compact line
+        const laneTotals = this.aggregateLanes(stats, pages);
+        const laneStr = Object.entries(laneTotals)
+            .filter(([_, t]) => t > 0)
+            .map(([l, t]) => `${laneGlyph(l)}${fmtTok(t)}`)
+            .join("  ");
+        if (laneStr) {
+            lines.push(row(` lanes: ${laneStr}`));
+        }
+        // === SECTION 2: LOADED PAGES (if any) ===
+        const loadedPages = pages.filter(p => p.loaded || p.pinned);
+        if (loadedPages.length > 0) {
+            lines.push(sectionDivider("LOADED"));
+            for (const p of loadedPages) {
                 const d = new Date(p.createdAt);
-                const snippet = this.compactSummary(p.summary, p.label, 38);
-                const inner = `  ${rpad(p.id, 12)}  ${laneGlyph(p.lane)}  ${fmtHHMM(d)}  ★  "${snippet}"`;
-                lines.push(row(inner));
-            }
-            if (anchors.length > 6) {
-                lines.push(row(`  [+${anchors.length - 6} more anchors]`));
+                const pin = p.pinned ? "📌" : "█ ";
+                const snippet = this.cleanSummary(p.summary, p.label, 54);
+                lines.push(row(`  ${pin} ${rpad(p.id.slice(0, 11), 11)}  ${laneGlyph(p.lane)} ${fmtHHMM(d)}  ${fmtTok(p.tokens)}t  ${snippet}`));
             }
         }
-        // === SECTION 5: SIZE HISTOGRAM ===
-        lines.push(sectionDivider("SIZE HISTOGRAM"));
-        this.renderHistogram(pages, lines);
-        // === SECTION 6: LOAD BUDGET ===
-        lines.push(sectionDivider("LOAD BUDGET"));
-        this.renderLoadBudget(stats, lines);
+        // === SECTION 3: PAGE ROWS (compact, by time bucket) ===
+        const maxLines = this.config.maxLines;
+        // Fixed overhead: top(1) + header(1) + lanes(1) + budget section(3) + bottom(1) = 7
+        // Loaded section: divider(1) + N loaded pages
+        const loadedOverhead = loadedPages.length > 0 ? 1 + loadedPages.length : 0;
+        const fixedOverhead = 7 + loadedOverhead;
+        const availableForPages = Math.max(4, maxLines - fixedOverhead);
+        this.renderCompactPageRows(pages, lines, availableForPages);
+        // === SECTION 4: BUDGET + NAV ===
+        lines.push(sectionDivider("BUDGET"));
+        this.renderBudgetLine(stats, lines);
+        lines.push(row(` nav: ref('id')  ref('?query')  memory_grep  view('context:full')`));
         lines.push(bottomBorder());
         return lines.join("\n");
     }
-    // --- Section 2: Lane bars ---
-    renderLanes(stats, pages, lines) {
-        // Aggregate tokens per lane from pages
-        const laneTotals = { assistant: 0, user: 0, system: 0, tool: 0 };
+    // --- Aggregate lane tokens ---
+    aggregateLanes(stats, pages) {
+        const totals = { assistant: 0, user: 0, system: 0, tool: 0 };
         for (const p of pages) {
             const l = p.lane === "mixed" ? "assistant" : p.lane;
-            if (l in laneTotals) {
-                laneTotals[l] += p.tokens;
-            }
-            else {
-                laneTotals["assistant"] += p.tokens;
-            }
+            if (l in totals)
+                totals[l] += p.tokens;
+            else
+                totals["assistant"] += p.tokens;
         }
-        // Also fold in buffer lane stats
         for (const lane of stats.lanes) {
-            if (lane.role in laneTotals) {
-                laneTotals[lane.role] += lane.tokens;
-            }
+            if (lane.role in totals)
+                totals[lane.role] += lane.tokens;
         }
-        const maxTok = Math.max(1, ...Object.values(laneTotals));
-        // Two lanes per row
-        const laneOrder = [["assistant", "user"], ["system", "tool"]];
-        for (const [l1, l2] of laneOrder) {
-            const t1 = laneTotals[l1] ?? 0;
-            const t2 = laneTotals[l2] ?? 0;
-            const b1 = bar(t1 / maxTok, LANE_BAR_W);
-            const b2 = bar(t2 / maxTok, LANE_BAR_W);
-            const g1 = laneGlyph(l1);
-            const g2 = laneGlyph(l2);
-            const a1 = laneAbbr(l1);
-            const a2 = laneAbbr(l2);
-            const s1 = rpad(fmtTok(t1), 5);
-            const s2 = rpad(fmtTok(t2), 5);
-            // Layout: `  🤖asst ████...░░░░  4.9k   👤user ████...░░░░  4.4k   `
-            const inner = `  ${g1}${a1} ${b1}  ${s1}   ${g2}${a2} ${b2}  ${s2}`;
-            lines.push(row(inner));
-        }
+        return totals;
     }
-    // --- Section 3: Page rows by time bucket ---
-    renderPageRows(pages, lines, maxPageLines) {
+    // --- Compact page rows (one line per page) ---
+    renderCompactPageRows(pages, lines, maxPageLines) {
+        if (pages.length === 0) {
+            lines.push(sectionDivider("PAGES"));
+            lines.push(row("  (no pages yet)"));
+            return;
+        }
         const now = new Date();
         // Group by time bucket
         const buckets = new Map();
@@ -262,142 +228,84 @@ export class ContextMapSource {
             buckets.get(bucket).push(p);
         }
         bucketOrder.sort((a, b) => bucketRank(a) - bucketRank(b));
-        // Distribute page line budget across buckets
-        // Each bucket needs: divider(1) + colhdr(1) + separator(1) + overflow(1) = 4 overhead
-        const bucketCount = bucketOrder.length;
-        const overheadPerBucket = 4; // includes "+N more" line
-        const totalOverhead = bucketCount * overheadPerBucket;
-        const linesForRows = Math.max(0, maxPageLines - totalOverhead);
-        // Split row lines evenly across buckets, at least 2 per bucket (1 page + summary)
-        const rowsPerBucket = Math.max(2, Math.floor(linesForRows / Math.max(1, bucketCount)));
-        // Each page takes 2 lines (row + summary), so max pages per bucket:
-        const maxPagesPerBucket = Math.max(1, Math.floor(rowsPerBucket / 2));
+        // Budget: each bucket costs divider(1) + pages + overflow(0-1)
         let linesUsed = 0;
         for (const bucket of bucketOrder) {
             if (linesUsed >= maxPageLines)
                 break;
             const items = buckets.get(bucket);
             const range = timeRange(items);
-            const bucketLabel = range
-                ? `${bucket.toUpperCase()} ${range}`
-                : bucket.toUpperCase();
-            lines.push(sectionDivider(bucketLabel));
-            // Column header
-            lines.push(row("  ID           LANE  TIME   MSGS  TOKS   STATUS  SNIPPET"));
-            lines.push(row("  " + "─".repeat(75)));
-            linesUsed += 3;
-            const cap = Math.min(items.length, maxPagesPerBucket);
+            const label = range ? `${bucket.toUpperCase()} ${range}` : bucket.toUpperCase();
+            lines.push(sectionDivider(label));
+            linesUsed++;
+            // How many pages can we show in this bucket?
+            const remaining = maxPageLines - linesUsed;
+            const cap = Math.min(items.length, Math.max(1, remaining - 1)); // -1 for potential overflow line
             for (let i = 0; i < cap && linesUsed < maxPageLines; i++) {
-                lines.push(this.renderPageRow(items[i]));
+                lines.push(this.renderCompactRow(items[i]));
                 linesUsed++;
-                const sumLine = this.renderSummaryLine(items[i]);
-                if (sumLine && linesUsed < maxPageLines) {
-                    lines.push(sumLine);
-                    linesUsed++;
-                }
             }
             if (items.length > cap) {
-                lines.push(row(`  [+${items.length - cap} more pages]`));
+                lines.push(row(`  … +${items.length - cap} more`));
                 linesUsed++;
             }
         }
-        if (pages.length === 0) {
-            lines.push(sectionDivider("PAGES"));
-            lines.push(row("  (no pages)"));
-        }
     }
-    renderPageRow(p) {
-        const idShort = rpad(p.id.length > 12 ? p.id.slice(0, 12) : p.id, 12);
-        const glyph = laneGlyph(p.lane);
+    /** Single compact line per page: status + id + glyph + time + tokens + snippet */
+    renderCompactRow(p) {
         const d = new Date(p.createdAt);
-        const time = fmtHHMM(d);
-        const msgs = lpad(String(p.messageCount ?? 0), 4);
-        const toks = lpad(fmtTok(p.tokens), 5) + "t";
+        const idShort = p.id.slice(0, 11);
         let status;
         if (p.pinned)
-            status = rpad("📌 pin", 8);
+            status = "📌";
         else if (p.loaded)
-            status = rpad("█ live", 8);
+            status = "█ ";
+        else if (p.maxImportance >= 0.8)
+            status = "★ ";
         else
-            status = rpad("░ dark", 8);
-        // Snippet — remaining space after fixed columns
-        // Cols: 2 + 12 + 2 + glyph(2) + 2 + 5 + 3 + 4 + 2 + 6 + 3 + 8 + 2 = ~51 → snippet gets ~25 chars
-        const snippet = this.compactSummary(p.summary, p.label, 23);
-        const snippetStr = `"${snippet}"`;
-        const inner = `  ${idShort}  ${glyph}   ${time}  ${msgs}  ${toks}  ${status} ${snippetStr}`;
-        return row(inner);
+            status = "░ ";
+        const snippet = this.cleanSummary(p.summary, p.label, 38);
+        return row(`  ${status} ${rpad(idShort, 11)}  ${laneGlyph(p.lane)} ${fmtHHMM(d)}  ${lpad(String(p.messageCount), 2)}m  ${lpad(fmtTok(p.tokens), 5)}t  ${snippet}`);
     }
-    /** Render an inline summary line under a page row. Returns null if no summary. */
-    renderSummaryLine(p) {
-        if (!p.summary)
-            return null;
-        // Strip boilerplate prefixes
-        let s = p.summary;
-        s = s.replace(/^\[Summary of \d+ messages:[^\]]*\]?\s*/i, "");
-        s = s.replace(/^\[Pending summary:[^\]]*\]?\s*/i, "");
-        s = s.replace(/^\.{3}\s*/, "");
-        s = s.trim();
-        if (!s || s.length < 3)
-            return null;
-        // Prefix: `   └ ` = 5 chars. Max summary = IW - 5 = 73 chars.
-        const maxLen = IW - 5;
-        const clipped = s.length > maxLen ? s.slice(0, maxLen - 1) + "…" : s;
-        return row(`   └ ${clipped}`);
-    }
-    // --- Section 5: Size histogram ---
-    renderHistogram(pages, lines) {
-        if (pages.length === 0) {
-            lines.push(row("  (no pages)"));
-            return;
-        }
-        const maxTokens = Math.max(...pages.map(p => p.tokens));
-        const buckets = [
-            { label: "<100", test: (t) => t < 100, desc: "tiny — sys/status" },
-            { label: "<1000", test: (t) => t >= 100 && t < 1000, desc: "small — summaries" },
-            { label: "<5000", test: (t) => t >= 1000 && t < 5000, desc: "medium — working" },
-            { label: String(maxTokens), test: (t) => t >= 5000, desc: "MAX — dense output" },
-        ];
-        const counts = buckets.map(b => ({
-            ...b,
-            count: pages.filter(p => b.test(p.tokens)).length,
-        }));
-        const maxCount = Math.max(1, ...counts.map(c => c.count));
-        for (const c of counts) {
-            const lbl = lpad(c.label, 6);
-            const barStr = bar(c.count / maxCount, 20);
-            const cntStr = rpad(`${c.count} pages`, 10);
-            const desc = `(${c.desc})`;
-            lines.push(row(`  ${lbl}  ${barStr}  ${cntStr} ${desc}`));
-        }
-    }
-    // --- Section 6: Load budget ---
-    renderLoadBudget(stats, lines) {
+    // --- Budget line ---
+    renderBudgetLine(stats, lines) {
         const budget = stats.pageSlotBudget;
         const used = stats.pageSlotUsed;
         const usedFrac = budget > 0 ? used / budget : 0;
-        const freeFrac = 1 - usedFrac;
         const usedBar = bar(usedFrac, 20);
-        const freeBar = bar(freeFrac, 20);
-        const usedStr = `${fmtTok(used)}/${fmtTok(budget)} used`;
-        const freeStr = `budget free`;
-        lines.push(row(`  slots: ${usedBar}  ${rpad(usedStr, 16)} ${freeBar}  ${freeStr}`));
+        lines.push(row(` slots: ${usedBar}  ${fmtTok(used)}/${fmtTok(budget)} used  (${stats.pagesLoaded} loaded)`));
     }
     // --- Single page drill-down ---
-    renderSinglePage(page, totalPages, loadedCount) {
+    renderSinglePage(page, stats) {
         const lines = [];
-        lines.push(row(`  page: ${page.id}`));
-        lines.push(row(`  tokens: ${fmtTok(page.tokens)}   messages: ${page.messageCount}   lane: ${page.lane}`));
-        const status = page.loaded ? "loaded *" : page.pinned ? "pinned" : "unloaded";
-        lines.push(row(`  status: ${status}   importance: ${page.maxImportance.toFixed(2)}`));
-        lines.push(row(`  created: ${page.createdAt}`));
-        const summary = this.compactSummary(page.summary, page.label, 68);
-        lines.push(row(`  "${summary}"`));
+        const d = new Date(page.createdAt);
+        // Identity
+        lines.push(row(`  id:      ${page.id}`));
+        lines.push(row(`  lane:    ${laneGlyph(page.lane)} ${page.lane}    msgs: ${page.messageCount}    tokens: ${fmtTok(page.tokens)}`));
+        lines.push(row(`  created: ${page.createdAt}  (${fmtHHMM(d)})`));
+        // Status
+        const status = page.loaded ? "loaded" : page.pinned ? "pinned" : "unloaded";
+        lines.push(row(`  status:  ${status}    importance: ${page.maxImportance.toFixed(2)}`));
+        // Full summary (word-wrapped)
+        lines.push(row(``));
+        const summary = this.cleanSummary(page.summary, page.label, 999);
+        const maxWidth = IW - 4; // 2 indent + 2 border margin
+        const wrapped = this.wordWrap(summary, maxWidth);
+        for (const line of wrapped.slice(0, 8)) {
+            lines.push(row(`  ${line}`));
+        }
+        if (wrapped.length > 8) {
+            lines.push(row(`  … (${wrapped.length - 8} more lines)`));
+        }
+        // Action
+        lines.push(row(``));
         if (page.loaded) {
-            lines.push(row(`  unload: unref('${page.id}')`));
+            lines.push(row(`  action: unref('${page.id}') to release`));
         }
         else {
-            lines.push(row(`  load: ref('${page.id}')`));
+            lines.push(row(`  action: ref('${page.id}') to load`));
         }
+        lines.push(row(`  back:   view('context')`));
         return lines;
     }
     // --- Time-bucket drill-down ---
@@ -418,9 +326,11 @@ export class ContextMapSource {
         if (filter === "full") {
             for (const bucket of bucketOrder) {
                 const items = buckets.get(bucket);
-                lines.push(row(` ${bucket} (${items.length}):`));
+                const range = timeRange(items);
+                lines.push(row(` ${bucket} (${items.length}) ${range}`));
                 for (const p of items) {
-                    lines.push(this.renderPageRow(p));
+                    lines.push(this.renderCompactRow(p));
+                    // In full mode, also show summary line
                     const sumLine = this.renderSummaryLine(p);
                     if (sumLine)
                         lines.push(sumLine);
@@ -431,20 +341,30 @@ export class ContextMapSource {
             for (const bucket of bucketOrder) {
                 const items = buckets.get(bucket);
                 if (bucket === filter) {
-                    lines.push(row(` ${bucket} (${items.length}):`));
+                    const range = timeRange(items);
+                    lines.push(row(` ${bucket} (${items.length}) ${range}`));
                     for (const p of items) {
-                        lines.push(this.renderPageRow(p));
+                        lines.push(this.renderCompactRow(p));
                         const sumLine = this.renderSummaryLine(p);
                         if (sumLine)
                             lines.push(sumLine);
                     }
                 }
                 else {
-                    lines.push(row(` ${bucket} (${items.length})`));
+                    lines.push(row(` ${bucket} (${items.length}) — collapsed`));
                 }
             }
         }
         return lines;
+    }
+    /** Render an inline summary line under a page row (for drill-down). */
+    renderSummaryLine(p) {
+        if (!p.summary)
+            return null;
+        const s = this.cleanSummary(p.summary, p.label, IW - 7);
+        if (!s || s.length < 3)
+            return null;
+        return row(`     └ ${s}`);
     }
     // --- Basic Memory (fallback) ---
     renderBasic(stats) {
@@ -456,17 +376,38 @@ export class ContextMapSource {
         return lines.join("\n");
     }
     // --- Helpers ---
-    compactSummary(summary, label, maxLen = 40) {
+    /** Clean summary text — strip boilerplate prefixes, trim, truncate. */
+    cleanSummary(summary, label, maxLen) {
         let s = summary;
         s = s.replace(/^\[Summary of \d+ messages:[^\]]*\]?\s*/i, "");
         s = s.replace(/^\[Pending summary:[^\]]*\]?\s*/i, "");
         s = s.replace(/^\.{3}\s*/, "");
+        s = s.replace(/^STATUS:\s*/i, "");
+        s = s.trim();
         if (!s || s.length < 3) {
             s = label.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*-?\s*/g, "").trim();
             if (!s)
                 s = label;
         }
         return s.length > maxLen ? s.slice(0, maxLen - 1) + "…" : s;
+    }
+    /** Word-wrap text to fit within maxWidth characters. */
+    wordWrap(text, maxWidth) {
+        const words = text.split(/\s+/);
+        const lines = [];
+        let current = "";
+        for (const word of words) {
+            if (current.length + word.length + 1 > maxWidth && current.length > 0) {
+                lines.push(current);
+                current = word;
+            }
+            else {
+                current = current ? current + " " + word : word;
+            }
+        }
+        if (current)
+            lines.push(current);
+        return lines;
     }
     isTimeBucketFilter(filter) {
         return filter === "today" || filter === "yest" || filter === "yesterday" ||

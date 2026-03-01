@@ -53,6 +53,7 @@ import { globToolDefinition, executeGlob } from "./tools/glob.js";
 import { grepToolDefinition, executeGrep } from "./tools/grep.js";
 import { writeSelfToolDefinition, executeWriteSelf } from "./tools/write-self.js";
 import { writeSourceToolDefinition, handleWriteSource } from "./plastic/write-source.js";
+import { editSourceToolDefinition, handleEditSource } from "./plastic/edit-source.js";
 import { exportChanges, exportChangesToolDefinition, handleExportChanges } from "./plastic/export.js";
 import { injectSourcePages } from "./plastic/init.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
@@ -220,38 +221,51 @@ function detectToolRoles(tools) {
         sendToolMessageField: "message",
     };
 }
-function loadMcpServers(mcpConfigPaths) {
-    if (mcpConfigPaths.length > 0) {
-        const merged = {};
-        for (const p of mcpConfigPaths) {
+function loadMcpServers(mcpConfigPaths, autodiscover) {
+    const merged = {};
+    for (const p of mcpConfigPaths) {
+        try {
+            let raw;
+            if (p.startsWith("{")) {
+                raw = p; // inline JSON
+            }
+            else if (existsSync(p)) {
+                raw = readFileSync(p, "utf-8");
+            }
+            else {
+                Logger.warn(`MCP config not found: ${p}`);
+                continue;
+            }
+            const parsed = JSON.parse(raw);
+            const servers = parsed.mcpServers || parsed;
+            if (typeof servers === "object") {
+                Object.assign(merged, servers);
+            }
+        }
+        catch (e) {
+            const ge = groError("config_error", `Failed to parse MCP config ${p}: ${asError(e).message}`, { cause: e });
+            Logger.warn(ge.message, errorLogFields(ge));
+        }
+    }
+    // --autodiscover-mcp: also check ~/.gro/mcp.json
+    if (autodiscover) {
+        const autoPath = join(homedir(), ".gro", "mcp.json");
+        if (existsSync(autoPath) && !mcpConfigPaths.includes(autoPath)) {
             try {
-                let raw;
-                if (p.startsWith("{")) {
-                    raw = p; // inline JSON
-                }
-                else if (existsSync(p)) {
-                    raw = readFileSync(p, "utf-8");
-                }
-                else {
-                    Logger.warn(`MCP config not found: ${p}`);
-                    continue;
-                }
+                const raw = readFileSync(autoPath, "utf-8");
                 const parsed = JSON.parse(raw);
                 const servers = parsed.mcpServers || parsed;
-                if (typeof servers === "object") {
+                if (typeof servers === "object" && Object.keys(servers).length > 0) {
+                    Logger.info(`Auto-discovered MCP config: ${autoPath} (${Object.keys(servers).length} server(s))`);
                     Object.assign(merged, servers);
                 }
             }
             catch (e) {
-                const ge = groError("config_error", `Failed to parse MCP config ${p}: ${asError(e).message}`, { cause: e });
-                Logger.warn(ge.message, errorLogFields(ge));
+                Logger.warn(`Failed to parse auto-discovered MCP config ${autoPath}: ${asError(e).message}`);
             }
         }
-        return merged;
     }
-    // No auto-discovery — use --mcp-config to explicitly provide MCP servers.
-    // gro should not read Claude Code config files (~/.claude/settings.json).
-    return {};
+    return merged;
 }
 // Flags that claude supports but we don't yet — accept gracefully
 const UNSUPPORTED_VALUE_FLAGS = new Set([
@@ -356,6 +370,9 @@ function loadConfig() {
         else if (arg === "--mcp-config") {
             mcpConfigPaths.push(args[++i]);
         }
+        else if (arg === "--autodiscover-mcp") {
+            flags.autodiscoverMcp = "true";
+        }
         else if (arg === "-i" || arg === "--interactive") {
             flags.interactive = "true";
         }
@@ -429,7 +446,8 @@ function loadConfig() {
     const provider = inferProvider(flags.provider || process.env.AGENT_PROVIDER, flags.model || process.env.AGENT_MODEL);
     const apiKey = resolveApiKey(provider);
     const noMcp = flags.noMcp === "true";
-    const mcpServers = noMcp ? {} : loadMcpServers(mcpConfigPaths);
+    const autodiscoverMcp = flags.autodiscoverMcp === "true";
+    const mcpServers = noMcp ? {} : loadMcpServers(mcpConfigPaths, autodiscoverMcp);
     // --- Layered system prompt assembly ---
     // Layer 1: Runtime boot (gro internal, always loaded)
     const runtime = loadRuntimeBoot();
@@ -568,6 +586,7 @@ options:
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string
+  --autodiscover-mcp     also load ~/.gro/mcp.json if it exists
   --max-cost             alias for --max-budget-usd
   --no-cache             disable Anthropic prompt caching
   --no-mcp               disable MCP server connections
@@ -1053,8 +1072,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turn
         : undefined;
     if (selfSource)
         tools.push(writeSelfToolDefinition);
-    // PLASTIC mode: register write_source and export_changes tools
+    // PLASTIC mode: register edit_source, write_source and export_changes tools
     if (process.env.GRO_PLASTIC) {
+        tools.push(editSourceToolDefinition);
         tools.push(writeSourceToolDefinition);
         tools.push(exportChangesToolDefinition);
     }
@@ -2210,6 +2230,9 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turn
                 }
                 else if (fnName === "write_self" && selfSource) {
                     result = executeWriteSelf(fnArgs, selfSource);
+                }
+                else if (fnName === "edit_source" && process.env.GRO_PLASTIC) {
+                    result = handleEditSource(fnArgs);
                 }
                 else if (fnName === "write_source" && process.env.GRO_PLASTIC) {
                     result = handleWriteSource(fnArgs);

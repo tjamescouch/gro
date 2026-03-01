@@ -36,19 +36,24 @@ class YieldBudget {
  * Anthropic: { name, description, input_schema }
  */
 function convertToolDefs(tools) {
+    const defaultSchema = { type: "object", properties: {} };
     return tools.map(t => {
         if (t.type === "function" && t.function) {
+            const params = t.function.parameters;
             return {
                 type: "custom",
                 name: t.function.name,
                 description: t.function.description || "",
-                input_schema: t.function.parameters || { type: "object", properties: {} },
+                input_schema: (params && params.type) ? params : defaultSchema,
             };
         }
-        // Already in Anthropic format — ensure type is set
-        if (!t.type)
-            return { type: "custom", ...t };
-        return t;
+        // Already in Anthropic format — ensure type and input_schema are set
+        const result = { ...t };
+        if (!result.type)
+            result.type = "custom";
+        if (!result.input_schema || !result.input_schema.type)
+            result.input_schema = defaultSchema;
+        return result;
     });
 }
 function convertMessages(messages) {

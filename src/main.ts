@@ -323,36 +323,50 @@ function detectToolRoles(tools: Array<{ function: { name: string } }>): McpToolR
 }
 
 
-function loadMcpServers(mcpConfigPaths: string[]): Record<string, McpServerConfig> {
-  if (mcpConfigPaths.length > 0) {
-    const merged: Record<string, McpServerConfig> = {};
-    for (const p of mcpConfigPaths) {
+function loadMcpServers(mcpConfigPaths: string[], autodiscover: boolean): Record<string, McpServerConfig> {
+  const merged: Record<string, McpServerConfig> = {};
+
+  for (const p of mcpConfigPaths) {
+    try {
+      let raw: string;
+      if (p.startsWith("{")) {
+        raw = p; // inline JSON
+      } else if (existsSync(p)) {
+        raw = readFileSync(p, "utf-8");
+      } else {
+        Logger.warn(`MCP config not found: ${p}`);
+        continue;
+      }
+      const parsed = JSON.parse(raw);
+      const servers = parsed.mcpServers || parsed;
+      if (typeof servers === "object") {
+        Object.assign(merged, servers);
+      }
+    } catch (e: unknown) {
+      const ge = groError("config_error", `Failed to parse MCP config ${p}: ${asError(e).message}`, { cause: e });
+      Logger.warn(ge.message, errorLogFields(ge));
+    }
+  }
+
+  // --autodiscover-mcp: also check ~/.gro/mcp.json
+  if (autodiscover) {
+    const autoPath = join(homedir(), ".gro", "mcp.json");
+    if (existsSync(autoPath) && !mcpConfigPaths.includes(autoPath)) {
       try {
-        let raw: string;
-        if (p.startsWith("{")) {
-          raw = p; // inline JSON
-        } else if (existsSync(p)) {
-          raw = readFileSync(p, "utf-8");
-        } else {
-          Logger.warn(`MCP config not found: ${p}`);
-          continue;
-        }
+        const raw = readFileSync(autoPath, "utf-8");
         const parsed = JSON.parse(raw);
         const servers = parsed.mcpServers || parsed;
-        if (typeof servers === "object") {
+        if (typeof servers === "object" && Object.keys(servers).length > 0) {
+          Logger.info(`Auto-discovered MCP config: ${autoPath} (${Object.keys(servers).length} server(s))`);
           Object.assign(merged, servers);
         }
       } catch (e: unknown) {
-        const ge = groError("config_error", `Failed to parse MCP config ${p}: ${asError(e).message}`, { cause: e });
-        Logger.warn(ge.message, errorLogFields(ge));
+        Logger.warn(`Failed to parse auto-discovered MCP config ${autoPath}: ${asError(e).message}`);
       }
     }
-    return merged;
   }
 
-  // No auto-discovery — use --mcp-config to explicitly provide MCP servers.
-  // gro should not read Claude Code config files (~/.claude/settings.json).
-  return {};
+  return merged;
 }
 
 // Flags that claude supports but we don't yet — accept gracefully
@@ -410,6 +424,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--batch-summarization") { flags.batchSummarization = "true"; }
     else if (arg === "--no-cache") { flags.noCache = "true"; }
     else if (arg === "--mcp-config") { mcpConfigPaths.push(args[++i]); }
+    else if (arg === "--autodiscover-mcp") { flags.autodiscoverMcp = "true"; }
     else if (arg === "-i" || arg === "--interactive") { flags.interactive = "true"; }
     else if (arg === "-p" || arg === "--print") { flags.print = "true"; }
     else if (arg === "-c" || arg === "--continue") { flags.continue = "true"; }
@@ -452,7 +467,8 @@ function loadConfig(): GroConfig {
   const provider = inferProvider(flags.provider || process.env.AGENT_PROVIDER, flags.model || process.env.AGENT_MODEL);
   const apiKey = resolveApiKey(provider);
   const noMcp = flags.noMcp === "true";
-  const mcpServers = noMcp ? {} : loadMcpServers(mcpConfigPaths);
+  const autodiscoverMcp = flags.autodiscoverMcp === "true";
+  const mcpServers = noMcp ? {} : loadMcpServers(mcpConfigPaths, autodiscoverMcp);
 
   // --- Layered system prompt assembly ---
   // Layer 1: Runtime boot (gro internal, always loaded)
@@ -596,6 +612,7 @@ options:
   --summarizer-model     model for context summarization (default: same as --model)
   --output-format        text | json | stream-json (default: text)
   --mcp-config           load MCP servers from JSON file or string
+  --autodiscover-mcp     also load ~/.gro/mcp.json if it exists
   --max-cost             alias for --max-budget-usd
   --no-cache             disable Anthropic prompt caching
   --no-mcp               disable MCP server connections

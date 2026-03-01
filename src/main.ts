@@ -9,7 +9,7 @@
  * Supersets the claude CLI flags for drop-in compatibility.
  */
 
-import { readFileSync, existsSync, appendFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -2704,6 +2704,27 @@ async function interactive(
     } catch (e: unknown) {
       const ge = isGroError(e) ? e : groError("provider_error", asError(e).message, { cause: e });
       Logger.error(C.red(`error: ${ge.message}`), errorLogFields(ge));
+
+      // PLASTIC mode: if the error originates from overlay code, trigger rollback.
+      // Overlay errors (ReferenceError, SyntaxError, TypeError in overlay files)
+      // indicate the agent broke its own code — unrecoverable without rollback.
+      if (process.env.GRO_PLASTIC) {
+        const raw = asError(e);
+        const stack = raw.stack ?? "";
+        const isOverlayError = stack.includes("/plastic/overlay/") &&
+          (raw instanceof ReferenceError || raw instanceof SyntaxError || raw instanceof TypeError ||
+           (raw.constructor?.name === "ReferenceError") || (raw.constructor?.name === "SyntaxError") || (raw.constructor?.name === "TypeError"));
+        if (isOverlayError) {
+          Logger.error(C.red("[PLASTIC] Fatal overlay error — triggering rollback (exit 96)"));
+          try {
+            const { patchPath, fileCount } = exportChanges();
+            if (fileCount > 0) Logger.info(`[PLASTIC] Exported ${fileCount} diff(s) to ${patchPath} before rollback`);
+          } catch { /* best effort */ }
+          const overlayDir = join(homedir(), ".gro", "plastic", "overlay");
+          try { rmSync(overlayDir, { recursive: true, force: true }); } catch { /* best effort */ }
+          process.exit(96);
+        }
+      }
     }
     if (cfg.sessionPersistence) {
       try {

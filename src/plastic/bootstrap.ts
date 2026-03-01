@@ -83,10 +83,20 @@ export async function boot(): Promise<void> {
     const entry = `${new Date().toISOString()}\n${errObj.message}\n${errObj.stack ?? ""}\n---\n`;
     try { writeFileSync(CRASH_LOG, entry, { flag: "a" }); } catch {}
     console.error(`[PLASTIC] Overlay crashed: ${errObj.message}`);
-    console.error("[PLASTIC] Wiping corrupted overlay — will re-init on next boot.");
+
+    // Export changes before wiping so they're not lost
+    try {
+      const { exportChanges } = await import("./export.js");
+      const { patchPath, fileCount } = exportChanges();
+      if (fileCount > 0) {
+        console.error(`[PLASTIC] Exported ${fileCount} file diff(s) to ${patchPath} before rollback`);
+      }
+    } catch { /* best effort */ }
+
+    console.error("[PLASTIC] Wiping corrupted overlay — rolling back to stock.");
     try { rmSync(OVERLAY_DIR, { recursive: true, force: true }); } catch {}
-    console.error("[PLASTIC] Falling back to stock code.");
-    await runStock();
+    // Exit 96 = rollback signal. Runner should re-init overlay from stock and restart.
+    process.exit(96);
   }
 }
 

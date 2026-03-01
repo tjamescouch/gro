@@ -113,18 +113,20 @@ class Supervisor {
         this.lastSnapshot = null;
       }
 
-      // Crash loop detection
-      const now = Date.now();
-      this.crashTimestamps.push(now);
-      this.crashTimestamps = this.crashTimestamps.filter(
-        t => now - t < this.RAPID_CRASH_WINDOW_MS,
-      );
-
-      if (this.crashTimestamps.length >= this.RAPID_CRASH_THRESHOLD) {
-        this.log(
-          `rapid crash loop detected (${this.crashTimestamps.length} crashes in ${this.RAPID_CRASH_WINDOW_MS}ms), giving up`,
+      // Crash loop detection — skip for intentional reloads (exit 75)
+      if (code !== EXIT_RELOAD) {
+        const now = Date.now();
+        this.crashTimestamps.push(now);
+        this.crashTimestamps = this.crashTimestamps.filter(
+          t => now - t < this.RAPID_CRASH_WINDOW_MS,
         );
-        process.exit(1);
+
+        if (this.crashTimestamps.length >= this.RAPID_CRASH_THRESHOLD) {
+          this.log(
+            `rapid crash loop detected (${this.crashTimestamps.length} crashes in ${this.RAPID_CRASH_WINDOW_MS}ms), giving up`,
+          );
+          process.exit(1);
+        }
       }
 
       this.restartCount++;

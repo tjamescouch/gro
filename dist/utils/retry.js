@@ -27,15 +27,16 @@ export function isRetryable(status) {
  * attempt 2 → base 4s + 0-2s jitter
  */
 export function getMaxRetries() { return maxRetries(); }
+const MAX_RETRY_DELAY_MS = 30_000; // Never wait more than 30s regardless of Retry-After header
 export function retryDelay(attempt, retryAfterHeader) {
     if (retryAfterHeader) {
         const seconds = parseFloat(retryAfterHeader);
         if (!isNaN(seconds) && seconds > 0)
-            return seconds * 1000;
+            return Math.min(seconds * 1000, MAX_RETRY_DELAY_MS);
     }
     const base = retryBaseMs() * Math.pow(2, attempt);
     const jitter = Math.random() * base * 0.5;
-    return base + jitter;
+    return Math.min(base + jitter, MAX_RETRY_DELAY_MS);
 }
 export function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));

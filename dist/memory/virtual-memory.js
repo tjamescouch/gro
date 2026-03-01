@@ -913,30 +913,23 @@ export class VirtualMemory extends AgentMemory {
                 slotTokens += page.tokens;
         }
         while (slotTokens > this.cfg.pageSlotTokens && this.loadOrder.length > 0) {
-            // Find next candidate for eviction: skip pinned, prefer low-frequency, fall back to LRU
+            // Score-based eviction: lower score = evict first.
+            // Score = frequency * 10 + recency_position
+            // This means frequently-referenced pages survive longer, with
+            // recency as a tiebreaker among same-frequency pages.
             let evictIdx = -1;
-            const FREQUENCY_THRESHOLD = 3; // Pages with >= N refs use frequency eviction
-            // Pass 1: Find unpinned page with lowest frequency (if any have been ref'd)
-            let lowestFreq = Infinity;
+            let lowestScore = Infinity;
             for (let i = 0; i < this.loadOrder.length; i++) {
                 const id = this.loadOrder[i];
                 if (this.pinnedPageIds.has(id))
                     continue; // Skip pinned
                 const freq = this.pageRefCount.get(id) ?? 0;
-                // Only consider frequency eviction if page has >= FREQUENCY_THRESHOLD refs
-                if (freq >= FREQUENCY_THRESHOLD && freq < lowestFreq) {
-                    lowestFreq = freq;
+                // recency: loadOrder[0] is oldest → position 0 = low recency score
+                const recencyScore = i; // higher index = more recent = higher score
+                const score = freq * 10 + recencyScore;
+                if (score < lowestScore) {
+                    lowestScore = score;
                     evictIdx = i;
-                }
-            }
-            // Pass 2: If no frequency candidate, fall back to LRU (oldest unpinned)
-            if (evictIdx === -1) {
-                for (let i = 0; i < this.loadOrder.length; i++) {
-                    const id = this.loadOrder[i];
-                    if (!this.pinnedPageIds.has(id)) {
-                        evictIdx = i;
-                        break;
-                    }
                 }
             }
             // No evictable pages found (all pinned?) — bail to prevent infinite loop
@@ -950,7 +943,7 @@ export class VirtualMemory extends AgentMemory {
             const page = this.pages.get(evictId);
             if (page) {
                 slotTokens -= page.tokens;
-                Logger.debug(`[VM evict] Evicted '${evictId}' (freq=${this.pageRefCount.get(evictId) ?? 0}; freed ${page.tokens} tokens)`);
+                Logger.debug(`[VM evict] Evicted '${evictId}' (freq=${this.pageRefCount.get(evictId) ?? 0}, score=${lowestScore}; freed ${page.tokens} tokens)`);
             }
         }
     }

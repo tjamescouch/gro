@@ -192,16 +192,10 @@ export class ContextMapSource {
         lines.push(bottomBorder());
         return lines.join("\n");
     }
-    // --- Aggregate lane tokens ---
+    // --- Aggregate lane tokens (working memory only, pages shown separately) ---
     aggregateLanes(stats, pages) {
         const totals = { assistant: 0, user: 0, system: 0, tool: 0 };
-        for (const p of pages) {
-            const l = p.lane === "mixed" ? "assistant" : p.lane;
-            if (l in totals)
-                totals[l] += p.tokens;
-            else
-                totals["assistant"] += p.tokens;
-        }
+        // Only count working memory lanes — page tokens are shown in the slot budget bar
         for (const lane of stats.lanes) {
             if (lane.role in totals)
                 totals[lane.role] += lane.tokens;
@@ -308,8 +302,18 @@ export class ContextMapSource {
         lines.push(row(`  back:   view('context')`));
         return lines;
     }
+    // --- Normalize filter aliases to canonical bucket names ---
+    normalizeFilter(filter) {
+        if (filter === "yest")
+            return "yesterday";
+        // "3d" → "3d ago"
+        if (/^\d+d$/.test(filter))
+            return filter + " ago";
+        return filter;
+    }
     // --- Time-bucket drill-down ---
     renderDrillDown(pages, filter) {
+        filter = this.normalizeFilter(filter);
         const now = new Date();
         const lines = [];
         const buckets = new Map();
@@ -410,9 +414,9 @@ export class ContextMapSource {
         return lines;
     }
     isTimeBucketFilter(filter) {
-        return filter === "today" || filter === "yest" || filter === "yesterday" ||
-            filter === "older" || filter === "2d ago" || filter === "3d ago" || filter === "this week" ||
-            /^\d+d$/.test(filter) || /^\d+d ago$/.test(filter);
+        const f = this.normalizeFilter(filter);
+        return f === "today" || f === "yesterday" || f === "older" || f === "2d ago" || f === "3d ago" || f === "this week" ||
+            /^\d+d$/.test(f) || /^\d+d ago$/.test(f);
     }
     isPageIdFilter(filter, pages) {
         return pages.some(p => p.id === filter);

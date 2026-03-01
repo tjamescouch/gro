@@ -20,6 +20,10 @@ const LISTEN_TOOLS = new Set([
 const WRITE_TOOLS = new Set([
     "Write", "Edit", "apply_patch", "agentpatch", "write_self",
     "edit_source", "write_source", "export_changes", "NotebookEdit",
+    // Treat context-management actions as "productive" to avoid false read-only drift
+    // when the agent is actively remediating memory pressure.
+    "compact_context",
+    "memory_tune",
 ]);
 export class ViolationTracker {
     constructor(opts) {

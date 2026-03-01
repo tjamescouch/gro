@@ -83,6 +83,11 @@ function fmtTok(n: number): string {
   return String(n);
 }
 
+function fmtPct(x: number): string {
+  if (!Number.isFinite(x)) return "0%";
+  return `${Math.round(x * 100)}%`;
+}
+
 export interface ContextMapConfig {
   /** Character budget for the rendered output (default: 0 = unlimited) */
   maxChars?: number;
@@ -181,6 +186,18 @@ export class ContextMapSource implements SensorySource {
     lines.push(topBorder());
     lines.push(row(` PAGES  ${lpad(String(pages.length), 3)} total  ${lpad(String(stats.pagesLoaded), 2)} loaded  ${fillBar} ${fillPct}%${warn}  ${fmtTok(activeTokens)} active`));
 
+    // Memory health: fast signal for pressure + how usage splits between working memory vs loaded pages.
+    const wmFrac = activeTokens > 0 ? stats.workingMemoryUsed / activeTokens : 0;
+    const slotFrac = activeTokens > 0 ? stats.pageSlotUsed / activeTokens : 0;
+    const health = fillPct >= 90 ? "CRIT" : fillPct >= 75 ? "HIGH" : fillPct >= 60 ? "WARM" : "OK";
+    lines.push(row(` health: ${rpad(health, 4)}  mix: wm ${fmtPct(wmFrac)} / pages ${fmtPct(slotFrac)}`));
+
+    // Compression: approximate how much summarization is buying us.
+    const totalPageTokens = pages.reduce((acc, p) => acc + (p.tokens ?? 0), 0);
+    const compression = totalPageTokens > 0 ? totalPageTokens / Math.max(1, stats.pageSlotUsed) : 0;
+    const compStr = totalPageTokens > 0 ? `${compression.toFixed(1)}x` : "n/a";
+    lines.push(row(` compress: ${rpad(compStr, 5)}  corpus ${fmtTok(totalPageTokens)}t / loaded ${fmtTok(stats.pageSlotUsed)}t`));
+
     // Lane summary — single compact line
     const laneTotals = this.aggregateLanes(stats, pages);
     const laneStr = Object.entries(laneTotals)
@@ -205,10 +222,10 @@ export class ContextMapSource implements SensorySource {
 
     // === SECTION 3: PAGE ROWS (compact, by time bucket) ===
     const maxLines = this.config.maxLines;
-    // Fixed overhead: top(1) + header(1) + lanes(1) + budget section(3) + bottom(1) = 7
+    // Fixed overhead: top(1) + header(1) + health(1) + compress(1) + lanes(1) + budget section(3) + bottom(1) = 9
     // Loaded section: divider(1) + N loaded pages
     const loadedOverhead = loadedPages.length > 0 ? 1 + loadedPages.length : 0;
-    const fixedOverhead = 7 + loadedOverhead;
+    const fixedOverhead = 9 + loadedOverhead;
     const availableForPages = Math.max(4, maxLines - fixedOverhead);
 
     this.renderCompactPageRows(pages, lines, availableForPages);

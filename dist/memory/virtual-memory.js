@@ -721,20 +721,30 @@ export class VirtualMemory extends AgentMemory {
             from: "User",
             content: `Summarize this conversation segment (${label}):${importantNote}\n\n${transcript.slice(0, 12000)}`,
         };
-        try {
-            const out = await this.cfg.driver.chat([sys, usr], { model: this.cfg.summarizerModel });
-            let text = String(out?.text ?? "").trim();
-            // Ensure ref is present
-            if (!text.includes(``)) {
-                text += `\n`;
+        const MAX_RETRIES = 2;
+        let lastErr;
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            try {
+                if (attempt > 0) {
+                    // Exponential backoff: 2s, 4s
+                    await new Promise(r => setTimeout(r, 2000 * attempt));
+                    Logger.info(`[VirtualMemory] summarizeWithRef retry ${attempt}/${MAX_RETRIES - 1} for page ${pageId}`);
+                }
+                const out = await this.cfg.driver.chat([sys, usr], { model: this.cfg.summarizerModel });
+                let text = String(out?.text ?? "").trim();
+                // Ensure ref is present
+                if (!text.includes(``)) {
+                    text += `\n`;
+                }
+                return text;
             }
-            return text;
+            catch (err) {
+                lastErr = err;
+            }
         }
-        catch (err) {
-            const emsg = err instanceof Error ? err.message : String(err);
-            Logger.warn(`[VirtualMemory] summarizeWithRef failed: ${emsg}`);
-            return `[Summary of ${messages.length} messages: ${label}] `;
-        }
+        const emsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+        Logger.warn(`[VirtualMemory] summarizeWithRef failed after ${MAX_RETRIES} attempts: ${emsg}`);
+        return `[Summary of ${messages.length} messages: ${label}] `;
     }
     // --- Context Assembly ---
     messages() {
@@ -894,8 +904,10 @@ export class VirtualMemory extends AgentMemory {
                 continue;
             const page = this.pages.get(id);
             const tokens = this.tokensFor(content);
-            if (slotTokens + tokens > budget)
-                break;
+            if (slotTokens + tokens > budget) {
+                Logger.debug(`[VM buildPageSlot] Skipped page '${id}' (${tokens}t) — would exceed budget (${slotTokens}+${tokens} > ${budget})`);
+                continue; // skip oversized page, try smaller ones
+            }
             msgs.push({
                 role: "system",
                 from: "VirtualMemory",

@@ -1555,6 +1555,20 @@ async function executeTurn(
         result = `Error: ${ge.message}${raw.stack ? '\nStack: ' + raw.stack : ''}`;
       }
 
+      // Truncate oversized tool results to prevent context blowout.
+      // Cap at ~30k chars (~10.7k tokens at 2.8 chars/token).
+      const TOOL_RESULT_MAX_CHARS = 30_000;
+      if (typeof result === "string" && result.length > TOOL_RESULT_MAX_CHARS) {
+        const originalLen = result.length;
+        const headChars = Math.floor(TOOL_RESULT_MAX_CHARS * 0.7);
+        const tailChars = Math.floor(TOOL_RESULT_MAX_CHARS * 0.25);
+        const head = result.slice(0, headChars);
+        const tail = result.slice(result.length - tailChars);
+        const omitted = originalLen - headChars - tailChars;
+        result = head + `\n\n... [truncated ${omitted} chars (${Math.ceil(omitted / 2.8)} est. tokens) — use offset/limit for targeted reads] ...\n\n` + tail;
+        Logger.info(`[truncate] Tool "${fnName}" result truncated: ${originalLen} → ${result.length} chars`);
+      }
+
       // Feed tool result back into memory (protected from compaction until model processes it)
       const toolResultMsg: import("./drivers/types.js").ChatMessage = {
         role: "tool",

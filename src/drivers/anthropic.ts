@@ -146,7 +146,7 @@ function convertMessages(messages: ChatMessage[]): { systemBlocks: SystemBlock[]
           });
         }
         if (orphanedIds.length > 0) {
-          Logger.warn(`Dropping ${orphanedIds.length} orphaned tool_use(s) without tool_results: ${orphanedIds.join(", ")}`);
+          Logger.debug(`Dropping ${orphanedIds.length} orphaned tool_use(s) without tool_results: ${orphanedIds.join(", ")}`);
         }
       }
 
@@ -215,7 +215,7 @@ function convertMessages(messages: ChatMessage[]): { systemBlocks: SystemBlock[]
     // Strip tool_use blocks whose results aren't immediately following
     const orphaned = toolUseBlocks.filter((b: any) => !immediateResultIds.has(b.id));
     if (orphaned.length > 0) {
-      Logger.warn(`Stripping ${orphaned.length} tool_use(s) without immediate tool_result: ${orphaned.map((b: any) => b.id).join(", ")}`);
+      Logger.debug(`Stripping ${orphaned.length} tool_use(s) without immediate tool_result: ${orphaned.map((b: any) => b.id).join(", ")}`);
       const orphanedIds = new Set(orphaned.map((b: any) => b.id));
       msg.content = msg.content.filter((b: any) => b.type !== "tool_use" || !orphanedIds.has(b.id));
 

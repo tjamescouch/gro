@@ -123,7 +123,7 @@ function convertMessages(messages) {
                     });
                 }
                 if (orphanedIds.length > 0) {
-                    Logger.warn(`Dropping ${orphanedIds.length} orphaned tool_use(s) without tool_results: ${orphanedIds.join(", ")}`);
+                    Logger.debug(`Dropping ${orphanedIds.length} orphaned tool_use(s) without tool_results: ${orphanedIds.join(", ")}`);
                 }
             }
             if (content.length > 0) {
@@ -188,7 +188,7 @@ function convertMessages(messages) {
         // Strip tool_use blocks whose results aren't immediately following
         const orphaned = toolUseBlocks.filter((b) => !immediateResultIds.has(b.id));
         if (orphaned.length > 0) {
-            Logger.warn(`Stripping ${orphaned.length} tool_use(s) without immediate tool_result: ${orphaned.map((b) => b.id).join(", ")}`);
+            Logger.debug(`Stripping ${orphaned.length} tool_use(s) without immediate tool_result: ${orphaned.map((b) => b.id).join(", ")}`);
             const orphanedIds = new Set(orphaned.map((b) => b.id));
             msg.content = msg.content.filter((b) => b.type !== "tool_use" || !orphanedIds.has(b.id));
             // If assistant message is now empty, remove it

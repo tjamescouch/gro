@@ -61,34 +61,55 @@ function hashText(text: string): string {
 
 /**
  * Build a query string from recent messages.
- * Uses the last user message; if too short (<20 chars, e.g. "continue", "go"),
- * falls back to the last assistant message for grounding.
+ * Uses the last real user message (skipping system-injected nudges);
+ * supplements with assistant context and recent tool names for grounding.
  */
 function buildQuery(messages: ChatMessage[]): string | null {
+  // Patterns that indicate system-injected "user" messages, not real queries
+  const SYNTHETIC_PREFIXES = [
+    "[SYSTEM]", "[REBOOT COMPLETE]", "[REBOOT", "<<HUMAN_CONVERSATION_START>>"
+  ];
+  function isSynthetic(text: string): boolean {
+    const t = text.trimStart();
+    return SYNTHETIC_PREFIXES.some(p => t.startsWith(p));
+  }
+
   let lastUser = "";
   let lastAssistant = "";
+  const recentToolNames: string[] = [];
 
-  // Walk backwards to find the most recent user and assistant messages
+  // Walk backwards to find the most recent real user and assistant messages,
+  // plus recent tool call names for topical grounding
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     const content = typeof msg.content === "string" ? msg.content : "";
-    if (!lastUser && msg.role === "user" && content.trim()) {
+    if (!lastUser && msg.role === "user" && content.trim() && !isSynthetic(content)) {
       lastUser = content.trim();
     }
     if (!lastAssistant && msg.role === "assistant" && content.trim()) {
       lastAssistant = content.trim();
     }
-    if (lastUser && lastAssistant) break;
+    // Collect tool call function names (strong topical signal)
+    if (msg.role === "assistant" && Array.isArray((msg as any).tool_calls) && recentToolNames.length < 5) {
+      for (const tc of (msg as any).tool_calls) {
+        const name = tc?.function?.name;
+        if (name && recentToolNames.length < 5) recentToolNames.push(name);
+      }
+    }
+    if (lastUser && lastAssistant && recentToolNames.length >= 3) break;
   }
 
   if (!lastUser && !lastAssistant) return null;
 
-  // If user message is short, supplement with assistant context
-  if (lastUser.length < 20 && lastAssistant) {
-    return (lastUser + " " + lastAssistant.slice(0, 300)).trim();
+  // Build composite query: user message + tool context + assistant fallback
+  const toolContext = recentToolNames.length > 0 ? " [tools: " + recentToolNames.join(", ") + "]" : "";
+
+  // If user message is short or absent, supplement with assistant context
+  if ((!lastUser || lastUser.length < 20) && lastAssistant) {
+    return ((lastUser || "") + " " + lastAssistant.slice(0, 300) + toolContext).trim();
   }
 
-  return lastUser.slice(0, 500);
+  return (lastUser.slice(0, 500) + toolContext).trim();
 }
 
 // ---------------------------------------------------------------------------

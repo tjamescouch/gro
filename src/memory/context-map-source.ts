@@ -452,6 +452,9 @@ export class ContextMapSource implements SensorySource {
     s = s.replace(/^\[Summary of \d+ messages:[^\]]*\]?\s*/i, "");
     s = s.replace(/^\[Pending summary:[^\]]*\]?\s*/i, "");
     s = s.replace(/^\.{3}\s*/, "");
+    // Strip code fences — summarizer often wraps output in ```...```
+    s = s.replace(/^```\w*\s*/gm, "");
+    s = s.replace(/```\s*$/gm, "");
     s = s.replace(/^STATUS:\s*/i, "");
     s = s.trim();
     if (!s || s.length < 3) {

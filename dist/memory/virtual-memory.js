@@ -1704,13 +1704,24 @@ export class VirtualMemory extends AgentMemory {
             from: "User",
             content: `Summarize this conversation segment (${label}):\n\n${content.slice(0, 12000)}`,
         };
-        try {
-            const out = await this.cfg.driver.chat([sys, usr], { model: this.cfg.summarizerModel });
-            return String(out?.text ?? "").trim();
+        const MAX_RETRIES = 2;
+        let lastErr;
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            try {
+                if (attempt > 0) {
+                    await new Promise(r => setTimeout(r, 2000 * attempt));
+                    Logger.info(`[VirtualMemory] summarizeText retry ${attempt}/${MAX_RETRIES - 1} for ${label}`);
+                }
+                const out = await this.cfg.driver.chat([sys, usr], { model: this.cfg.summarizerModel });
+                return String(out?.text ?? "").trim();
+            }
+            catch (err) {
+                lastErr = err;
+            }
         }
-        catch {
-            return `[Summary of page: ${label}]`;
-        }
+        const emsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+        Logger.warn(`[VirtualMemory] summarizeText failed after ${MAX_RETRIES} attempts for ${label}: ${emsg}`);
+        return `[Summary of page: ${label}]`;
     }
     getStats() {
         // System prompt tokens (first message if system role)

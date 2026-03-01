@@ -339,7 +339,7 @@ These tools are always available (no flags required):
 --append-system-prompt          Append to system prompt
 --append-system-prompt-file     Append system prompt from file
 --context-tokens                Working memory budget in tokens (default: 8192)
---max-turns                     Max tool rounds per turn (default: 100)
+--max-turns                     Max tool rounds per turn (default: 100 gro is designed for sustained autonomous work. Use --max-turns 10 for tighter human-in-the-loop control.)
 --summarizer-model              Model for context summarization
 --gro-memory                    virtual | simple | fragmentation | hnsw
 --mcp-config                    MCP servers config (JSON file or inline string)

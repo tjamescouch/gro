@@ -84,6 +84,18 @@ export class FamiliarityTracker {
     get size() {
         return this.scores.size;
     }
+    /** Capture state for warm state transfer. */
+    snapshot() {
+        return {
+            scores: Object.fromEntries(this.scores),
+            labels: Object.fromEntries(this.labels),
+        };
+    }
+    /** Restore state from a warm state snapshot. */
+    restore(snap) {
+        this.scores = new Map(Object.entries(snap.scores));
+        this.labels = new Map(Object.entries(snap.labels));
+    }
 }
 /** Extract a short display label from a resource identifier. */
 function makeLabel(resourceId) {

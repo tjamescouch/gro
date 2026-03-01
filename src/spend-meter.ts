@@ -252,6 +252,58 @@ export class SpendMeter {
   }
 
   get tokens() { return { in: this.totalIn, out: this.totalOut }; }
+
+  /** Capture all counters for warm state transfer. */
+  snapshot(): SpendSnapshot {
+    return {
+      startMs: this.startMs,
+      totalIn: this.totalIn,
+      totalOut: this.totalOut,
+      totalCacheWrite: this.totalCacheWrite,
+      totalCacheRead: this.totalCacheRead,
+      model: this.model,
+      turnStartMs: this._turnStartMs,
+      lastTurnMs: this._lastTurnMs,
+      longestTurnMs: this._longestTurnMs,
+      totalTurnMs: this._totalTurnMs,
+      totalTurns: this._totalTurns,
+      turnToolCalls: this._turnToolCalls,
+      maxHorizon: this._maxHorizon,
+    };
+  }
+
+  /** Restore counters from a warm state snapshot. */
+  restore(snap: SpendSnapshot): void {
+    this.startMs = snap.startMs;
+    this.totalIn = snap.totalIn;
+    this.totalOut = snap.totalOut;
+    this.totalCacheWrite = snap.totalCacheWrite;
+    this.totalCacheRead = snap.totalCacheRead;
+    this.model = snap.model;
+    this._turnStartMs = snap.turnStartMs;
+    this._lastTurnMs = snap.lastTurnMs;
+    this._longestTurnMs = snap.longestTurnMs;
+    this._totalTurnMs = snap.totalTurnMs;
+    this._totalTurns = snap.totalTurns;
+    this._turnToolCalls = snap.turnToolCalls;
+    this._maxHorizon = snap.maxHorizon;
+  }
+}
+
+export interface SpendSnapshot {
+  startMs: number | null;
+  totalIn: number;
+  totalOut: number;
+  totalCacheWrite: number;
+  totalCacheRead: number;
+  model: string;
+  turnStartMs: number;
+  lastTurnMs: number;
+  longestTurnMs: number;
+  totalTurnMs: number;
+  totalTurns: number;
+  turnToolCalls: number;
+  maxHorizon: number;
 }
 
 function fmtK(n: number): string {

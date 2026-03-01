@@ -29,6 +29,9 @@ import { newSessionId, findLatestSession, loadSession, ensureGroDir, saveSensory
 // Register all memory types in the registry (side-effect import)
 import "./memory/register-memory-types.js";
 import { groError, asError, isGroError, errorLogFields } from "./errors.js";
+import { withConnectionRecovery } from "./utils/connection-recovery.js";
+import { WARM_STATE_VERSION } from "./warm-state.js";
+import type { WarmState, WorkerMessage, SupervisorMessage } from "./warm-state.js";
 import type { McpServerConfig } from "./mcp/index.js";
 import type { ChatDriver, ChatMessage, ChatOutput, TokenUsage } from "./drivers/types.js";
 import type { AgentMemory, VirtualMemoryStats } from "./memory/agent-memory.js";
@@ -96,6 +99,9 @@ let _lastChatSendTarget: string | null = null;
 /** Awareness trackers — module-level so they persist across turns. */
 const familiarityTracker = new FamiliarityTracker();
 const dejaVuTracker = new DejaVuTracker();
+
+/** Pending warm state from supervisor — set in main(), consumed in interactive()/singleShot(). */
+let _pendingWarmState: WarmState | null = null;
 
 /** Auto-save interval: save session every N tool rounds in persistent mode */
 const AUTO_SAVE_INTERVAL = 10;
@@ -243,6 +249,7 @@ interface GroConfig {
   print: boolean;
   maxToolRounds: number;
   persistent: boolean;
+  supervised: boolean;
   persistentPolicy: "listen-only" | "work-first";
   maxIdleNudges: number;
   bash: boolean;
@@ -412,6 +419,7 @@ function loadConfig(): GroConfig {
     else if (arg === "--max-tool-rounds" || arg === "--max-turns") { flags.maxToolRounds = args[++i]; }
     else if (arg === "--bash") { flags.bash = "true"; }
     else if (arg === "--persistent" || arg === "--keep-alive") { flags.persistent = "true"; }
+    else if (arg === "--supervised") { flags.supervised = "true"; }
     else if (arg === "--max-idle-nudges") { flags.maxIdleNudges = args[++i]; }
     else if (arg === "--lfs") { flags.lfs = args[++i]; }
     else if (arg === "--retry-base-ms") { process.env.GRO_RETRY_BASE_MS = args[++i]; }
@@ -541,6 +549,7 @@ function loadConfig(): GroConfig {
     print: printMode,
     maxToolRounds: parseInt(flags.maxToolRounds || "100"),
     persistent: flags.persistent === "true",
+    supervised: flags.supervised === "true" || typeof process.send === "function",
     persistentPolicy: (flags.persistentPolicy as "listen-only" | "work-first") || "listen-only",
     maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
     bash: flags.bash === "true" || interactiveMode,
@@ -968,6 +977,84 @@ function restoreSensorySnapshot(mem: AgentMemory, sessionId: string): void {
     });
   }
   Logger.debug(`Restored sensory state for session ${sessionId}`);
+}
+
+/** Capture all runtime state into a WarmState snapshot for IPC transfer. */
+function captureWarmState(
+  mem: AgentMemory,
+  sid: string,
+  cfg: GroConfig,
+  violations?: ViolationTracker,
+): WarmState {
+  const inner = unwrapMemory(mem);
+  const sensory = mem instanceof SensoryMemory ? mem as SensoryMemory : null;
+
+  // Sensory state
+  let sensoryState: WarmState["sensoryState"] = null;
+  if (sensory) {
+    const selfSrc = sensory.getChannelSource("self");
+    const selfContent = selfSrc && "getContent" in selfSrc
+      ? (selfSrc as SelfSource).getContent()
+      : "";
+    sensoryState = {
+      selfContent,
+      channelDimensions: sensory.getChannelDimensions(),
+      slotAssignments: [sensory.getSlot(0), sensory.getSlot(1), sensory.getSlot(2)],
+    };
+  }
+
+  // VirtualMemory page state
+  let pageState: WarmState["pageState"] = undefined;
+  if (inner instanceof VirtualMemory) {
+    pageState = inner.getPageState();
+  }
+
+  // Runtime config from state manager
+  const turn = runtimeState.getTurn();
+
+  return {
+    version: WARM_STATE_VERSION,
+    timestamp: new Date().toISOString(),
+    sessionId: sid,
+    memoryType: inner.constructor.name,
+    messages: mem.messages(),
+    pageState,
+    sensoryState,
+    runtime: {
+      model: cfg.model,
+      provider: cfg.provider,
+      activeModel: turn.activeModel || cfg.model,
+      thinkingBudget: turn.activeThinkingBudget,
+      temperature: turn.activeTemperature,
+      topK: turn.activeTopK,
+      topP: turn.activeTopP,
+    },
+    spend: spendMeter.snapshot(),
+    violations: violations?.snapshot() ?? null,
+    familiarity: familiarityTracker.snapshot(),
+    dejaVu: dejaVuTracker.snapshot(),
+    lastChatSendTarget: _lastChatSendTarget,
+    mcpConfigs: cfg.mcpServers,
+  };
+}
+
+/** Send a warm state snapshot to the supervisor via IPC. */
+function sendWarmSnapshot(
+  mem: AgentMemory,
+  sid: string,
+  cfg: GroConfig,
+  violations?: ViolationTracker,
+  type: "state_snapshot" | "reload_request" = "state_snapshot",
+): void {
+  if (!cfg.supervised || typeof process.send !== "function") return;
+  try {
+    const state = captureWarmState(mem, sid, cfg, violations);
+    const msg: WorkerMessage = { type, payload: state };
+    process.send!(msg);
+    Logger.debug(`[supervised] sent ${type} (${state.messages.length} messages)`);
+  } catch (e: unknown) {
+    Logger.warn(`[supervised] failed to send ${type}: ${asError(e).message}`);
+  }
 }
 
 /** After session load, surface integrity status and restore session origin for temporal bar. */
@@ -1723,6 +1810,10 @@ async function executeTurn(
       } else {
         Logger.telemetry("Stream marker: @@reboot@@ — saving state and exiting for restart");
         const sid = sessionId ?? "plastic";
+        // When supervised, send warm state via IPC for lossless restart
+        if (cfg.supervised && typeof process.send === "function") {
+          sendWarmSnapshot(memory, sid, cfg, violations, "reload_request");
+        }
         try { saveSensorySnapshot(memory, sid); } catch {}
         // Write rapid-resume marker so the next boot auto-fires a turn
         try {
@@ -1881,23 +1972,34 @@ async function executeTurn(
 
     let output: ChatOutput;
     try {
-      output = await activeDriver.chat(memory.messages(), {
-        model: activeModel,
-        tools: tools.length > 0 ? tools : undefined,
-        onToken: markerParser.onToken,
-        onReasoningToken: onReasoningTokenWithDetection,
-        thinkingBudget: activeThinkingBudget,
-        temperature: activeTemperature,
-        top_k: activeTopK,
-        top_p: activeTopP,
-        logprobs: !!lfsExtractor,
-        top_logprobs: lfsExtractor ? 5 : undefined,
-        onLogprobs: lfsExtractor ? (lp: any) => {
-          const signals = lfsExtractor.extract(lp.token, lp);
-          if (lfsPoster) lfsPoster.postBatch(signals);
-        } : undefined,
-        signal: chatAbortController.signal,
-      });
+      output = await withConnectionRecovery(
+        () => activeDriver.chat(memory.messages(), {
+          model: activeModel,
+          tools: tools.length > 0 ? tools : undefined,
+          onToken: markerParser.onToken,
+          onReasoningToken: onReasoningTokenWithDetection,
+          thinkingBudget: activeThinkingBudget,
+          temperature: activeTemperature,
+          top_k: activeTopK,
+          top_p: activeTopP,
+          logprobs: !!lfsExtractor,
+          top_logprobs: lfsExtractor ? 5 : undefined,
+          onLogprobs: lfsExtractor ? (lp: any) => {
+            const signals = lfsExtractor.extract(lp.token, lp);
+            if (lfsPoster) lfsPoster.postBatch(signals);
+          } : undefined,
+          signal: chatAbortController.signal,
+        }),
+        {
+          signal: chatAbortController.signal,
+          onRetry: (attempt, delayMs, error) => {
+            Logger.warn(`[recovery] Connection lost (attempt ${attempt}), retrying in ${Math.round(delayMs / 1000)}s — ${error.message}`);
+            if (cfg.outputFormat === "stream-json") {
+              process.stdout.write(JSON.stringify({ type: "connection_recovery", attempt, delay_ms: delayMs, error: error.message }) + "\n");
+            }
+          },
+        },
+      );
     } catch (e: unknown) {
       // Clean up turn abort listener
       if (turnAbortSignal) turnAbortSignal.removeEventListener("abort", onTurnAbort);
@@ -1927,16 +2029,19 @@ async function executeTurn(
 
         // Reset and retry without thinking loop detection (allow one clean attempt)
         markerParser.flush();
-        output = await activeDriver.chat(memory.messages(), {
-          model: activeModel,
-          tools: tools.length > 0 ? tools : undefined,
-          onToken: markerParser.onToken,
-          onReasoningToken: rawOnReasoningToken,
-          thinkingBudget: activeThinkingBudget,
-          temperature: activeTemperature,
-          top_k: activeTopK,
-          top_p: activeTopP,
-        });
+        output = await withConnectionRecovery(
+          () => activeDriver.chat(memory.messages(), {
+            model: activeModel,
+            tools: tools.length > 0 ? tools : undefined,
+            onToken: markerParser.onToken,
+            onReasoningToken: rawOnReasoningToken,
+            thinkingBudget: activeThinkingBudget,
+            temperature: activeTemperature,
+            top_k: activeTopK,
+            top_p: activeTopP,
+          }),
+          { signal: chatAbortController?.signal },
+        );
       } else {
         throw e; // Re-throw non-thinking-loop errors
       }
@@ -2407,14 +2512,16 @@ async function executeTurn(
       from: "System",
       content: "[SYSTEM] You've reached the maximum tool rounds for this turn. Tools are now unavailable. Tell the user: what you completed, what remains unfinished, and what's needed to continue (if anything). Be direct — no apologies, just a status report.",
     });
-    const finalOutput: ChatOutput = await activeDriver.chat(memory.messages(), {
-      model: activeModel,
-      temperature: activeTemperature,
-      top_k: activeTopK,
-      top_p: activeTopP,
-      onToken: rawOnToken,
-      onReasoningToken: rawOnReasoningToken,
-    });
+    const finalOutput: ChatOutput = await withConnectionRecovery(
+      () => activeDriver.chat(memory.messages(), {
+        model: activeModel,
+        temperature: activeTemperature,
+        top_k: activeTopK,
+        top_p: activeTopP,
+        onToken: rawOnToken,
+        onReasoningToken: rawOnReasoningToken,
+      }),
+    );
     if (finalOutput.usage) {
       turnTokensIn += finalOutput.usage.inputTokens;
       turnTokensOut += finalOutput.usage.outputTokens;
@@ -2587,6 +2694,8 @@ async function singleShot(
       Logger.error(C.red(`session save failed: ${asError(e).message}`));
     }
   }
+  // Send warm state snapshot to supervisor
+  sendWarmSnapshot(memory, sessionId, cfg, tracker);
 
   // Exit with non-zero code on fatal API errors so the supervisor
   // can distinguish "finished cleanly" from "crashed on API call"
@@ -2631,13 +2740,68 @@ async function interactive(
   });
   runtimeState.setViolationTracker(tracker ?? null);
 
+  // --- Warm state restore (supervised mode) ---
+  let warmRestored = false;
+  if (_pendingWarmState) {
+    const ws = _pendingWarmState;
+    _pendingWarmState = null; // Consume it
+    warmRestored = true;
+
+    Logger.info(`[supervised] restoring warm state: ${ws.messages.length} messages`);
+
+    // Restore messages into memory
+    const inner = unwrapMemory(memory);
+    for (const msg of ws.messages) {
+      await inner.add(msg);
+    }
+
+    // Restore VirtualMemory page state
+    if (ws.pageState && inner instanceof VirtualMemory) {
+      inner.restorePageState(ws.pageState);
+      Logger.debug(`[supervised] restored ${Object.keys(ws.pageState.pages).length} pages`);
+    }
+
+    // Restore sensory state
+    if (ws.sensoryState && memory instanceof SensoryMemory) {
+      const sensory = memory as SensoryMemory;
+      if (ws.sensoryState.selfContent) {
+        const selfSrc = sensory.getChannelSource("self");
+        if (selfSrc && "setContent" in selfSrc) {
+          (selfSrc as SelfSource).setContent(ws.sensoryState.selfContent);
+        }
+      }
+      if (ws.sensoryState.channelDimensions) {
+        sensory.restoreChannelDimensions(ws.sensoryState.channelDimensions);
+      }
+      if (ws.sensoryState.slotAssignments) {
+        ws.sensoryState.slotAssignments.forEach((ch, i) => {
+          if (ch) sensory.setSlot(i as 0 | 1 | 2, ch);
+        });
+      }
+    }
+
+    // Restore violation tracker
+    if (ws.violations && tracker) {
+      tracker.restore(ws.violations);
+    }
+
+    // Restore runtime config
+    runtimeState.setActiveModel(ws.runtime.activeModel);
+    runtimeState.setThinkingBudget(ws.runtime.thinkingBudget);
+    if (ws.runtime.temperature !== undefined) runtimeState.setTemperature(ws.runtime.temperature);
+    if (ws.runtime.topK !== undefined) runtimeState.setTopK(ws.runtime.topK);
+    if (ws.runtime.topP !== undefined) runtimeState.setTopP(ws.runtime.topP);
+
+    Logger.info("[supervised] warm state restored successfully");
+  }
+
   // Register for graceful shutdown
   _shutdownMemory = memory;
   _shutdownSessionId = sessionId;
   _shutdownSessionPersistence = cfg.sessionPersistence;
 
-  // Resume existing session if requested
-  if (cfg.continueSession || cfg.resumeSession) {
+  // Resume existing session if requested (skip if warm state was restored)
+  if ((cfg.continueSession || cfg.resumeSession) && !warmRestored) {
     const sess = loadSession(sessionId);
     if (sess && sess.meta.provider !== cfg.provider && sess.meta.provider !== "unknown") {
       // Cross-provider mismatch: if neither --provider nor --model was explicitly passed,
@@ -2755,6 +2919,8 @@ async function interactive(
         Logger.error(C.red(`session save failed: ${asError(e).message}`));
       }
     }
+    // Send warm state snapshot to supervisor after each turn
+    sendWarmSnapshot(memory, sessionId, cfg, tracker);
     turnRunning = false;
     turnAbortController = null;
     process.stdout.write("\n");
@@ -2953,6 +3119,56 @@ export async function main() {
     }
   }
 
+  // --- Supervised mode: IPC handshake with supervisor ---
+  if (cfg.supervised && typeof process.send === "function") {
+    Logger.debug("[supervised] running under supervisor, requesting warm state");
+
+    // Listen for supervisor shutdown signal
+    process.on("message", (msg: SupervisorMessage) => {
+      if (msg.type === "shutdown") {
+        Logger.info("[supervised] received shutdown from supervisor");
+        if (_shutdownMemory && _shutdownSessionId && _shutdownSessionPersistence) {
+          _shutdownMemory.save(_shutdownSessionId)
+            .catch(() => {})
+            .finally(() => process.exit(0));
+          setTimeout(() => process.exit(0), 3000);
+        } else {
+          process.exit(0);
+        }
+      } else if (msg.type === "warm_state") {
+        // Warm state received during startup handshake — handled by the promise below
+      }
+    });
+
+    // Send ready signal and wait for warm state (up to 2s)
+    const readyMsg: WorkerMessage = { type: "ready" };
+    process.send!(readyMsg);
+
+    _pendingWarmState = await new Promise<WarmState | null>((resolve) => {
+      const timeout = setTimeout(() => resolve(null), 2000);
+      const handler = (msg: SupervisorMessage) => {
+        if (msg.type === "warm_state") {
+          clearTimeout(timeout);
+          process.removeListener("message", handler);
+          resolve(msg.payload);
+        }
+      };
+      process.on("message", handler);
+    });
+
+    if (_pendingWarmState) {
+      Logger.info(`[supervised] received warm state (${_pendingWarmState.messages.length} messages, session ${_pendingWarmState.sessionId})`);
+      // Override sessionId to maintain continuity
+      sessionId = _pendingWarmState.sessionId;
+      // Restore module-level state immediately
+      spendMeter.restore(_pendingWarmState.spend);
+      familiarityTracker.restore(_pendingWarmState.familiarity);
+      dejaVuTracker.restore(_pendingWarmState.dejaVu);
+      _lastChatSendTarget = _pendingWarmState.lastChatSendTarget;
+    } else {
+      Logger.debug("[supervised] no warm state received, starting cold");
+    }
+  }
 
   try {
     if (cfg.interactive && positional.length === 0) {

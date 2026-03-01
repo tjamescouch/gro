@@ -216,6 +216,26 @@ export class ViolationTracker {
     penaltyFactor() {
         return 1.0 + 0.1 * this.totalViolations;
     }
+    /** Capture counters for warm state transfer. */
+    snapshot() {
+        return {
+            plainTextResponses: this.plainTextResponses,
+            idleRounds: this.idleRounds,
+            sameToolLoops: this.sameToolLoops,
+            contextPressures: this.contextPressures,
+            totalViolations: this.totalViolations,
+            sleeping: this.sleeping,
+        };
+    }
+    /** Restore counters from a warm state snapshot. */
+    restore(snap) {
+        this.plainTextResponses = snap.plainTextResponses;
+        this.idleRounds = snap.idleRounds;
+        this.sameToolLoops = snap.sameToolLoops;
+        this.contextPressures = snap.contextPressures;
+        this.totalViolations = snap.totalViolations;
+        this.sleeping = snap.sleeping;
+    }
 }
 /**
  * Detect repetitive thinking loops where the model repeats the same phrase

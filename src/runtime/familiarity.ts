@@ -108,6 +108,20 @@ export class FamiliarityTracker {
   get size(): number {
     return this.scores.size;
   }
+
+  /** Capture state for warm state transfer. */
+  snapshot(): { scores: Record<string, number>; labels: Record<string, string> } {
+    return {
+      scores: Object.fromEntries(this.scores),
+      labels: Object.fromEntries(this.labels),
+    };
+  }
+
+  /** Restore state from a warm state snapshot. */
+  restore(snap: { scores: Record<string, number>; labels: Record<string, string> }): void {
+    this.scores = new Map(Object.entries(snap.scores));
+    this.labels = new Map(Object.entries(snap.labels));
+  }
 }
 
 /** Extract a short display label from a resource identifier. */

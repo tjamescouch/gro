@@ -101,6 +101,20 @@ export class DejaVuTracker {
   get size(): number {
     return this.history.size;
   }
+
+  /** Capture state for warm state transfer. */
+  snapshot(): { history: Record<string, ActionSignature>; insertOrder: string[] } {
+    return {
+      history: Object.fromEntries(this.history),
+      insertOrder: [...this.insertOrder],
+    };
+  }
+
+  /** Restore state from a warm state snapshot. */
+  restore(snap: { history: Record<string, ActionSignature>; insertOrder: string[] }): void {
+    this.history = new Map(Object.entries(snap.history));
+    this.insertOrder = [...snap.insertOrder];
+  }
 }
 
 /** Hash tool args to an 8-char hex string for dedup matching. */

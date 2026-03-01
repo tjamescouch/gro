@@ -70,6 +70,18 @@ export class DejaVuTracker {
     get size() {
         return this.history.size;
     }
+    /** Capture state for warm state transfer. */
+    snapshot() {
+        return {
+            history: Object.fromEntries(this.history),
+            insertOrder: [...this.insertOrder],
+        };
+    }
+    /** Restore state from a warm state snapshot. */
+    restore(snap) {
+        this.history = new Map(Object.entries(snap.history));
+        this.insertOrder = [...snap.insertOrder];
+    }
 }
 /** Hash tool args to an 8-char hex string for dedup matching. */
 function hashArgs(args) {

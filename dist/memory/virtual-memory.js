@@ -1604,6 +1604,27 @@ export class VirtualMemory extends AgentMemory {
         }
         return Math.max(0, this.cfg.pageSlotTokens - used);
     }
+    /** Capture full page state for warm state transfer (no disk I/O). */
+    getPageState() {
+        return {
+            pages: Object.fromEntries(this.pages),
+            activePageIds: [...this.activePageIds],
+            loadOrder: [...this.loadOrder],
+            pinnedPageIds: [...this.pinnedPageIds],
+            pageRefCount: Object.fromEntries(this.pageRefCount),
+            unrefHistory: [...this.unrefHistory],
+        };
+    }
+    /** Restore page state from a warm state snapshot (no disk I/O). */
+    restorePageState(state) {
+        this.pages = new Map(Object.entries(state.pages));
+        this.activePageIds = new Set(state.activePageIds);
+        this.loadOrder = [...state.loadOrder];
+        this.pinnedPageIds = new Set(state.pinnedPageIds);
+        this.pageRefCount = new Map(Object.entries(state.pageRefCount).map(([k, v]) => [k, Number(v)]));
+        if (state.unrefHistory)
+            this.unrefHistory = new Set(state.unrefHistory);
+    }
     /** Pages the agent explicitly unref'd — auto-fill should skip these. */
     getUnrefHistory() {
         return new Set(this.unrefHistory);

@@ -9,16 +9,12 @@
  * Supersets the claude CLI flags for drop-in compatibility.
  */
 import { readFileSync, existsSync, appendFileSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
-import { createInterface } from "node:readline";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { makeGoogleDriver } from "./drivers/streaming-google.js";
 import { fileURLToPath } from "node:url";
-import { getKey, setKey, resolveKey, resolveProxy } from "./keychain.js";
 import { Logger, C } from "./logger.js";
 import { spendMeter } from "./spend-meter.js";
-import { makeStreamingOpenAiDriver } from "./drivers/streaming-openai.js";
-import { makeAnthropicDriver } from "./drivers/anthropic.js";
+import { createDriverForModel, createDriver, defaultBaseUrl, resolveApiKey } from "./drivers/driver-factory.js";
 import { SimpleMemory } from "./memory/simple-memory.js";
 import { AdvancedMemory } from "./memory/experimental/advanced-memory.js";
 import { VirtualMemory } from "./memory/virtual-memory.js";
@@ -66,6 +62,9 @@ import { parseDirectives, executeDirectives } from "./runtime/index.js";
 import { runtimeConfig, runtimeState } from "./runtime/index.js";
 import { FamiliarityTracker } from "./runtime/familiarity.js";
 import { DejaVuTracker } from "./runtime/deja-vu.js";
+import { detectToolRoles } from "./gro-types.js";
+import { loadRuntimeBoot, assembleSystemPrompt, discoverExtensions } from "./boot/system-prompt.js";
+import { runSetKey } from "./cli/key-management.js";
 const VERSION = getGroVersion();
 // ---------------------------------------------------------------------------
 // Graceful shutdown state — module-level so signal handlers can save sessions.
@@ -91,140 +90,15 @@ function sleep(ms) {
 // Wake notes: a runner-global file that is prepended to the system prompt on process start
 // so agents reliably see dev workflow + memory pointers on wake.
 const WAKE_NOTES_DEFAULT_PATH = join(process.env.HOME || "", ".gro", "WAKE.md");
-// ---------------------------------------------------------------------------
-// Boot Layers — system prompt assembly
-// ---------------------------------------------------------------------------
+// Boot layers, system prompt assembly, and extension discovery are in
+// src/boot/system-prompt.ts — imported above.
 const __filename_url = import.meta.url;
 const __dirname_resolved = dirname(fileURLToPath(__filename_url));
-/** Load Layer 1 runtime.md from the gro package (bundled). */
-function loadRuntimeBoot() {
-    // In dist/ after build: dist/boot/runtime.md
-    // In src/ during dev: src/boot/runtime.md
-    const candidates = [
-        join(__dirname_resolved, "boot", "runtime.md"),
-        join(__dirname_resolved, "..", "src", "boot", "runtime.md"),
-    ];
-    for (const p of candidates) {
-        if (existsSync(p)) {
-            return readFileSync(p, "utf-8").trim();
-        }
-    }
-    Logger.warn("runtime.md not found — Layer 1 boot missing");
-    return "";
-}
-function assembleSystemPrompt(layers) {
-    const sections = [];
-    // Layer 1: Runtime (always first, non-negotiable)
-    if (layers.runtime) {
-        sections.push(`<!-- LAYER 1: RUNTIME -->\n${layers.runtime}`);
-    }
-    // Layer 2: Extensions (additive)
-    for (const ext of layers.extensions) {
-        if (ext.trim()) {
-            sections.push(`<!-- LAYER 2: EXTENSION -->\n${ext.trim()}`);
-        }
-    }
-    // Layer 3: Role/Personality
-    for (const role of layers.role) {
-        if (role.trim()) {
-            sections.push(`<!-- LAYER 3: ROLE -->\n${role.trim()}`);
-        }
-    }
-    return sections.join("\n\n---\n\n");
-}
-/** Discover Layer 2 extension files from repo root and known locations. */
-function discoverExtensions(mcpConfigPaths) {
-    const extensions = [];
-    // Check repo root for _base.md
-    const repoBase = join(process.cwd(), "_base.md");
-    if (existsSync(repoBase)) {
-        try {
-            extensions.push(readFileSync(repoBase, "utf-8").trim());
-        }
-        catch {
-            Logger.warn(`Failed to read _base.md at ${repoBase}`);
-        }
-    }
-    else {
-        // Fallback: check the gro package directory (for global installs where CWD != package dir).
-        // __dirname_resolved is dist/ (or overlay/), so package root is one level up.
-        const pkgBase = join(__dirname_resolved, "..", "_base.md");
-        if (existsSync(pkgBase)) {
-            try {
-                extensions.push(readFileSync(pkgBase, "utf-8").trim());
-            }
-            catch {
-                Logger.warn(`Failed to read _base.md at ${pkgBase}`);
-            }
-        }
-    }
-    // Check for _learn.md (persistent learned facts from 📚 markers)
-    const learnFile = join(process.cwd(), "_learn.md");
-    if (existsSync(learnFile)) {
-        try {
-            const learned = readFileSync(learnFile, "utf-8").trim();
-            if (learned) {
-                extensions.push(`<!-- LEARNED FACTS -->\n${learned}`);
-            }
-        }
-        catch {
-            Logger.warn(`Failed to read _learn.md at ${learnFile}`);
-        }
-    }
-    // Check for SKILL.md in repo root
-    const skillCandidates = [
-        join(process.cwd(), "SKILL.md"),
-    ];
-    for (const p of skillCandidates) {
-        if (existsSync(p)) {
-            try {
-                extensions.push(readFileSync(p, "utf-8").trim());
-            }
-            catch {
-                Logger.warn(`Failed to read SKILL.md at ${p}`);
-            }
-            break; // only load the first found
-        }
-    }
-    return extensions;
-}
-/** Auto-detect MCP tool roles from available tool definitions. */
-function detectToolRoles(tools) {
-    const toolNames = new Set(tools.map(t => t.function.name));
-    // Idle tool: prefer agentchat_listen, fall back to any *_listen tool
-    let idleTool = null;
-    if (toolNames.has("agentchat_listen")) {
-        idleTool = "agentchat_listen";
-    }
-    else {
-        for (const name of toolNames) {
-            if (name.endsWith("_listen")) {
-                idleTool = name;
-                break;
-            }
-        }
-    }
-    // Send tool: prefer agentchat_send, fall back to any *_send tool
-    let sendTool = null;
-    if (toolNames.has("agentchat_send")) {
-        sendTool = "agentchat_send";
-    }
-    else {
-        for (const name of toolNames) {
-            if (name.endsWith("_send")) {
-                sendTool = name;
-                break;
-            }
-        }
-    }
-    return {
-        idleTool,
-        idleToolDefaultArgs: idleTool === "agentchat_listen" ? { channels: ["#general"] } : {},
-        idleToolArgStrategy: "last-call",
-        sendTool,
-        sendToolMessageField: "message",
-    };
-}
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+// Types (Provider, GroConfig, McpToolRoles) and detectToolRoles are in
+// src/gro-types.ts — imported above.
 function loadMcpServers(mcpConfigPaths, autodiscover) {
     const merged = {};
     for (const p of mcpConfigPaths) {
@@ -548,19 +422,8 @@ function loadConfig() {
         enablePromptCaching: flags.noCache !== "true",
     };
 }
-function defaultBaseUrl(provider) {
-    switch (provider) {
-        case "openai": return process.env.OPENAI_BASE_URL || "https://api.openai.com";
-        case "groq": return process.env.GROQ_BASE_URL || "https://api.groq.com/openai";
-        case "google": return process.env.GOOGLE_BASE_URL || "https://generativelanguage.googleapis.com";
-        case "xai": return process.env.XAI_BASE_URL || "https://api.x.ai";
-        case "local": return "http://127.0.0.1:11434";
-        default: return process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
-    }
-}
-function resolveApiKey(provider) {
-    return resolveKey(provider);
-}
+// defaultBaseUrl, resolveApiKey, createDriverForModel, createDriver are in
+// src/drivers/driver-factory.ts — imported above.
 function usage() {
     Logger.info(`gro ${VERSION} — provider-agnostic LLM runtime
 
@@ -610,132 +473,7 @@ options:
 
 session state is stored in .gro/context/<session-id>/`);
 }
-// ---------------------------------------------------------------------------
-// Key management
-// ---------------------------------------------------------------------------
-async function runSetKey(provider) {
-    const known = ["anthropic", "openai", "groq", "google", "xai"];
-    if (!known.includes(provider)) {
-        throw new Error(`Unknown provider "${provider}". Valid: ${known.join(", ")}`);
-    }
-    const current = getKey(provider);
-    if (current) {
-        process.stdout.write(`Keychain already has a key for ${provider} (${current.slice(0, 8)}…). Overwrite? [y/N] `);
-        const answer = await readLine();
-        if (!answer.toLowerCase().startsWith("y")) {
-            Logger.info("Aborted.");
-            return;
-        }
-    }
-    process.stdout.write(`Enter API key for ${provider}: `);
-    const key = await readLineHidden();
-    process.stdout.write("\n");
-    if (!key.trim()) {
-        throw new Error("No key entered — aborted.");
-    }
-    setKey(provider, key.trim());
-    console.log(`✓ Key stored in Keychain for provider "${provider}"`);
-}
-function readLine() {
-    return new Promise(resolve => {
-        const rl = createInterface({ input: process.stdin, output: process.stdout });
-        rl.once("line", line => { rl.close(); resolve(line); });
-    });
-}
-function readLineHidden() {
-    return new Promise(resolve => {
-        // Disable echo by switching stdin to raw mode
-        if (process.stdin.isTTY)
-            process.stdin.setRawMode(true);
-        process.stdin.resume();
-        let buf = "";
-        const onData = (chunk) => {
-            const s = chunk.toString("utf8");
-            for (const ch of s) {
-                if (ch === "\r" || ch === "\n") {
-                    process.stdin.removeListener("data", onData);
-                    if (process.stdin.isTTY)
-                        process.stdin.setRawMode(false);
-                    process.stdin.pause();
-                    resolve(buf);
-                    return;
-                }
-                if (ch === "\x03") {
-                    if (process.stdin.isTTY)
-                        process.stdin.setRawMode(false);
-                    process.exit(1);
-                } // Ctrl-C
-                if (ch === "\x7f" || ch === "\b") {
-                    buf = buf.slice(0, -1);
-                } // backspace
-                else {
-                    buf += ch;
-                }
-            }
-        };
-        process.stdin.on("data", onData);
-    });
-}
-// ---------------------------------------------------------------------------
-// Driver factory
-// ---------------------------------------------------------------------------
-function createDriverForModel(provider, model, apiKey, baseUrl, maxTokens, enablePromptCaching) {
-    // Prefer agentauth proxy when available — centralised key management for agent
-    // deployments. Discovered via well-known hostnames (host.lima.internal,
-    // host.containers.internal, localhost).  Skipped when the user has explicitly
-    // set a custom base URL (non-default), indicating they want direct access.
-    if (provider !== "local") {
-        const isDefaultBaseUrl = baseUrl === defaultBaseUrl(provider);
-        if (isDefaultBaseUrl) {
-            const proxy = resolveProxy(provider);
-            if (proxy) {
-                Logger.telemetry(`Using agentauth proxy for ${provider} at ${proxy.baseUrl}`);
-                apiKey = proxy.apiKey;
-                baseUrl = proxy.baseUrl;
-            }
-        }
-    }
-    switch (provider) {
-        case "anthropic":
-            if (!apiKey && baseUrl === "https://api.anthropic.com") {
-                Logger.error(`gro: no API key for anthropic — run: gro --set-key anthropic`);
-                process.exit(1);
-            }
-            return makeAnthropicDriver({ apiKey: apiKey || "proxy-managed", model, baseUrl, maxTokens, enablePromptCaching });
-        case "openai":
-            if (!apiKey && baseUrl === "https://api.openai.com") {
-                Logger.error(`gro: no API key for openai — run: gro --set-key openai`);
-                process.exit(1);
-            }
-            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey: apiKey || undefined });
-        case "groq":
-            if (!apiKey) {
-                Logger.error(`gro: no API key for groq — run: gro --set-key groq`);
-                process.exit(1);
-            }
-            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey });
-        case "google":
-            if (!apiKey && baseUrl === "https://generativelanguage.googleapis.com") {
-                Logger.error(`gro: no API key for google — run: gro --set-key google`);
-                process.exit(1);
-            }
-            return makeGoogleDriver({ baseUrl: baseUrl.replace(/\/v1beta\/openai\/?$/, ""), model, apiKey: apiKey || undefined });
-        case "xai":
-            if (!apiKey && baseUrl === "https://api.x.ai") {
-                Logger.error(`gro: no API key for xai — run: gro --set-key xai`);
-                process.exit(1);
-            }
-            return makeStreamingOpenAiDriver({ baseUrl, model, apiKey: apiKey || undefined });
-        case "local":
-            return makeStreamingOpenAiDriver({ baseUrl, model });
-        default:
-            Logger.error(`gro: unknown provider "${provider}"`);
-            process.exit(1);
-    }
-}
-function createDriver(cfg) {
-    return createDriverForModel(cfg.provider, cfg.model, cfg.apiKey, cfg.baseUrl, cfg.maxTokens, cfg.enablePromptCaching);
-}
+// Key management (runSetKey, readLine) is in src/cli/key-management.ts — imported above.
 // ---------------------------------------------------------------------------
 // Memory factory
 // ---------------------------------------------------------------------------

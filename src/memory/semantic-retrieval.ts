@@ -89,11 +89,11 @@ function buildQuery(messages: ChatMessage[]): string | null {
     if (!lastAssistant && msg.role === "assistant" && content.trim()) {
       lastAssistant = content.trim();
     }
-    // Collect tool call function names (strong topical signal)
+    // Collect unique tool call function names (strong topical signal)
     if (msg.role === "assistant" && Array.isArray((msg as any).tool_calls) && recentToolNames.length < 5) {
       for (const tc of (msg as any).tool_calls) {
         const name = tc?.function?.name;
-        if (name && recentToolNames.length < 5) recentToolNames.push(name);
+        if (name && recentToolNames.length < 5 && !recentToolNames.includes(name)) recentToolNames.push(name);
       }
     }
     if (lastUser && lastAssistant && recentToolNames.length >= 3) break;
@@ -284,10 +284,11 @@ export class SemanticRetrieval {
       }
     }
 
+    const phase1Cap = Math.max(1, this.maxAutoFillPages - 1); // Reserve ≥1 slot for semantic search
     for (const id of referencedIds) {
       if (activeIds.has(id)) continue;
       if (unrefHistory.has(id)) continue;
-      if (totalLoaded >= this.maxAutoFillPages) break;
+      if (totalLoaded >= phase1Cap) break;
 
       const page = pageMap.get(id);
       if (!page) continue;
@@ -321,7 +322,7 @@ export class SemanticRetrieval {
 
             // Recency decay: boost recent pages, decay stale ones (2h half-life)
             const now = Date.now();
-            const HALF_LIFE_MS = 2 * 60 * 60 * 1000; // 2 hours
+            const HALF_LIFE_MS = 8 * 60 * 60 * 1000; // 8 hours — gentler decay for long sessions
             const results = rawResults.map(r => {
               const page = pageMap.get(r.pageId);
               const createdAt = page?.createdAt ? new Date(page.createdAt).getTime() : 0;

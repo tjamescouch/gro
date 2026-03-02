@@ -879,7 +879,7 @@ export class VirtualMemory extends AgentMemory {
       const stripped = raw.split("\n")
         .filter(line => !/🧠/i.test(line))
         .join("\n");
-      const c = stripped.slice(0, 4000);
+      const c = stripped.slice(0, m.role === "tool" ? 1500 : 4000);
       // Collect 🧠 lines verbatim for the summarizer header
       for (const line of raw.split("\n")) {
         if (/🧠/i.test(line)) {
@@ -1368,7 +1368,7 @@ export class VirtualMemory extends AgentMemory {
           const toolResult = toolResultMap.get(callId);
           const rawResult = toolResult ? String(toolResult.content ?? "") : "";
           const resultSnippet = rawResult
-            ? (rawResult.length > 2000 ? rawResult.slice(0, 2000) + "..." : rawResult)
+            ? (rawResult.length > 500 ? rawResult.slice(0, 500) + "..." : rawResult)
             : "[result truncated during compaction]";
 
           // Determine page ref: either from a lane page that contains this call/result,
@@ -1377,7 +1377,7 @@ export class VirtualMemory extends AgentMemory {
           const existingPageId = pagedToolCallIds?.get(callId);
           if (existingPageId) {
             refTag = ` <ref id="${existingPageId}"/>`;
-          } else if (rawResult.length > 2000) {
+          } else if (rawResult.length > 500) {
             // Result is large and being truncated — save full content to a retrievable page
             const miniContent = `[tool result from ${fnName}]:\n${rawResult}`;
             const miniPage: ContextPage = {

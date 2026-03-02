@@ -26,6 +26,22 @@ function getSummarizerPromptBase() {
     }
     return _summarizerPromptBase;
 }
+/**
+ * Truncate text preserving both head and tail.
+ * If text fits within limit, return as-is.
+ * Otherwise, keep 70% head + 30% tail with a gap marker.
+ */
+function smartTruncate(text, limit) {
+    if (text.length <= limit)
+        return text;
+    const headSize = Math.floor(limit * 0.7);
+    const tailSize = limit - headSize - 40; // 40 chars for the gap marker
+    if (tailSize <= 0)
+        return text.slice(0, limit);
+    const head = text.slice(0, headSize);
+    const tail = text.slice(-tailSize);
+    return head + "\n\n[... truncated middle ...]\n\n" + tail;
+}
 const DEFAULTS = {
     pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
     pageSlotTokens: parseInt(process.env.GRO_PAGE_SLOT_TOKENS ?? "18000"),
@@ -139,6 +155,20 @@ export class VirtualMemory extends AgentMemory {
     }
     setProvider(provider) {
         this.provider = provider;
+        // Calibrate avgCharsPerToken per provider (unless user set GRO_AVG_CHARS_PER_TOKEN explicitly)
+        if (!process.env.GRO_AVG_CHARS_PER_TOKEN) {
+            const PROVIDER_CHARS_PER_TOKEN = {
+                anthropic: 3.0,
+                openai: 2.8,
+                google: 2.9,
+                xai: 2.8,
+            };
+            const calibrated = PROVIDER_CHARS_PER_TOKEN[provider];
+            if (calibrated) {
+                this.cfg.avgCharsPerToken = calibrated;
+                Logger.debug(`[VM] Calibrated avgCharsPerToken to ${calibrated} for provider '${provider}'`);
+            }
+        }
     }
     setModel(model) {
         this.model = model;
@@ -719,7 +749,7 @@ export class VirtualMemory extends AgentMemory {
         const usr = {
             role: "user",
             from: "User",
-            content: `Summarize this conversation segment (${label}):${importantNote}\n\n${transcript.slice(0, 12000)}`,
+            content: `Summarize this conversation segment (${label}):${importantNote}\n\n${smartTruncate(transcript, 12000)}`,
         };
         const MAX_RETRIES = 2;
         let lastErr;

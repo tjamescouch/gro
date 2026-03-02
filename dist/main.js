@@ -1232,7 +1232,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turn
             break;
         }
         // Relay mid-loop text to AgentChat when model also made tool calls
-        if (output.toolCalls.length > 0 && cleanText?.trim() && _lastChatSendTarget && cfg.toolRoles.sendTool) {
+        if (!cfg.noRelay && output.toolCalls.length > 0 && cleanText?.trim() && _lastChatSendTarget && cfg.toolRoles.sendTool) {
             const _midText = cleanText.trim();
             mcp.callTool(cfg.toolRoles.sendTool, {
                 target: _lastChatSendTarget,
@@ -1290,7 +1290,27 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turn
                             break;
                     }
                 }
-                const idleResult = await mcp.callTool(idleTool, idleArgs).catch(e => `Error: ${asError(e).message}`);
+                // Auto-idle loop: keep calling the idle tool without waking the LLM
+                // until it returns actual content (e.g. new messages). This prevents
+                // the LLM from narrating empty poll results to the channel.
+                let idleRetries = 0;
+                const MAX_IDLE_RETRIES = 1000; // safety cap (~16 hours at 60s timeout)
+                let idleResult;
+                while (true) {
+                    idleResult = await mcp.callTool(idleTool, idleArgs).catch(e => `Error: ${asError(e).message}`);
+                    // Check if the result has actual messages to process
+                    let hasContent = true;
+                    try {
+                        const parsed = JSON.parse(idleResult);
+                        if (parsed.timeout === true && Array.isArray(parsed.messages) && parsed.messages.length === 0) {
+                            hasContent = false; // empty listen timeout — retry without LLM
+                        }
+                    }
+                    catch { /* not JSON or parse error — treat as content */ }
+                    if (hasContent || ++idleRetries >= MAX_IDLE_RETRIES)
+                        break;
+                    Logger.debug(`Idle tool returned empty (retry ${idleRetries}) — auto-retrying without LLM`);
+                }
                 await memory.add({
                     role: "tool",
                     from: idleTool,
@@ -1336,7 +1356,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turn
         if (pendingNarration) {
             // Tool calls happened but no send tool to flush into.
             // If we have an active chat target, relay the narration there instead of discarding.
-            if (_lastChatSendTarget && cfg.toolRoles.sendTool && pendingNarration.trim()) {
+            if (!cfg.noRelay && _lastChatSendTarget && cfg.toolRoles.sendTool && pendingNarration.trim()) {
                 const _narration = pendingNarration;
                 mcp.callTool(cfg.toolRoles.sendTool, {
                     target: _lastChatSendTarget,
@@ -1676,7 +1696,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turn
         await memory.add({ role: "assistant", from: "Assistant", content: finalOutput.text || "" });
     }
     // Relay final LLM text output to AgentChat if the agent has sent messages this session
-    if (_lastChatSendTarget && finalText.trim() && cfg.toolRoles.sendTool) {
+    if (!cfg.noRelay && _lastChatSendTarget && finalText.trim() && cfg.toolRoles.sendTool) {
         try {
             await mcp.callTool(cfg.toolRoles.sendTool, {
                 target: _lastChatSendTarget,

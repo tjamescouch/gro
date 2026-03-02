@@ -41,6 +41,8 @@ export interface GroConfig {
   providers: string[];
   /** MCP tool role bindings — auto-detected or explicitly configured. */
   toolRoles: McpToolRoles;
+  /** Disable auto-relay of LLM narration to agentchat channels (--no-relay). */
+  noRelay: boolean;
   /** Disable Anthropic prompt caching (--no-cache). Default: caching enabled. */
   enablePromptCaching: boolean;
 }

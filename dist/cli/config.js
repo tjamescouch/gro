@@ -168,6 +168,9 @@ export function loadConfig() {
         else if (arg === "--autodiscover-mcp") {
             flags.autodiscoverMcp = "true";
         }
+        else if (arg === "--no-relay") {
+            flags.noRelay = "true";
+        }
         else if (arg === "-i" || arg === "--interactive") {
             flags.interactive = "true";
         }
@@ -333,6 +336,7 @@ export function loadConfig() {
         providers: (flags.providers || process.env.GRO_PROVIDERS || "").split(",").filter(Boolean),
         // toolRoles auto-detected after MCP connect — placeholder here
         toolRoles: { idleTool: null, idleToolDefaultArgs: {}, idleToolArgStrategy: "last-call", sendTool: null, sendToolMessageField: "message" },
+        noRelay: flags.noRelay === "true",
         enablePromptCaching: flags.noCache !== "true",
     };
 }
@@ -372,6 +376,7 @@ options:
   --autodiscover-mcp     also load ~/.gro/mcp.json if it exists
   --max-cost             alias for --max-budget-usd
   --no-cache             disable Anthropic prompt caching
+  --no-relay             disable auto-relay of LLM narration to agentchat channels
   --no-mcp               disable MCP server connections
   --no-session-persistence  don't save sessions to .gro/
   -p, --print            print response and exit (non-interactive)

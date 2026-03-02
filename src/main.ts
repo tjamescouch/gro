@@ -1282,7 +1282,7 @@ async function executeTurn(
     }
 
     // Relay mid-loop text to AgentChat when model also made tool calls
-    if (output.toolCalls.length > 0 && cleanText?.trim() && _lastChatSendTarget && cfg.toolRoles.sendTool) {
+    if (!cfg.noRelay && output.toolCalls.length > 0 && cleanText?.trim() && _lastChatSendTarget && cfg.toolRoles.sendTool) {
       const _midText = cleanText.trim();
       mcp.callTool(cfg.toolRoles.sendTool, {
         target: _lastChatSendTarget,
@@ -1411,7 +1411,7 @@ async function executeTurn(
     if (pendingNarration) {
       // Tool calls happened but no send tool to flush into.
       // If we have an active chat target, relay the narration there instead of discarding.
-      if (_lastChatSendTarget && cfg.toolRoles.sendTool && pendingNarration.trim()) {
+      if (!cfg.noRelay && _lastChatSendTarget && cfg.toolRoles.sendTool && pendingNarration.trim()) {
         const _narration = pendingNarration;
         mcp.callTool(cfg.toolRoles.sendTool, {
           target: _lastChatSendTarget,
@@ -1735,7 +1735,7 @@ async function executeTurn(
   }
 
   // Relay final LLM text output to AgentChat if the agent has sent messages this session
-  if (_lastChatSendTarget && finalText.trim() && cfg.toolRoles.sendTool) {
+  if (!cfg.noRelay && _lastChatSendTarget && finalText.trim() && cfg.toolRoles.sendTool) {
     try {
       await mcp.callTool(cfg.toolRoles.sendTool, {
         target: _lastChatSendTarget,

@@ -21,6 +21,23 @@ import type { WarmState, WorkerMessage, SupervisorMessage } from "./warm-state.j
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/** Handle --plastic-reset before resolving overlay — wipe it so stock is re-deployed. */
+import { rmSync } from "node:fs";
+
+function handlePlasticReset(): void {
+  const forceReset = process.env.GRO_PLASTIC_RESET === "1" || process.argv.includes("--plastic-reset");
+  if (!forceReset || !process.env.GRO_PLASTIC) return;
+
+  const overlayDir = join(homedir(), ".gro", "plastic", "overlay");
+  if (!existsSync(overlayDir)) return;
+
+  process.stderr.write("[supervisor] PLASTIC reset — wiping overlay\n");
+  rmSync(overlayDir, { recursive: true, force: true });
+  process.stderr.write("[supervisor] Overlay wiped, will re-deploy from stock\n");
+}
+
+handlePlasticReset();
+
 /** In PLASTIC mode, fork from the overlay's main.js if it exists. */
 function resolveMainScript(): string {
   if (process.env.GRO_PLASTIC) {
@@ -49,7 +66,7 @@ class Supervisor {
   private readonly RAPID_CRASH_THRESHOLD = 3;
 
   constructor(args: string[]) {
-    this.childArgs = [...args.filter(a => a !== "--supervisor"), "--supervised"];
+    this.childArgs = [...args.filter(a => a !== "--supervisor" && a !== "--plastic-reset"), "--supervised"];
   }
 
   start(): void {

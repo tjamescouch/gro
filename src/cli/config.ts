@@ -137,7 +137,7 @@ export function loadConfig(): GroConfig {
     else if (arg === "--no-session-persistence") { flags.noSessionPersistence = "true"; }
     else if (arg === "--verbose") { flags.verbose = "true"; }
     else if (arg === "--show-diffs") { flags.showDiffs = "true"; }
-    else if (arg === "--plastic") { /* handled at boot, before main() */ }
+    else if (arg === "--plastic" || arg === "--plastic-reset") { /* handled at boot/supervisor, before main() */ }
     else if (arg === "--name") { flags.name = args[++i]; }
     else if (arg === "-d" || arg === "--debug" || arg === "-d2e" || arg === "--debug-to-stderr") {
       flags.verbose = "true";

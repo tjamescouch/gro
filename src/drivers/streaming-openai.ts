@@ -106,8 +106,17 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (cfg.apiKey) headers["Authorization"] = `Bearer ${cfg.apiKey}`;
 
-    // Strip internal-only fields (from, tool_call_id on non-tool roles) before sending
-    const stripped = messages.map(({ from: _from, ...m }) => m);
+    // Strip internal-only fields and normalize tool_calls for OpenAI format
+    const stripped = messages.map(({ from: _from, ...m }) => {
+      if (m.tool_calls) {
+        m = { ...m, tool_calls: m.tool_calls.map(tc => ({
+          id: tc.id,
+          type: "function" as const,
+          function: tc.function,
+        })) };
+      }
+      return m;
+    });
 
     // OpenAI requires strict tool_call/tool message pairing. Memory compaction can break this.
     // Fix both directions: orphaned tool messages AND orphaned tool_calls.

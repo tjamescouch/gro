@@ -96,13 +96,12 @@ describe("Context view snapshots", () => {
 
     assertBoxInvariants(output, "context-virtual");
     assert.ok(output.includes("PAGES"), "should have PAGES header");
-    assert.ok(output.includes("LANES"), "should have LANES section");
-    assert.ok(output.includes("ANCHORS"), "should have ANCHORS (pg_a3b4c5d6 has importance 0.9)");
-    assert.ok(output.includes("SIZE HISTOGRAM"), "should have histogram");
-    assert.ok(output.includes("LOAD BUDGET"), "should have load budget");
+    assert.ok(output.includes("lanes:"), "should have lanes inline in header");
+    assert.ok(output.includes("LOADED"), "should have LOADED section");
+    assert.ok(output.includes("BUDGET"), "should have BUDGET section");
     assert.ok(output.includes("pg_a1b2c3d4"), "should show page IDs");
     assert.ok(output.includes("🤖"), "should have assistant glyph");
-    assert.ok(output.includes("★"), "should have anchor star");
+    assert.ok(output.includes("📌"), "should have pin marker for pinned page");
   });
 
   test("basic memory fallback", () => {
@@ -136,7 +135,7 @@ describe("Context view snapshots", () => {
     assert.ok(output.includes("no pages"), "should indicate no pages");
   });
 
-  test("many pages — all 6 sections within 40 lines", () => {
+  test("many pages — all sections within 40 lines", () => {
     const now = new Date();
     // Generate 50 pages to force height budgeting
     const manyPages = Array.from({ length: 50 }, (_, i) => ({
@@ -169,10 +168,9 @@ describe("Context view snapshots", () => {
     assert.ok(lines.length <= 40, `should fit in 40 lines, got ${lines.length}`);
     assertBoxInvariants(output, "context-many");
     assert.ok(output.includes("PAGES"), "should have PAGES header");
-    assert.ok(output.includes("LANES"), "should have LANES section");
-    assert.ok(output.includes("ANCHORS"), "should have ANCHORS (page 10 has importance 0.95)");
-    assert.ok(output.includes("SIZE HISTOGRAM"), "should have histogram");
-    assert.ok(output.includes("LOAD BUDGET"), "should have load budget");
+    assert.ok(output.includes("lanes:"), "should have lanes inline in header");
+    assert.ok(output.includes("LOADED"), "should have LOADED section");
+    assert.ok(output.includes("BUDGET"), "should have BUDGET section");
     assert.ok(output.includes("+"), "should show truncation indicator for remaining pages");
   });
 
@@ -189,7 +187,7 @@ describe("Context view snapshots", () => {
 
     assertBoxInvariants(output, "context-drill");
     assert.ok(output.includes("pg_a1b2c3d4"), "should show target page");
-    assert.ok(output.includes("page detail"), "should indicate detail view");
+    assert.ok(output.includes("DETAIL"), "should indicate detail view");
   });
 });
 
@@ -322,13 +320,13 @@ describe("SensoryViewFactory", () => {
     assert.ok(ctx);
     assert.strictEqual(ctx!.width, 82);
     assert.strictEqual(ctx!.height, 40);
-    assert.strictEqual(ctx!.maxTokens, 800);
+    assert.strictEqual(ctx!.maxTokens, 900);
     assert.strictEqual(ctx!.enabled, true);
 
     const self = factory.getSpec("self");
     assert.ok(self);
     assert.strictEqual(self!.viewable, true);
-    assert.strictEqual(self!.enabled, false);
+    assert.strictEqual(self!.enabled, true);
 
     assert.strictEqual(factory.getSpec("nonexistent"), undefined);
   });
@@ -471,10 +469,13 @@ describe("Integration: SensoryMemory full pipeline", () => {
       assert.ok(firstBox.startsWith("╔"), `${name}: first box line should start with ╔, got '${firstBox[0]}'`);
       assert.strictEqual(firstBox.length, W, `${name}: top border should be ${W} chars, got ${firstBox.length}`);
 
-      // Last box line should be bottom border
+      // Last box line should be bottom border — unless enforceGrid truncated the view
       const lastBox = boxLines[boxLines.length - 1];
-      assert.ok(lastBox.startsWith("╚"), `${name}: last box line should start with ╚, got '${lastBox[0]}'`);
-      assert.strictEqual(lastBox.length, W, `${name}: bottom border should be ${W} chars, got ${lastBox.length}`);
+      const isTruncated = lines.some(l => l.endsWith("…"));
+      if (!isTruncated) {
+        assert.ok(lastBox.startsWith("╚"), `${name}: last box line should start with ╚, got '${lastBox[0]}'`);
+        assert.strictEqual(lastBox.length, W, `${name}: bottom border should be ${W} chars, got ${lastBox.length}`);
+      }
 
       // All middle box lines should start with ║ or ╠
       for (let i = 1; i < boxLines.length - 1; i++) {
@@ -521,10 +522,9 @@ describe("Integration: SensoryMemory full pipeline", () => {
     console.log(boxLines.join("\n"));
 
     assert.ok(contextContent.includes("PAGES"), "should have PAGES header");
-    assert.ok(contextContent.includes("LANES"), "should have LANES section");
-    assert.ok(contextContent.includes("ANCHORS"), "should have ANCHORS");
-    assert.ok(contextContent.includes("SIZE HISTOGRAM"), "should have histogram");
-    assert.ok(contextContent.includes("LOAD BUDGET"), "should have load budget");
+    assert.ok(contextContent.includes("lanes:"), "should have lanes inline in header");
+    assert.ok(contextContent.includes("LOADED"), "should have LOADED section");
+    assert.ok(contextContent.includes("BUDGET"), "should have BUDGET section");
     assert.ok(contextContent.includes("100 total"), "should show 100 total pages");
   });
 

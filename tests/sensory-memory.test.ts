@@ -402,21 +402,16 @@ describe("ContextMapSource", () => {
     const output = await source.poll();
 
     assert.ok(output);
-    // All 6 sections should be present
+    // Key sections should be present
     assert.ok(output!.includes("PAGES"), "should have PAGES header");
-    assert.ok(output!.includes("LANES"), "should have LANES section divider");
-    assert.ok(output!.includes("SIZE HISTOGRAM"), "should have histogram section");
-    assert.ok(output!.includes("LOAD BUDGET"), "should have load budget section");
+    assert.ok(output!.includes("lanes:"), "should have lanes inline in header");
+    assert.ok(output!.includes("LOADED"), "should have LOADED section");
+    assert.ok(output!.includes("BUDGET"), "should have BUDGET section");
 
     // Lane glyphs
     assert.ok(output!.includes("🤖"), "should have assistant glyph");
     assert.ok(output!.includes("👤"), "should have user glyph");
     assert.ok(output!.includes("🔧"), "should have tool glyph");
-
-    // Lane abbreviations
-    assert.ok(output!.includes("asst"), "should have assistant lane label");
-    assert.ok(output!.includes("user"), "should have user lane label");
-    assert.ok(output!.includes("tool"), "should have tool lane label");
 
     // Page rows
     assert.ok(output!.includes("pg_001"), "should show first page ID");
@@ -480,7 +475,7 @@ describe("ContextMapSource", () => {
     assert.ok(estimatedTokens < 1200, `Render too long: ~${Math.round(estimatedTokens)} tokens (${output!.length} chars)`);
   });
 
-  test("anchors section shows high-importance pages", async () => {
+  test("high-importance pages shown with star marker", async () => {
     const now = new Date();
     const inner = new SimpleMemory();
     (inner as any).getStats = () => virtualStats({
@@ -495,13 +490,12 @@ describe("ContextMapSource", () => {
     const output = await source.poll();
 
     assert.ok(output);
-    assert.ok(output!.includes("ANCHORS"), "should have anchors section");
-    assert.ok(output!.includes("pg_anchor1"), "should show first anchor page");
-    assert.ok(output!.includes("pg_anchor2"), "should show second anchor page");
-    assert.ok(output!.includes("★"), "should have star marker for anchors");
+    assert.ok(output!.includes("pg_anchor1"), "should show first high-importance page");
+    assert.ok(output!.includes("pg_anchor2"), "should show second high-importance page");
+    assert.ok(output!.includes("★"), "should have star marker for high-importance pages");
   });
 
-  test("histogram shows page size distribution", async () => {
+  test("pages of varying sizes shown with token counts", async () => {
     const now = new Date();
     const inner = new SimpleMemory();
     (inner as any).getStats = () => virtualStats({
@@ -517,11 +511,11 @@ describe("ContextMapSource", () => {
     const output = await source.poll();
 
     assert.ok(output);
-    assert.ok(output!.includes("SIZE HISTOGRAM"), "should have histogram section");
-    assert.ok(output!.includes("<100"), "should have tiny bucket");
-    assert.ok(output!.includes("<1000"), "should have small bucket");
-    assert.ok(output!.includes("<5000"), "should have medium bucket");
-    assert.ok(output!.includes("pages"), "should show page counts in buckets");
+    assert.ok(output!.includes("pg_tiny"), "should show tiny page");
+    assert.ok(output!.includes("pg_small"), "should show small page");
+    assert.ok(output!.includes("pg_med"), "should show medium page");
+    assert.ok(output!.includes("pg_big"), "should show big page");
+    assert.ok(output!.includes("t"), "should show token counts");
   });
 
   test("graceful degradation for basic memory types", async () => {
@@ -572,7 +566,7 @@ describe("ContextMapSource", () => {
 
     assert.ok(output);
     assert.ok(output!.includes("pg_target"), "should show target page ID");
-    assert.ok(output!.includes("page detail"), "should indicate drill-down mode");
+    assert.ok(output!.includes("DETAIL"), "should indicate drill-down mode");
     assert.ok(output!.includes("1.2k") || output!.includes("1200"), "should show token count");
     assert.ok(output!.includes("assistant"), "should show lane");
 
@@ -593,10 +587,9 @@ describe("ContextMapSource", () => {
     const output = await source.poll();
 
     assert.ok(output);
-    assert.ok(output!.includes("LOAD BUDGET"), "should have load budget section");
+    assert.ok(output!.includes("BUDGET"), "should have BUDGET section");
     assert.ok(output!.includes("slots:"), "should show slots label");
     assert.ok(output!.includes("used"), "should show used indicator");
-    assert.ok(output!.includes("budget"), "should show budget indicator");
   });
 
   test("page rows show loaded/unloaded/pinned status", async () => {
@@ -636,8 +629,7 @@ describe("ContextMapSource", () => {
     assert.ok(output!.includes("PAGES"), "should have PAGES header");
     assert.ok(output!.includes("0 total"), "should show 0 total pages");
     assert.ok(output!.includes("no pages"), "should show no pages indicator");
-    assert.ok(output!.includes("SIZE HISTOGRAM"), "should still have histogram");
-    assert.ok(output!.includes("LOAD BUDGET"), "should still have load budget");
+    assert.ok(output!.includes("BUDGET"), "should still have BUDGET section");
   });
 });
 

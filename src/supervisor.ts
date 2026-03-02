@@ -21,6 +21,13 @@ import type { WarmState, WorkerMessage, SupervisorMessage } from "./warm-state.j
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Ensure GRO_PLASTIC env var is set early so both the supervisor and forked
+// child see it. main.ts sets this from --plastic in argv, but the supervisor
+// needs it before forking.
+if (process.argv.includes("--plastic") && !process.env.GRO_PLASTIC) {
+  process.env.GRO_PLASTIC = "1";
+}
+
 /** Handle --plastic-reset before resolving overlay — wipe it so stock is re-deployed. */
 import { rmSync } from "node:fs";
 

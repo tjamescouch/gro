@@ -152,7 +152,7 @@ describe("createMarkerParser", () => {
     assert.equal(markers[0].arg, "sad");
   });
 
-  it("flushes incomplete marker as text on stream end", () => {
+  it("flushes incomplete marker with placeholder on stream end", () => {
     const tokens: string[] = [];
     const parser = createMarkerParser({
       onToken: (s) => tokens.push(s),
@@ -162,8 +162,9 @@ describe("createMarkerParser", () => {
     parser.onToken("hello @@broken");
     parser.flush();
 
-    // Incomplete marker should be emitted as regular text
-    assert.equal(parser.getCleanText(), "hello @@broken");
+    // Unterminated marker at end of stream emits ❓ placeholder
+    assert.ok(parser.getCleanText().startsWith("hello "));
+    assert.ok(parser.getCleanText().includes("\u{2753}"));
   });
 
   it("handles no-arg markers like @@think@@ with 🦉 emoji", () => {
@@ -560,11 +561,11 @@ describe("mixed format in one stream", () => {
     parser.flush();
 
     assert.equal(markers.length, 3);
-    // Colon markers are processed first (more specific), then function-form
-    assert.equal(markers[0].name, "confidence");
-    assert.equal(markers[0].arg, "0.9");
-    assert.equal(markers[1].name, "thinking");
-    assert.equal(markers[1].arg, "0.5");
+    // State-machine parser processes markers in left-to-right document order
+    assert.equal(markers[0].name, "thinking");
+    assert.equal(markers[0].arg, "0.5");
+    assert.equal(markers[1].name, "confidence");
+    assert.equal(markers[1].arg, "0.9");
     assert.equal(markers[2].name, "relax");
     assert.equal(markers[2].arg, "");
     assert.ok(parser.getCleanText().includes(" text "));

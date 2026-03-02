@@ -916,9 +916,11 @@ async function executeTurn(
             if (source && "setFilter" in source && typeof (source as any).setFilter === "function") {
               (source as any).setFilter(filter);
             }
-            // Full-screen expand: commandeer all slots for this channel
+            // Full-screen expand: commandeer all slots for this channel.
+            // Accept common synonyms ("full") and map to the real channel name.
             if (filter === "full") {
-              memory.expandForOneTurn(channelName);
+              const normalized = channelName === "full" ? "context" : channelName;
+              memory.expandForOneTurn(normalized);
             }
             Logger.telemetry(`Stream marker: view('${channelName}:${filter}') → drill-down on slot${slot}`);
           }

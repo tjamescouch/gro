@@ -2,13 +2,18 @@
  * Stream Marker Parser
  *
  * Intercepts @@name('arg')@@ and @@name:value@@ patterns in the token stream.
- * Generic architecture — any marker type can register a handler.
  *
- * Markers are replaced with emoji indicators in the output stream:
- *   💡 for thinking markers (think, relax, zzz, thinking)
- *   🧠 for all other markers (model-change, importance, ref, etc.)
+ * IMPORTANT: This file implements a STREAMING parser. Markers may be split
+ * across token/chunk boundaries (e.g. "@" then "@think@@"). The streaming
+ * parser uses a character-scanning state machine rather than regex to handle
+ * split boundaries reliably.
  *
- * When a complete marker is detected, the registered handler fires.
+ * Marker behavior:
+ * - Markers are replaced with emoji indicators in the *clean text*.
+ * - For streaming: by default, only normal text is forwarded via opts.onToken.
+ *   Emojis are only forwarded when Logger.isVerbose().
+ * - On final flush: if we end on an unterminated marker prefix/tail, we emit
+ *   a visible placeholder "❓".
  *
  * Built-in marker types:
  *   @@model-change('sonnet')@@  — switch the active model mid-stream
@@ -20,13 +25,6 @@
  *
  * Avatar markers (@@[...]@@):
  *   @@[face excited:1.0,full cheerful:0.8]@@  — animate avatar clips with weights
- *
- * Usage:
- *   const parser = createMarkerParser({ onMarker: (name, arg) => { ... } });
- *   // Wrap your onToken callback:
- *   driver.chat(messages, { onToken: parser.onToken });
- *   // After the response, get clean text:
- *   const cleanText = parser.getCleanText();
  */
 
 import { Logger } from "./logger.js";
@@ -57,36 +55,17 @@ export interface MarkerParserOptions {
 }
 
 /**
- * Marker regex: @@name('arg')@@ or @@name("arg")@@ or @@name@@
- * Non-greedy matching prevents consuming URLs like "http://..." incorrectly.
- * Supports escaped markers: \@@ → treated as literal text.
+ * Marker regexes are kept ONLY for non-streaming extraction (extractMarkers).
+ * Streaming parsing uses StreamMarkerParser.processBuffer() state machine.
  */
 const MARKER_RE = /(?<!\\)@@([a-zA-Z][a-zA-Z0-9_-]*)(?:\((?:'([^']*?)'|"([^"]*?)"|([^)]*?))\))?@@/g;
-
-/**
- * Colon-format markers: @@name:value@@ or @@name:value,name:value,...@@
- * Values must be numeric (integer or decimal). Each name:value pair fires separately.
- */
 const COLON_MARKER_RE = /(?<!\\)@@([a-zA-Z][a-zA-Z0-9_-]*:[0-9.]+(?:,[a-zA-Z][a-zA-Z0-9_-]*:[0-9.]+)*)@@/g;
-
-/** Partial marker detection — we might be mid-stream in a marker.
- *  The trailing @? catches the case where one char of the closing @@ has arrived
- *  (e.g. "@@reboot@" waiting for the second "@"). */
-const PARTIAL_MARKER_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?:\([^)]*)?@?$/;
-
-/** Partial colon marker detection for streaming buffering */
-const PARTIAL_COLON_RE = /@@[a-zA-Z][a-zA-Z0-9_-]*(?::[0-9.]*(?:,[a-zA-Z][a-zA-Z0-9_-]*(?::[0-9.]*)?)*)?@?$/;
-
-/** Bare @ or @@ at end of buffer — could be the start of @@marker@@ */
-const PARTIAL_AT_RE = /@{1,2}$/;
 
 /** Avatar marker: @@[clip name:weight, ...]@@ */
 const AVATAR_MARKER_RE = /@@\[([^\]@]+)\]@@/g;
-/** Partial avatar marker detection for streaming */
-const PARTIAL_AVATAR_RE = /@@\[[^\]@]*$/;
 const AVATAR_EMOJI = "\u{1F3AD}";  // 🎭
 
-/** Thinking-related marker names get 💡, everything else gets 🧠 */
+/** Thinking-related marker names get 🦉, everything else gets 🧠 */
 const THINKING_MARKERS = new Set(["think", "relax", "zzz", "thinking"]);
 /**
  * Reserved marker names — cannot be used as emotion dimensions.
@@ -299,8 +278,13 @@ export function extractMarkers(text: string, onMarker: MarkerHandler, onAvatarMa
 }
 
 /**
- * StreamMarkerParser class — streaming parser for @@marker@@ patterns.
- * Handles function-form @@name('arg')@@, colon-form @@name:value@@, and avatar markers.
+ * StreamMarkerParser — delimiter-safe streaming parser.
+ *
+ * This is a character-scanning state machine that:
+ * - scans for @@ ... @@
+ * - parses avatar markers @@[...]@@, function markers @@name('arg')@@,
+ *   and colon markers @@name:value@@
+ * - is safe when @@ delimiter is split across streaming boundaries
  */
 export class StreamMarkerParser implements MarkerParser {
   private buffer = "";
@@ -321,13 +305,8 @@ export class StreamMarkerParser implements MarkerParser {
     this.processBuffer(true);
   };
 
-  getCleanText = (): string => {
-    return this.cleanText;
-  };
-
-  getMarkers = (): StreamMarker[] => {
-    return [...this.markers];
-  };
+  getCleanText = (): string => this.cleanText;
+  getMarkers = (): StreamMarker[] => [...this.markers];
 
   reset = (): void => {
     this.buffer = "";
@@ -337,7 +316,6 @@ export class StreamMarkerParser implements MarkerParser {
 
   private emitText(text: string): void {
     if (!text) return;
-    // Unescape \@@ → @@ so masked code-span markers render correctly
     const unescaped = text.replace(/\\@@/g, "@@");
     this.cleanText += unescaped;
     if (this.opts.onToken) this.opts.onToken(unescaped);
@@ -374,150 +352,214 @@ export class StreamMarkerParser implements MarkerParser {
   /**
    * Mask markers inside backtick code spans/fences so they aren't parsed.
    * Replaces @@ with \@@ inside `...` and ```...``` regions.
-   * Only masks complete code spans — partial/unclosed spans are left alone
-   * so the streaming buffer can accumulate more tokens.
    */
-  private maskCodeSpans(text: string, isFinal: boolean): string {
-    // Mask fenced code blocks (```...```)
+  private maskCodeSpans(text: string): string {
     let result = text.replace(/```[\s\S]*?```/g, (m) => m.replace(/@@/g, "\\@@"));
-    // Mask inline code spans (`...`) — but not partial ones unless final
-    if (isFinal) {
-      result = result.replace(/`[^`]+`/g, (m) => m.replace(/@@/g, "\\@@"));
-    } else {
-      // Only mask complete inline spans (pairs of backticks)
-      result = result.replace(/`[^`]+`/g, (m) => m.replace(/@@/g, "\\@@"));
-    }
+    result = result.replace(/`[^`]+`/g, (m) => m.replace(/@@/g, "\\@@"));
     return result;
+  }
+
+  // --- Streaming parse helpers ---
+
+  private isNameChar(c: string): boolean {
+    return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") ||
+           (c >= "0" && c <= "9") || c === "_" || c === "-";
+  }
+
+  private readUntilUnescaped(s: string, start: number, terminator: string): number {
+    for (let i = start; i < s.length; i++) {
+      if (s[i] === "\\") { i++; continue; }
+      if (s[i] === terminator) return i;
+    }
+    return -1;
+  }
+
+  private tryParseMarkerAt(s: string, atIdx: number):
+    | { kind: "partial" }
+    | { kind: "no" }
+    | { kind: "marker"; name: string; arg: string; raw: string; end: number }
+    | { kind: "colon"; name: string; payload: string; raw: string; end: number } {
+    // precondition: s[atIdx..atIdx+1] === '@@'
+    let i = atIdx + 2;
+    if (i >= s.length) return { kind: "partial" };
+
+    // Avatar: @@[ ... ]@@
+    if (s[i] === "[") {
+      const endBracket = this.readUntilUnescaped(s, i + 1, "]");
+      if (endBracket === -1) return { kind: "partial" };
+      if (endBracket + 2 >= s.length) return { kind: "partial" };
+      if (s[endBracket + 1] !== "@" || s[endBracket + 2] !== "@") return { kind: "no" };
+
+      const raw = s.slice(atIdx, endBracket + 3);
+      const arg = s.slice(i + 1, endBracket);
+      return { kind: "marker", name: "avatar", arg, raw, end: endBracket + 3 };
+    }
+
+    // Marker name must start with a letter
+    if (!(s[i] >= "a" && s[i] <= "z") && !(s[i] >= "A" && s[i] <= "Z")) {
+      return { kind: "no" };
+    }
+
+    const nameStart = i;
+    while (i < s.length && this.isNameChar(s[i])) i++;
+    if (i >= s.length) return { kind: "partial" };
+    const name = s.slice(nameStart, i);
+
+    // Colon-form: @@name:value@@ or @@name:v,name:v@@
+    if (s[i] === ":") {
+      let j = i + 1;
+      while (j < s.length) {
+        if (s[j] === "\\") { j += 2; continue; }
+        if (s[j] === "@" && j + 1 < s.length && s[j + 1] === "@") {
+          const payload = s.slice(i + 1, j);
+          if (!payload) return { kind: "no" }; // @@name:@@ with empty value is not valid
+          const raw = s.slice(atIdx, j + 2);
+          return { kind: "colon", name, payload, raw, end: j + 2 };
+        }
+        j++;
+      }
+      return { kind: "partial" };
+    }
+
+    // Optional (arg)
+    let arg = "";
+    if (s[i] === "(") {
+      const endParen = this.readUntilUnescaped(s, i + 1, ")");
+      if (endParen === -1) return { kind: "partial" };
+      arg = s.slice(i + 1, endParen);
+      if ((arg.startsWith("'") && arg.endsWith("'")) ||
+          (arg.startsWith('"') && arg.endsWith('"'))) {
+        arg = arg.slice(1, -1);
+      }
+      i = endParen + 1;
+    }
+
+    // Close @@
+    if (i + 1 >= s.length) return { kind: "partial" };
+    if (s[i] !== "@" || s[i + 1] !== "@") return { kind: "no" };
+
+    const end = i + 2;
+    const raw = s.slice(atIdx, end);
+    return { kind: "marker", name, arg, raw, end };
   }
 
   private processBuffer(isFinal: boolean): void {
-    // Mask markers inside code spans so they aren't triggered
-    this.buffer = this.maskCodeSpans(this.buffer, isFinal);
+    this.buffer = this.maskCodeSpans(this.buffer);
+    if (!this.buffer) return;
 
-    // First: extract avatar markers @@[...]@@ before standard markers
-    if (this.opts.onAvatarMarker) {
-      this.buffer = this.buffer.replace(new RegExp(AVATAR_MARKER_RE.source, "g"), (_full, contents: string) => {
-        const clips = parseAvatarClips(contents);
-        Logger.debug(`Avatar marker detected: ${JSON.stringify(clips)}`);
-        try { this.opts.onAvatarMarker!(clips); } catch (e) { Logger.warn(`Avatar marker handler error: ${e}`); }
-        return AVATAR_EMOJI;
-      });
-    }
+    const s = this.buffer;
+    let i = 0;
+    let lastTextStart = 0;
 
-    // Process colon-format markers first (more specific), then function-form.
-    // We do colon replacement in-place on the buffer first, then run function-form.
-    this.buffer = this.processColonInBuffer();
+    const flushTextUpTo = (endIdx: number): void => {
+      if (endIdx > lastTextStart) this.emitText(s.slice(lastTextStart, endIdx));
+      lastTextStart = endIdx;
+    };
 
-    // Try to match complete function-form markers in the buffer
-    let lastIndex = 0;
-    const regex = new RegExp(MARKER_RE.source, "g");
-    let match: RegExpExecArray | null;
-
-    while ((match = regex.exec(this.buffer)) !== null) {
-      // Check for escaped marker — if \@@ precedes, treat as literal
-      if (match.index > 0 && this.buffer[match.index - 1] === '\\') {
-        const before = this.buffer.slice(lastIndex, match.index + match[0].length);
-        this.emitText(before);
-        lastIndex = match.index + match[0].length;
-        continue;
-      }
-
-      // Emit any text before this marker
-      const before = this.buffer.slice(lastIndex, match.index);
-      this.emitText(before);
-
-      // Parse the marker
-      const name = match[1];
-      const arg = match[2] ?? match[3] ?? match[4] ?? "";
-      const raw = match[0];
-
-      this.handleMarkerMatch(name, arg, raw);
-      lastIndex = match.index + match[0].length;
-    }
-
-    // Whatever's left after all matches
-    const remainder = this.buffer.slice(lastIndex);
-
-    if (isFinal) {
-      // End of stream — flush everything remaining as text
-      this.emitText(remainder);
-      this.buffer = "";
-    } else {
-      // Check if the remainder could be a partial marker (standard, colon, avatar, or bare @/@@)
-      const partialMatch = PARTIAL_COLON_RE.exec(remainder)
-        ?? PARTIAL_MARKER_RE.exec(remainder)
-        ?? PARTIAL_AVATAR_RE.exec(remainder)
-        ?? PARTIAL_AT_RE.exec(remainder);
-      if (partialMatch) {
-        // Hold back the potential partial marker, emit what's before it
-        const safe = remainder.slice(0, partialMatch.index);
-        this.emitText(safe);
-        this.buffer = remainder.slice(partialMatch.index);
-      } else {
-        // No partial marker — emit all remaining text
-        this.emitText(remainder);
-        this.buffer = "";
-      }
-    }
-  }
-
-  /**
-   * Process colon-format markers in the buffer, replacing them with emojis
-   * and firing handlers. Returns the modified buffer string.
-   */
-  private processColonInBuffer(): string {
-    const regex = new RegExp(COLON_MARKER_RE.source, "g");
-    let result = "";
-    let lastIndex = 0;
-    let match: RegExpExecArray | null;
-
-    while ((match = regex.exec(this.buffer)) !== null) {
-      if (match.index > 0 && this.buffer[match.index - 1] === '\\') {
-        result += this.buffer.slice(lastIndex, match.index + match[0].length);
-        lastIndex = match.index + match[0].length;
-        continue;
-      }
-
-      result += this.buffer.slice(lastIndex, match.index);
-
-      // Parse comma-separated name:value pairs
-      const pairs = match[1].split(",");
-      let firstEmoji = "";
-      for (const pair of pairs) {
-        const colonIdx = pair.indexOf(":");
-        const name = pair.slice(0, colonIdx);
-        const arg = pair.slice(colonIdx + 1);
-        const raw = match[0];
-
-        const validation = validateMarker(name, arg);
-        if (!validation.valid) {
-          Logger.warn(`Invalid marker: ${validation.error}`);
+    while (i < s.length) {
+      if (s[i] === "@" && i + 1 < s.length && s[i + 1] === "@") {
+        // Check for escape: \@@ means literal @@
+        if (i > 0 && s[i - 1] === "\\") {
+          if (i - 1 > lastTextStart) this.emitText(s.slice(lastTextStart, i - 1));
+          this.emitText("@@");
+          i += 2;
+          lastTextStart = i;
           continue;
         }
 
-        const marker: StreamMarker = { name, arg, raw };
-        this.markers.push(marker);
-        Logger.debug(`Stream marker detected: @@${name}:${arg}@@`);
+        const parsed = this.tryParseMarkerAt(s, i);
 
-        try {
-          this.opts.onMarker(marker);
-        } catch (e: unknown) {
-          Logger.warn(`Marker handler error for ${name}: ${e}`);
+        if (parsed.kind === "marker") {
+          flushTextUpTo(i);
+
+          if (parsed.name === "avatar") {
+            const clips = parseAvatarClips(parsed.arg);
+            Logger.debug(`Avatar marker detected: ${JSON.stringify(clips)}`);
+            try {
+              if (this.opts.onAvatarMarker) this.opts.onAvatarMarker(clips);
+            } catch (e) {
+              Logger.warn(`Avatar marker handler error: ${e}`);
+            }
+            this.emitEmoji("ctrl");
+          } else {
+            this.handleMarkerMatch(parsed.name, parsed.arg ?? "", parsed.raw);
+          }
+
+          i = parsed.end;
+          lastTextStart = i;
+          continue;
         }
 
-        if (!firstEmoji) firstEmoji = markerEmoji(name);
+        if (parsed.kind === "colon") {
+          flushTextUpTo(i);
+
+          const fullPayload = parsed.name + ":" + parsed.payload;
+          const pairs = fullPayload.split(",");
+          let firstEmoji = "";
+          for (const pair of pairs) {
+            const colonIdx = pair.indexOf(":");
+            if (colonIdx === -1) continue;
+            const dim = pair.slice(0, colonIdx).trim();
+            const val = pair.slice(colonIdx + 1).trim();
+
+            const validation = validateMarker(dim, val);
+            if (!validation.valid) {
+              Logger.warn(`Invalid marker: ${validation.error}`);
+              continue;
+            }
+
+            const marker: StreamMarker = { name: dim, arg: val, raw: parsed.raw };
+            this.markers.push(marker);
+            Logger.debug(`Stream marker detected: @@${dim}:${val}@@`);
+            try {
+              this.opts.onMarker(marker);
+            } catch (e: unknown) {
+              Logger.warn(`Marker handler error for ${dim}: ${e}`);
+            }
+
+            if (!firstEmoji) firstEmoji = markerEmoji(dim);
+          }
+
+          const emoji = firstEmoji || markerEmoji(parsed.name);
+          this.cleanText += emoji;
+          if (this.opts.onToken && Logger.isVerbose()) this.opts.onToken(emoji);
+
+          i = parsed.end;
+          lastTextStart = i;
+          continue;
+        }
+
+        if (parsed.kind === "partial") {
+          flushTextUpTo(i);
+
+          if (isFinal) {
+            // Unterminated marker tail at end of stream
+            this.cleanText += "\u{2753}"; // ❓
+            if (this.opts.onToken && Logger.isVerbose()) this.opts.onToken("\u{2753}");
+            this.buffer = "";
+          } else {
+            this.buffer = s.slice(i);
+          }
+          return;
+        }
+
+        // parsed.kind === "no": treat as literal text and continue scanning
       }
 
-      // Emit emoji for the colon marker group (use first dimension's emoji)
-      const emoji = firstEmoji || markerEmoji(pairs[0].split(":")[0]);
-      this.cleanText += emoji;
-      if (this.opts.onToken && Logger.isVerbose()) this.opts.onToken(emoji);
+      // If '@' is at the very end of a non-final buffer, it might be the
+      // start of '@@'. Hold it back for the next chunk.
+      if (!isFinal && s[i] === "@" && i === s.length - 1) {
+        flushTextUpTo(i);
+        this.buffer = "@";
+        return;
+      }
 
-      lastIndex = match.index + match[0].length;
+      i++;
     }
 
-    result += this.buffer.slice(lastIndex);
-    return result;
+    // No partial marker tails: flush everything
+    flushTextUpTo(s.length);
+    this.buffer = "";
   }
 }
 

@@ -13,12 +13,24 @@
  */
 
 import { fork, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import type { WarmState, WorkerMessage, SupervisorMessage } from "./warm-state.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MAIN_SCRIPT = join(__dirname, "main.js");
+
+/** In PLASTIC mode, fork from the overlay's main.js if it exists. */
+function resolveMainScript(): string {
+  if (process.env.GRO_PLASTIC) {
+    const overlayMain = join(homedir(), ".gro", "plastic", "overlay", "main.js");
+    if (existsSync(overlayMain)) return overlayMain;
+  }
+  return join(__dirname, "main.js");
+}
+
+const MAIN_SCRIPT = resolveMainScript();
 
 const EXIT_RELOAD = 75;
 const EXIT_ROLLBACK = 96;

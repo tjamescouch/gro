@@ -1565,6 +1565,26 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turn
                 result = head + `\n\n... [truncated ${omitted} chars (${Math.ceil(omitted / 2.8)} est. tokens) — use offset/limit for targeted reads] ...\n\n` + tail;
                 Logger.info(`[truncate] Tool "${fnName}" result truncated: ${originalLen} → ${result.length} chars`);
             }
+            // Auto-retry idle tool (e.g. agentchat_listen) when it returns empty,
+            // so the LLM isn't woken just to see "no new messages".
+            const { idleTool } = cfg.toolRoles;
+            if (idleTool && fnName === idleTool && typeof result === "string") {
+                let retries = 0;
+                const MAX_RETRIES = 1000;
+                while (retries < MAX_RETRIES) {
+                    try {
+                        const parsed = JSON.parse(result);
+                        if (parsed.timeout === true && Array.isArray(parsed.messages) && parsed.messages.length === 0) {
+                            retries++;
+                            Logger.debug(`Idle tool returned empty (retry ${retries}) — auto-retrying without LLM`);
+                            result = await mcp.callTool(fnName, fnArgs).catch(e => `Error: ${asError(e).message}`);
+                            continue;
+                        }
+                    }
+                    catch { /* not JSON — treat as content */ }
+                    break;
+                }
+            }
             // Feed tool result back into memory (protected from compaction until model processes it)
             const toolResultMsg = {
                 role: "tool",

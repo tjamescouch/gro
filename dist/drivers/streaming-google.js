@@ -48,6 +48,22 @@ class YieldBudget {
 function convertMessages(messages) {
     let systemInstruction;
     const raw = [];
+    // --- Orphan repair: pre-scan for tool_call/tool_result pairing ---
+    // After memory compaction, tool_calls can lose their results or vice versa.
+    // Gemini requires functionCall to be immediately followed by functionResponse.
+    const knownToolCallIds = new Set();
+    const knownToolResultIds = new Set();
+    for (const m of messages) {
+        if (m.role === "assistant" && Array.isArray(m.tool_calls)) {
+            for (const tc of m.tool_calls) {
+                if (tc.id)
+                    knownToolCallIds.add(tc.id);
+            }
+        }
+        if (m.role === "tool" && m.tool_call_id) {
+            knownToolResultIds.add(m.tool_call_id);
+        }
+    }
     for (const msg of messages) {
         // System prompt → systemInstruction (only first one)
         if (msg.role === "system") {
@@ -62,6 +78,11 @@ function convertMessages(messages) {
         }
         // Tool result → user turn with functionResponse
         if (msg.role === "tool") {
+            // Drop orphaned tool results (no matching functionCall)
+            if (msg.tool_call_id && !knownToolCallIds.has(msg.tool_call_id)) {
+                Logger.debug(`[Google] Dropping orphaned functionResponse for missing call ${msg.tool_call_id}`);
+                continue;
+            }
             let responseData;
             try {
                 responseData = JSON.parse(msg.content);
@@ -89,6 +110,11 @@ function convertMessages(messages) {
             const toolCalls = msg.tool_calls;
             if (Array.isArray(toolCalls)) {
                 for (const tc of toolCalls) {
+                    // Drop orphaned functionCalls (no matching functionResponse)
+                    if (tc.id && !knownToolResultIds.has(tc.id)) {
+                        Logger.debug(`[Google] Dropping orphaned functionCall ${tc.id} (${tc.function?.name})`);
+                        continue;
+                    }
                     let args = {};
                     try {
                         args = JSON.parse(tc.function?.arguments || "{}");

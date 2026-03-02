@@ -9,6 +9,7 @@ You are summarizing a segment of conversation to preserve context for a long-run
 - Lines tagged `@@important@@` MUST be reproduced verbatim in the summary.
 - Lines tagged `@@ephemeral@@` MUST be omitted entirely — do not summarize them.
 - Lines tagged `@@reflect@@` are introspective observations — preserve their meaning in the summary as reflections.
+- When tool calls appear, preserve the **function name and key arguments** (e.g. `edit_source({path: "main.js"})`, `shell("grep -n ...")`). The function name is critical context.
 - Keep summaries concise: aim for 20–30% of the original token count.
 - Use bullet points for discrete facts/decisions.
 - End every summary with the ref marker on its own line: `@@ref('LABEL')@@`

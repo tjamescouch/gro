@@ -90,8 +90,8 @@ function buildQuery(messages: ChatMessage[]): string | null {
       lastAssistant = content.trim();
     }
     // Collect unique tool call function names (strong topical signal)
-    if (msg.role === "assistant" && Array.isArray((msg as any).tool_calls) && recentToolNames.length < 5) {
-      for (const tc of (msg as any).tool_calls) {
+    if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && recentToolNames.length < 5) {
+      for (const tc of msg.tool_calls) {
         const name = tc?.function?.name;
         if (name && recentToolNames.length < 5 && !recentToolNames.includes(name)) recentToolNames.push(name);
       }

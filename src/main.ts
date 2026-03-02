@@ -1257,7 +1257,7 @@ async function executeTurn(
       assistantMsg.importance = roundImportance;
     }
     if (output.toolCalls.length > 0) {
-      (assistantMsg as any).tool_calls = output.toolCalls;
+      assistantMsg.tool_calls = output.toolCalls;
       // Protect assistant message with tool_calls from compaction until tools are processed
       memory.protectMessage(assistantMsg);
     }
@@ -1326,7 +1326,7 @@ async function executeTurn(
           // Try to reuse args from the most recent call to the idle tool
           const recentMsgs = memory.messages();
           for (let mi = recentMsgs.length - 1; mi >= 0; mi--) {
-            const tc = (recentMsgs[mi] as any).tool_calls;
+            const tc = recentMsgs[mi].tool_calls;
             if (Array.isArray(tc)) {
               for (const c of tc) {
                 if (c.function?.name === idleTool) {
@@ -1987,11 +1987,14 @@ async function interactive(
         const msgCount = sess.messages.filter((m: any) => m.role !== "system").length;
         Logger.info(C.gray(`Resumed cross-provider session ${sessionId} (${msgCount} messages)`));
       } else {
-        Logger.warn(
-          `Provider changed from ${sess.meta.provider} to ${cfg.provider} — ` +
-          `starting fresh session to avoid cross-provider corruption (tool message format incompatibility)`
-        );
-        // Don't load the old session - cross-provider resume unsafe when provider explicitly changed
+        // Explicit cross-provider switch: load session normally.
+        // Messages are stored in a provider-agnostic internal format;
+        // each driver's convertMessages() handles the transformation at send time.
+        await memory.load(sessionId);
+        const msgCount = sess.messages.filter((m: any) => m.role !== "system").length;
+        Logger.info(C.gray(
+          `Cross-provider resume: ${msgCount} messages from ${sess.meta.provider} → ${cfg.provider}`
+        ));
       }
     } else {
       await memory.load(sessionId);

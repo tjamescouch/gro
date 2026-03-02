@@ -10,6 +10,8 @@ export interface ChatMessage {
   tool_call_id?: string;
   /** Optional: tool/function name for clarity. */
   name?: string;
+  /** Tool calls issued by this assistant message. Provider-agnostic format. */
+  tool_calls?: ChatToolCall[];
 }
 
 export interface ChatToolCall {

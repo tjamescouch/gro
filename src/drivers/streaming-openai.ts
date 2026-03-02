@@ -120,10 +120,10 @@ export function makeStreamingOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
       const msg = stripped[i];
 
       // When we hit an assistant with tool_calls, collect ALL responses immediately
-      if (msg.role === "assistant" && (msg as any).tool_calls && (msg as any).tool_calls.length > 0) {
+      if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
         wireMessages.push(msg);
 
-        const calls = (msg as any).tool_calls as Array<{id: string; function: {name: string}}>;
+        const calls = msg.tool_calls;
         const expectedIds = new Set(calls.map(c => c.id));
 
         // Scan ahead to find and collect all tool responses for these call IDs

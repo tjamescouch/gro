@@ -154,7 +154,7 @@ function sanitizeToolPairs(messages: ChatMessage[]): ChatMessage[] {
   const toolUseIds = new Set<string>();
   for (const m of messages) {
     if (m.role === "assistant") {
-      const toolCalls = (m as any).tool_calls as Array<{ id: string }> | undefined;
+      const toolCalls = m.tool_calls;
       if (Array.isArray(toolCalls)) {
         for (const tc of toolCalls) {
           if (tc.id) toolUseIds.add(tc.id);
@@ -190,7 +190,7 @@ function sanitizeToolPairs(messages: ChatMessage[]): ChatMessage[] {
       seenToolResults.add(m.tool_call_id);
     }
     result.push(m);
-    const toolCalls = (m as any).tool_calls as Array<{ id: string; function?: { name?: string } }> | undefined;
+    const toolCalls = m.tool_calls;
     if (m.role === "assistant" && Array.isArray(toolCalls)) {
       for (const tc of toolCalls) {
         if (!answeredIds.has(tc.id)) {

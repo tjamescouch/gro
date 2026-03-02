@@ -129,7 +129,7 @@ export class PerfectMemory extends VirtualMemory {
     let chars = 0;
     for (const m of messages) {
       chars += String(m.content ?? "").length + 32;
-      const tc = (m as any).tool_calls;
+      const tc = m.tool_calls;
       if (Array.isArray(tc)) {
         for (const call of tc) {
           const fn = call?.function;

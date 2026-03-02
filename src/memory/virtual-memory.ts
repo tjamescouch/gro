@@ -787,7 +787,7 @@ export class VirtualMemory extends AgentMemory {
       // function arguments (e.g. agentchat_send messages, file writes, patches).
       // Without counting these, the windowing loop and compaction triggers
       // massively underestimate assistant message sizes → context_length_exceeded.
-      const tc = (m as any).tool_calls;
+      const tc = m.tool_calls;
       if (Array.isArray(tc)) {
         for (const call of tc) {
           const fn = call?.function;
@@ -1038,8 +1038,8 @@ export class VirtualMemory extends AgentMemory {
         window.shift();
       } else if (
         first.role === 'assistant' &&
-        Array.isArray((first as any).tool_calls) &&
-        (first as any).tool_calls.length > 0
+        Array.isArray(first.tool_calls) &&
+        first.tool_calls.length > 0
       ) {
         // Dangling tool_calls with no following tool results. Drop it.
         const hasResults = window.length > 1 && window[1].role === 'tool';
@@ -1059,8 +1059,8 @@ export class VirtualMemory extends AgentMemory {
       const last = window[window.length - 1];
       if (
         last.role === 'assistant' &&
-        Array.isArray((last as any).tool_calls) &&
-        (last as any).tool_calls.length > 0
+        Array.isArray(last.tool_calls) &&
+        last.tool_calls.length > 0
       ) {
         // Assistant with tool_calls at end of window — its results were cut off. Drop it.
         window.pop();
@@ -1086,7 +1086,7 @@ export class VirtualMemory extends AgentMemory {
       while (trimmed < excess && result.length > wmStart + this.cfg.minRecentPerLane * 4) {
         const msg = result[wmStart];
         // If this is an assistant message with tool_calls, remove it AND all following tool results
-        const tc = (msg as any).tool_calls;
+        const tc = msg.tool_calls;
         if (msg.role === "assistant" && Array.isArray(tc) && tc.length > 0) {
           let groupSize = 1;
           while (wmStart + groupSize < result.length && result[wmStart + groupSize].role === "tool") {
@@ -1302,7 +1302,7 @@ export class VirtualMemory extends AgentMemory {
     // Collect all call IDs from assistant tool_calls
     const allCallIds = new Set<string>();
     for (const m of buf) {
-      const tc = (m as any).tool_calls;
+      const tc = m.tool_calls;
       if (m.role === "assistant" && Array.isArray(tc)) {
         for (const c of tc) if (c?.id) allCallIds.add(c.id);
       }
@@ -1316,7 +1316,7 @@ export class VirtualMemory extends AgentMemory {
 
     for (let i = 0; i < buf.length; i++) {
       const msg = buf[i];
-      const tc = (msg as any).tool_calls;
+      const tc = msg.tool_calls;
       if (msg.role !== "assistant" || !Array.isArray(tc) || tc.length === 0) continue;
 
       // CRITICAL: Never flatten protected messages — they are in-flight current-turn
@@ -1385,7 +1385,7 @@ export class VirtualMemory extends AgentMemory {
         continue;
       }
 
-      const tc = (msg as any).tool_calls;
+      const tc = msg.tool_calls;
       if (msg.role === "assistant" && Array.isArray(tc) && tc.length > 0) {
         // Flatten each tool call into a summarized assistant + tool pair
         for (const call of tc) {
@@ -1658,7 +1658,7 @@ export class VirtualMemory extends AgentMemory {
       // tool results regardless of their position in the tool lane.
       const keptToolCallIds = new Set<string>();
       for (const m of keepAssistant) {
-        const tc = (m as any).tool_calls;
+        const tc = m.tool_calls;
         if (Array.isArray(tc)) {
           for (const c of tc) {
             if (c?.id) keptToolCallIds.add(c.id);
@@ -1706,7 +1706,7 @@ export class VirtualMemory extends AgentMemory {
       const promotedAssistant: ChatMessage[] = [];
       const finalOlderAssistant: ChatMessage[] = [];
       for (const m of olderAssistant) {
-        const tc = (m as any).tool_calls;
+        const tc = m.tool_calls;
         if (Array.isArray(tc) && tc.some((c: any) => c?.id && keptToolResultIds.has(c.id))) {
           promotedAssistant.push(m);
         } else {
@@ -1728,7 +1728,7 @@ export class VirtualMemory extends AgentMemory {
         const label = `assistant lane ${new Date().toISOString().slice(0, 16)} (${finalOlderAssistant.length} msgs)`;
         const { page, summary } = await this.createPageFromMessages(finalOlderAssistant, label, "assistant");
         for (const m of finalOlderAssistant) {
-          const tc = (m as any).tool_calls;
+          const tc = m.tool_calls;
           if (Array.isArray(tc)) {
             for (const c of tc) {
               if (c?.id) pagedToolCallIds.set(c.id, page.id);

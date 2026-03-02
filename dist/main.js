@@ -1915,9 +1915,12 @@ async function interactive(cfg, driver, mcp, sessionId) {
                 Logger.info(C.gray(`Resumed cross-provider session ${sessionId} (${msgCount} messages)`));
             }
             else {
-                Logger.warn(`Provider changed from ${sess.meta.provider} to ${cfg.provider} — ` +
-                    `starting fresh session to avoid cross-provider corruption (tool message format incompatibility)`);
-                // Don't load the old session - cross-provider resume unsafe when provider explicitly changed
+                // Explicit cross-provider switch: load session normally.
+                // Messages are stored in a provider-agnostic internal format;
+                // each driver's convertMessages() handles the transformation at send time.
+                await memory.load(sessionId);
+                const msgCount = sess.messages.filter((m) => m.role !== "system").length;
+                Logger.info(C.gray(`Cross-provider resume: ${msgCount} messages from ${sess.meta.provider} → ${cfg.provider}`));
             }
         }
         else {

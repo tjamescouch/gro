@@ -78,6 +78,22 @@ function convertMessages(messages: ChatMessage[]): {
   let systemInstruction: GeminiContent | undefined;
   const raw: GeminiContent[] = [];
 
+  // --- Orphan repair: pre-scan for tool_call/tool_result pairing ---
+  // After memory compaction, tool_calls can lose their results or vice versa.
+  // Gemini requires functionCall to be immediately followed by functionResponse.
+  const knownToolCallIds = new Set<string>();
+  const knownToolResultIds = new Set<string>();
+  for (const m of messages) {
+    if (m.role === "assistant" && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) {
+        if (tc.id) knownToolCallIds.add(tc.id);
+      }
+    }
+    if (m.role === "tool" && m.tool_call_id) {
+      knownToolResultIds.add(m.tool_call_id);
+    }
+  }
+
   for (const msg of messages) {
     // System prompt → systemInstruction (only first one)
     if (msg.role === "system") {
@@ -93,6 +109,11 @@ function convertMessages(messages: ChatMessage[]): {
 
     // Tool result → user turn with functionResponse
     if (msg.role === "tool") {
+      // Drop orphaned tool results (no matching functionCall)
+      if (msg.tool_call_id && !knownToolCallIds.has(msg.tool_call_id)) {
+        Logger.debug(`[Google] Dropping orphaned functionResponse for missing call ${msg.tool_call_id}`);
+        continue;
+      }
       let responseData: Record<string, any>;
       try {
         responseData = JSON.parse(msg.content);
@@ -117,9 +138,14 @@ function convertMessages(messages: ChatMessage[]): {
       if (msg.content) {
         parts.push({ text: msg.content });
       }
-      const toolCalls = (msg as any).tool_calls;
+      const toolCalls = msg.tool_calls;
       if (Array.isArray(toolCalls)) {
         for (const tc of toolCalls) {
+          // Drop orphaned functionCalls (no matching functionResponse)
+          if (tc.id && !knownToolResultIds.has(tc.id)) {
+            Logger.debug(`[Google] Dropping orphaned functionCall ${tc.id} (${tc.function?.name})`);
+            continue;
+          }
           let args: Record<string, any> = {};
           try {
             args = JSON.parse(tc.function?.arguments || "{}");

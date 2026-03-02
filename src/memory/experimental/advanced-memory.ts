@@ -212,7 +212,7 @@ export class AdvancedMemory extends AgentMemory {
         for (let i = 0; i < buf.length; i++) {
           const m = buf[i];
           // Check if this assistant message has tool_calls — if so, treat it + subsequent tool results as a group
-          const tc = (m as any).tool_calls;
+          const tc = m.tool_calls;
           if (m.role === "assistant" && Array.isArray(tc) && tc.length > 0) {
             const group: ChatMessage[] = [m];
             let j = i + 1;

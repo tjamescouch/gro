@@ -95,7 +95,7 @@ function convertMessages(messages: ChatMessage[]): { systemBlocks: SystemBlock[]
   const answeredToolUseIds = new Set<string>();
   for (const m of messages) {
     if (m.role === "assistant") {
-      const toolCalls = (m as any).tool_calls;
+      const toolCalls = m.tool_calls;
       if (Array.isArray(toolCalls)) {
         for (const tc of toolCalls) {
           if (tc.id) knownToolUseIds.add(tc.id);
@@ -128,7 +128,7 @@ function convertMessages(messages: ChatMessage[]): { systemBlocks: SystemBlock[]
 
       // Convert OpenAI-style tool_calls to Anthropic tool_use blocks,
       // but only include tool_calls that have matching tool_results
-      const toolCalls = (m as any).tool_calls;
+      const toolCalls = m.tool_calls;
       if (Array.isArray(toolCalls)) {
         const orphanedIds: string[] = [];
         for (const tc of toolCalls) {

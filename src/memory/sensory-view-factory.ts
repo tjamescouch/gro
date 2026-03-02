@@ -93,12 +93,12 @@ export function createDefaultFactory(): SensoryViewFactory {
   const factory = new SensoryViewFactory();
 
   factory.register(
-    { name: "context", maxTokens: 800, width: 82, height: 40, enabled: true, updateMode: "every_turn", viewable: true },
-    (deps) => new ContextMapSource(deps.memory, { maxChars: Math.floor(800 * 2.8), maxLines: 40 }),
+    { name: "context", maxTokens: 900, width: 82, height: 40, enabled: true, updateMode: "every_turn", viewable: true },
+    (deps) => new ContextMapSource(deps.memory, { maxChars: Math.floor(900 * 2.8), maxLines: 40 }),
   );
 
   factory.register(
-    { name: "time", maxTokens: 200, width: 82, height: 22, enabled: true, updateMode: "every_turn", viewable: true },
+    { name: "time", maxTokens: 150, width: 82, height: 16, enabled: true, updateMode: "every_turn", viewable: true },
     () => new TemporalSource(),
   );
 
@@ -133,7 +133,7 @@ export function createDefaultFactory(): SensoryViewFactory {
   );
 
   factory.register(
-    { name: "self", maxTokens: 200, width: 82, height: 20, enabled: false, updateMode: "every_turn", viewable: true },
+    { name: "self", maxTokens: 200, width: 82, height: 20, enabled: true, updateMode: "every_turn", viewable: true },
     () => new SelfSource(),
   );
 

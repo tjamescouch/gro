@@ -131,7 +131,7 @@ export interface SensoryDeps {
  */
 export function wrapWithSensory(inner: AgentMemory, deps: SensoryDeps): AgentMemory {
   try {
-    const sensory = new SensoryMemory(inner, { totalBudget: 1200 });
+    const sensory = new SensoryMemory(inner, { totalBudget: 1400 });
     const factory = createDefaultFactory();
     const memDeps = { memory: inner, spendMeter };
 

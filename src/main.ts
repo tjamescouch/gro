@@ -772,13 +772,27 @@ async function executeTurn(
         const learnFile = join(process.cwd(), "_learn.md");
         const line = `- ${marker.arg}\n`;
         try {
-          appendFileSync(learnFile, line, "utf-8");
-          Logger.telemetry(`Stream marker: learn('${marker.arg}') → saved to _learn.md`);
-          // Hot-patch: inject into current session's system message
-          const innerLearn = unwrapMemory(memory);
-          const sysMsg = (innerLearn as any).messagesBuffer?.[0];
-          if (sysMsg && sysMsg.role === "system") {
-            sysMsg.content += `\n\n<!-- LEARNED -->\n${line}`;
+          // Dedup: check if this fact already exists in the file
+          let existing = "";
+          try { existing = readFileSync(learnFile, "utf-8"); } catch {}
+          const normalized = marker.arg.trim().toLowerCase();
+          const alreadyExists = existing.split("\n").some(l => {
+            const stripped = l.replace(/^-\s*/, "").trim().toLowerCase();
+            return stripped && stripped === normalized;
+          });
+          if (alreadyExists) {
+            Logger.telemetry(`Stream marker: learn('${marker.arg}') → already exists, skipping`);
+          } else {
+            appendFileSync(learnFile, line, "utf-8");
+            Logger.telemetry(`Stream marker: learn('${marker.arg}') → saved to _learn.md`);
+            // Hot-patch: inject into current session's system message
+            const innerLearn = unwrapMemory(memory);
+            const sysMsg = (innerLearn as any).messagesBuffer?.[0];
+            if (sysMsg && sysMsg.role === "system") {
+              if (!sysMsg.content.includes(normalized)) {
+                sysMsg.content += `\n\n<!-- LEARNED -->\n${line}`;
+              }
+            }
           }
         } catch (e) {
           Logger.error(`Stream marker: learn — failed to write _learn.md: ${asError(e).message}`);

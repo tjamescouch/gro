@@ -51,6 +51,7 @@ import { writeSelfToolDefinition, executeWriteSelf } from "./tools/write-self.js
 import { writeSourceToolDefinition, handleWriteSource } from "./plastic/write-source.js";
 import { editSourceToolDefinition, handleEditSource } from "./plastic/edit-source.js";
 import { exportChanges, exportChangesToolDefinition, handleExportChanges } from "./plastic/export.js";
+import { rebootToolDefinition, handleReboot } from "./plastic/reboot.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
 import { ViolationTracker, ThinkingLoopDetector } from "./violations.js";
 import { thinkingTierModel as selectTierModel, selectMultiProviderTierModel, inferModelTier } from "./tier-loader.js";
@@ -318,6 +319,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turn
         tools.push(editSourceToolDefinition);
         tools.push(writeSourceToolDefinition);
         tools.push(exportChangesToolDefinition);
+        tools.push(rebootToolDefinition);
     }
     runtimeState.beginTurn({ model: cfg.model, maxToolRounds: cfg.maxToolRounds });
     memory.clearProtectedMessages();
@@ -1511,13 +1513,34 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turn
                 else if (fnName === "export_changes" && process.env.GRO_PLASTIC) {
                     result = handleExportChanges();
                 }
+                else if (fnName === "reboot" && process.env.GRO_PLASTIC) {
+                    result = handleReboot(fnArgs, () => {
+                        const sid = sessionId ?? "plastic";
+                        if (cfg.supervised && typeof process.send === "function") {
+                            sendWarmSnapshot(memory, sid, cfg, violations, "reload_request");
+                        }
+                        try {
+                            saveSensorySnapshot(memory, sid);
+                        }
+                        catch { }
+                        memory.save(sid).finally(() => process.exit(75));
+                        setTimeout(() => { process.exit(75); }, 3000);
+                    });
+                }
                 else {
                     const pluginResult = await toolRegistry.callTool(fnName, fnArgs);
                     if (pluginResult !== undefined) {
                         result = pluginResult;
                     }
                     else {
-                        result = await mcp.callTool(fnName, fnArgs);
+                        try {
+                            result = await mcp.callTool(fnName, fnArgs);
+                        }
+                        catch (mcpErr) {
+                            Logger.warn(`[MCP] ${fnName} failed (attempt 1), retrying in 1s: ${asError(mcpErr).message}`);
+                            await new Promise(r => setTimeout(r, 1000));
+                            result = await mcp.callTool(fnName, fnArgs);
+                        }
                     }
                 }
             }

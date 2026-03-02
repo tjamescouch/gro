@@ -23,7 +23,7 @@ export const editSourceToolDefinition = {
             "Much faster than write_source for targeted changes — only send the old and new text. " +
             "Path is relative to overlay/ (e.g. 'main.js', 'memory/virtual-memory.js'). " +
             "The old_string must match exactly one location in the file. " +
-            "Use @@reboot@@ after editing to restart with your changes.",
+            "Call the reboot tool after editing to restart with your changes.",
         parameters: {
             type: "object",
             properties: {

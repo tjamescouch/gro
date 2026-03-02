@@ -24,7 +24,7 @@ export const writeSourceToolDefinition = {
         description: "Write source code to the PLASTIC overlay. " +
             "For TypeScript files (e.g. 'main.ts', 'memory/sensory-memory.ts'), writes TS source and auto-compiles to JS for runtime. " +
             "For JS files (e.g. 'main.js'), writes directly to the overlay. " +
-            "Use @@reboot@@ after writing to restart with your changes.",
+            "Call the reboot toolafter writing to restart with your changes.",
         parameters: {
             type: "object",
             properties: {
@@ -118,7 +118,7 @@ function handleTSWrite(tsPath, content) {
     catch { }
     // Commit to source repo for wormhole-pipeline sync
     commitToSourceRepo(tsPath, `PLASTIC: write ${tsPath}`, true);
-    return `OK: wrote ${content.length} bytes to src/${tsPath}${transpileMsg}${patchMsg}. Use @@reboot@@ to restart with changes.`;
+    return `OK: wrote ${content.length} bytes to src/${tsPath}${transpileMsg}${patchMsg}. Call the reboot toolto restart with changes.`;
 }
 /** Write JS directly to overlay (backward compat). */
 function handleJSWrite(jsPath, content) {
@@ -150,7 +150,7 @@ function handleJSWrite(jsPath, content) {
     catch { }
     // Commit to source repo for wormhole-pipeline sync
     commitToSourceRepo(jsPath, `PLASTIC: write ${jsPath}`, false);
-    return `OK: wrote ${content.length} bytes to overlay/${jsPath}. Use @@reboot@@ to restart with changes.`;
+    return `OK: wrote ${content.length} bytes to overlay/${jsPath}. Call the reboot toolto restart with changes.`;
 }
 function updateManifest(modifiedPath) {
     const manifestPath = join(PLASTIC_DIR, "manifest.json");

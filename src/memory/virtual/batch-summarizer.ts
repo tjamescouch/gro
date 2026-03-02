@@ -255,9 +255,13 @@ export class BatchSummarizer {
           continue;
         }
 
-        // Content hash skip: if content hasn't changed, reuse existing summary
+        // Content hash skip: if content hasn't changed, reuse existing summary.
+        // BUT: do not treat placeholder/fallback summaries as "good" — they should be regenerated.
         const hash = contentHash(page.content);
-        if (!force && manifest.hashes[pageId] === hash && page.summary) {
+        const summaryText = typeof page.summary === "string" ? page.summary : "";
+        const isPlaceholderSummary =
+          summaryText.startsWith("[Summary of ") || summaryText.startsWith("[Pending summary:");
+        if (!force && manifest.hashes[pageId] === hash && page.summary && !isPlaceholderSummary) {
           // Content unchanged — just re-embed the existing summary into shadow
           try {
             await shadowIndex.indexPage(pageId, page.summary, page.label);

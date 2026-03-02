@@ -1843,10 +1843,13 @@ export class VirtualMemory extends AgentMemory {
             Logger.warn("[VirtualMemory] Cannot start batch worker: driver not configured");
             return;
         }
-        // Extract API key from driver (assumes AnthropicDriver)
-        const apiKey = this.cfg.driver.apiKey;
-        if (!apiKey) {
-            Logger.warn("[VirtualMemory] Cannot start batch worker: API key not found in driver");
+        // Extract API key from the configured driver.
+        // Support multiple providers — each stores the key under different properties.
+        const d = this.cfg.driver;
+        const apiKey = d.apiKey ?? d.key ?? d.api_key ?? d.anthropicApiKey ?? d.openaiApiKey ?? d.googleApiKey ?? d.xaiApiKey ?? d.cfg?.apiKey ?? d.cfg?.key;
+        if (!apiKey || typeof apiKey !== "string") {
+            const driverName = d?.constructor?.name ?? typeof d;
+            Logger.warn(`[VirtualMemory] Cannot start batch worker: API key not found on driver (${driverName})`);
             return;
         }
         this.batchWorkerManager = new BatchWorkerManager({

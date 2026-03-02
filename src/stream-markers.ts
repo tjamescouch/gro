@@ -337,8 +337,10 @@ export class StreamMarkerParser implements MarkerParser {
 
   private emitText(text: string): void {
     if (!text) return;
-    this.cleanText += text;
-    if (this.opts.onToken) this.opts.onToken(text);
+    // Unescape \@@ → @@ so masked code-span markers render correctly
+    const unescaped = text.replace(/\\@@/g, "@@");
+    this.cleanText += unescaped;
+    if (this.opts.onToken) this.opts.onToken(unescaped);
   }
 
   private emitEmoji(name: string): void {
@@ -369,7 +371,29 @@ export class StreamMarkerParser implements MarkerParser {
     this.emitEmoji(name);
   }
 
+  /**
+   * Mask markers inside backtick code spans/fences so they aren't parsed.
+   * Replaces @@ with \@@ inside `...` and ```...``` regions.
+   * Only masks complete code spans — partial/unclosed spans are left alone
+   * so the streaming buffer can accumulate more tokens.
+   */
+  private maskCodeSpans(text: string, isFinal: boolean): string {
+    // Mask fenced code blocks (```...```)
+    let result = text.replace(/```[\s\S]*?```/g, (m) => m.replace(/@@/g, "\\@@"));
+    // Mask inline code spans (`...`) — but not partial ones unless final
+    if (isFinal) {
+      result = result.replace(/`[^`]+`/g, (m) => m.replace(/@@/g, "\\@@"));
+    } else {
+      // Only mask complete inline spans (pairs of backticks)
+      result = result.replace(/`[^`]+`/g, (m) => m.replace(/@@/g, "\\@@"));
+    }
+    return result;
+  }
+
   private processBuffer(isFinal: boolean): void {
+    // Mask markers inside code spans so they aren't triggered
+    this.buffer = this.maskCodeSpans(this.buffer, isFinal);
+
     // First: extract avatar markers @@[...]@@ before standard markers
     if (this.opts.onAvatarMarker) {
       this.buffer = this.buffer.replace(new RegExp(AVATAR_MARKER_RE.source, "g"), (_full, contents: string) => {

@@ -693,7 +693,7 @@ export class VirtualMemory extends AgentMemory {
             const stripped = raw.split("\n")
                 .filter(line => !/🧠/i.test(line))
                 .join("\n");
-            const c = stripped.slice(0, 4000);
+            const c = stripped.slice(0, m.role === "tool" ? 1500 : 4000);
             // Collect 🧠 lines verbatim for the summarizer header
             for (const line of raw.split("\n")) {
                 if (/🧠/i.test(line)) {
@@ -924,11 +924,14 @@ export class VirtualMemory extends AgentMemory {
             if (page)
                 slotTokens += page.tokens;
         }
+        const EVICT_HALF_LIFE_MS = 3_600_000; // 1 hour — pages lose half their time-bonus per hour
+        const now = Date.now();
         while (slotTokens > this.cfg.pageSlotTokens && this.loadOrder.length > 0) {
             // Score-based eviction: lower score = evict first.
-            // Score = frequency * 10 + recency_position
-            // This means frequently-referenced pages survive longer, with
-            // recency as a tiebreaker among same-frequency pages.
+            // Score = frequency * 10 + recency_position + time_decay_bonus
+            // time_decay_bonus: pages created recently get up to +20 bonus,
+            // decaying with a 1-hour half-life. This ensures stale pages
+            // from hours ago naturally lose priority vs fresh pages.
             let evictIdx = -1;
             let lowestScore = Infinity;
             for (let i = 0; i < this.loadOrder.length; i++) {
@@ -938,7 +941,12 @@ export class VirtualMemory extends AgentMemory {
                 const freq = this.pageRefCount.get(id) ?? 0;
                 // recency: loadOrder[0] is oldest → position 0 = low recency score
                 const recencyScore = i; // higher index = more recent = higher score
-                const score = freq * 10 + recencyScore;
+                // Time decay: bonus based on page creation time
+                const page = this.pages.get(id);
+                const createdAt = page?.createdAt ? new Date(page.createdAt).getTime() : 0;
+                const ageMs = Math.max(0, now - createdAt);
+                const timeBonus = 20 / (1 + ageMs / EVICT_HALF_LIFE_MS);
+                const score = freq * 10 + recencyScore + timeBonus;
                 if (score < lowestScore) {
                     lowestScore = score;
                     evictIdx = i;
@@ -1138,7 +1146,7 @@ export class VirtualMemory extends AgentMemory {
                     const toolResult = toolResultMap.get(callId);
                     const rawResult = toolResult ? String(toolResult.content ?? "") : "";
                     const resultSnippet = rawResult
-                        ? (rawResult.length > 2000 ? rawResult.slice(0, 2000) + "..." : rawResult)
+                        ? (rawResult.length > 500 ? rawResult.slice(0, 500) + "..." : rawResult)
                         : "[result truncated during compaction]";
                     // Determine page ref: either from a lane page that contains this call/result,
                     // or create a mini-page for large results being truncated
@@ -1147,7 +1155,7 @@ export class VirtualMemory extends AgentMemory {
                     if (existingPageId) {
                         refTag = ` <ref id="${existingPageId}"/>`;
                     }
-                    else if (rawResult.length > 2000) {
+                    else if (rawResult.length > 500) {
                         // Result is large and being truncated — save full content to a retrievable page
                         const miniContent = `[tool result from ${fnName}]:\n${rawResult}`;
                         const miniPage = {

@@ -324,7 +324,8 @@ export class StreamMarkerParser implements MarkerParser {
   private emitEmoji(name: string): void {
     const emoji = markerEmoji(name);
     this.cleanText += emoji;
-    if (this.opts.onToken && Logger.isVerbose()) this.opts.onToken(emoji);
+    // Always emit marker emojis to onToken so the streamed output matches cleanText.
+    if (this.opts.onToken) this.opts.onToken(emoji);
   }
 
   private handleMarkerMatch(name: string, arg: string, raw: string): void {
@@ -522,7 +523,7 @@ export class StreamMarkerParser implements MarkerParser {
 
           const emoji = firstEmoji || markerEmoji(parsed.name);
           this.cleanText += emoji;
-          if (this.opts.onToken && Logger.isVerbose()) this.opts.onToken(emoji);
+          if (this.opts.onToken) this.opts.onToken(emoji);
 
           i = parsed.end;
           lastTextStart = i;
@@ -535,7 +536,7 @@ export class StreamMarkerParser implements MarkerParser {
           if (isFinal) {
             // Unterminated marker tail at end of stream
             this.cleanText += "\u{2753}"; // ❓
-            if (this.opts.onToken && Logger.isVerbose()) this.opts.onToken("\u{2753}");
+            if (this.opts.onToken) this.opts.onToken("\u{2753}");
             this.buffer = "";
           } else {
             this.buffer = s.slice(i);
@@ -543,7 +544,14 @@ export class StreamMarkerParser implements MarkerParser {
           return;
         }
 
-        // parsed.kind === "no": treat as literal text and continue scanning
+        // parsed.kind === "no": treat the leading "@@" as literal text.
+        // We must emit it now (otherwise it disappears from cleanText)
+        // and continue scanning after it.
+        flushTextUpTo(i);
+        this.emitText("@@");
+        i += 2;
+        lastTextStart = i;
+        continue;
       }
 
       // If '@' is at the very end of a non-final buffer, it might be the

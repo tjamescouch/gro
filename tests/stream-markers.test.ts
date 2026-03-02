@@ -44,7 +44,7 @@ describe("createMarkerParser", () => {
     }
   });
 
-  it("suppresses marker emojis from onToken in default mode", () => {
+  it("emits marker emojis to onToken to match cleanText", () => {
     Logger.setVerbose(false);
     const tokens: string[] = [];
     const markers: StreamMarker[] = [];
@@ -56,9 +56,8 @@ describe("createMarkerParser", () => {
     parser.onToken("before @@model-change('haiku')@@ after");
     parser.flush();
 
-    // Emoji suppressed from onToken stream in default mode
-    assert.equal(tokens.join(""), "before  after");
-    // But cleanText still includes the emoji
+    // Emojis are always forwarded to onToken so streamed output matches cleanText
+    assert.equal(tokens.join(""), "before \u{1F500} after");
     assert.equal(parser.getCleanText(), "before \u{1F500} after");
     assert.equal(markers.length, 1);
   });

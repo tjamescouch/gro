@@ -232,8 +232,18 @@ export class SemanticRetrieval {
                     this.lastQueryHash = queryHash;
                     try {
                         const maxSemantic = this.maxAutoFillPages - totalLoaded;
-                        const results = await this.searchIndex.searchWithRefBoosts(query, maxSemantic + 3, // over-fetch for filtering
+                        const rawResults = await this.searchIndex.searchWithRefBoosts(query, maxSemantic + 3, // over-fetch for filtering
                         this.autoThreshold, this.recentRefBoosts);
+                        // Recency decay: boost recent pages, decay stale ones (2h half-life)
+                        const now = Date.now();
+                        const HALF_LIFE_MS = 2 * 60 * 60 * 1000; // 2 hours
+                        const results = rawResults.map(r => {
+                            const page = pageMap.get(r.pageId);
+                            const createdAt = page?.createdAt ? new Date(page.createdAt).getTime() : 0;
+                            const ageMs = createdAt ? Math.max(0, now - createdAt) : HALF_LIFE_MS * 4;
+                            const recency = 1 / (1 + ageMs / HALF_LIFE_MS);
+                            return { ...r, score: r.score * (0.3 + 0.7 * recency) };
+                        }).sort((a, b) => b.score - a.score);
                         for (const r of results) {
                             if (totalLoaded >= this.maxAutoFillPages)
                                 break;

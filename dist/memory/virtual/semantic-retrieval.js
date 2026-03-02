@@ -1,0 +1,337 @@
+/**
+ * SemanticRetrieval — orchestrator for automatic and explicit page retrieval.
+ *
+ * Connects EmbeddingProvider, PageSearchIndex, and VirtualMemory:
+ * - Auto-retrieval: before each turn, find semantically relevant pages
+ * - Explicit search: @@ref('?query')@@ triggers semantic search
+ * - Backfill: index existing pages on startup (only those with summaries)
+ * - Live indexing: hook into VirtualMemory.onPageCreated for new pages
+ */
+import { createHash } from "node:crypto";
+import { Logger } from "../../logger.js";
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function hashText(text) {
+    return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+/**
+ * Build a query string from recent messages.
+ * Uses the last real user message (skipping system-injected nudges);
+ * supplements with assistant context and recent tool names for grounding.
+ */
+function buildQuery(messages) {
+    // Patterns that indicate system-injected "user" messages, not real queries
+    const SYNTHETIC_PREFIXES = [
+        "[SYSTEM]", "[REBOOT COMPLETE]", "[REBOOT", "<<HUMAN_CONVERSATION_START>>"
+    ];
+    function isSynthetic(text) {
+        const t = text.trimStart();
+        return SYNTHETIC_PREFIXES.some(p => t.startsWith(p));
+    }
+    let lastUser = "";
+    let lastAssistant = "";
+    const recentToolNames = [];
+    // Walk backwards to find the most recent real user and assistant messages,
+    // plus recent tool call names for topical grounding
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        const content = typeof msg.content === "string" ? msg.content : "";
+        if (!lastUser && msg.role === "user" && content.trim() && !isSynthetic(content)) {
+            lastUser = content.trim();
+        }
+        if (!lastAssistant && msg.role === "assistant" && content.trim()) {
+            lastAssistant = content.trim();
+        }
+        // Collect unique tool call function names (strong topical signal)
+        if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && recentToolNames.length < 5) {
+            for (const tc of msg.tool_calls) {
+                const name = tc?.function?.name;
+                if (name && recentToolNames.length < 5 && !recentToolNames.includes(name))
+                    recentToolNames.push(name);
+            }
+        }
+        if (lastUser && lastAssistant && recentToolNames.length >= 3)
+            break;
+    }
+    if (!lastUser && !lastAssistant)
+        return null;
+    // Build composite query: user message + tool context + assistant fallback
+    const toolContext = recentToolNames.length > 0 ? " [tools: " + recentToolNames.join(", ") + "]" : "";
+    // If user message is short or absent, supplement with assistant context
+    if ((!lastUser || lastUser.length < 20) && lastAssistant) {
+        return ((lastUser || "") + " " + lastAssistant.slice(0, 300) + toolContext).trim();
+    }
+    return (lastUser.slice(0, 500) + toolContext).trim();
+}
+// ---------------------------------------------------------------------------
+// SemanticRetrieval
+// ---------------------------------------------------------------------------
+export class SemanticRetrieval {
+    constructor(config) {
+        this.lastQueryHash = "";
+        this.lastFillHash = "";
+        /** Mutex: true while a batch re-summarization is running. Prevents concurrent backfill. */
+        this._batchRunning = false;
+        /** Session-level ref-feedback: recently explicitly ref'd pages boost similar pages in retrieval. */
+        this.recentRefBoosts = [];
+        this.memory = config.memory;
+        this.searchIndex = config.searchIndex;
+        this.autoEnabled = config.autoRetrievalEnabled ?? true;
+        this.maxAutoPages = config.maxAutoPages ?? 1;
+        this.autoThreshold = config.autoThreshold ?? 0.5;
+        this.searchThreshold = config.searchThreshold ?? 0.4;
+        this.searchMaxResults = config.searchMaxResults ?? 5;
+        this.maxAutoFillPages = config.maxAutoFillPages ?? 3;
+        this.autoFillBudgetFraction = config.autoFillBudgetFraction ?? 0.7;
+        this.maxRecentRefs = 5;
+        this.refDecayRate = 0.7;
+    }
+    get available() {
+        return this.searchIndex.size > 0;
+    }
+    get batchRunning() { return this._batchRunning; }
+    set batchRunning(v) { this._batchRunning = v; }
+    /** Atomically swap the live search index (used by BatchSummarizer after double-buffer build). */
+    swapIndex(newIndex) {
+        this.searchIndex = newIndex;
+        Logger.telemetry(`[SemanticRetrieval] Index swapped (${newIndex.size} entries)`);
+    }
+    /** Expose the current search index (for BatchSummarizer to clone). */
+    getSearchIndex() { return this.searchIndex; }
+    // --- Ref-feedback ---
+    /**
+     * Record an explicit page ref from the agent. This boosts retrieval of
+     * similar pages on subsequent turns. Called from the @@ref('id')@@ handler.
+     */
+    recordExplicitRef(pageId) {
+        // Avoid duplicates — if already tracked, refresh its weight
+        const existing = this.recentRefBoosts.findIndex(r => r.pageId === pageId);
+        if (existing >= 0) {
+            this.recentRefBoosts[existing].weight = 1.0;
+            return;
+        }
+        this.recentRefBoosts.push({ pageId, weight: 1.0 });
+        // Cap at maxRecentRefs (FIFO)
+        if (this.recentRefBoosts.length > this.maxRecentRefs) {
+            this.recentRefBoosts.shift();
+        }
+        Logger.telemetry(`[RefFeedback] Recorded explicit ref: ${pageId} (${this.recentRefBoosts.length} tracked)`);
+    }
+    /** Decay ref-feedback weights. Called once per autoFillPageSlots cycle. */
+    decayRefBoosts() {
+        for (const rb of this.recentRefBoosts) {
+            rb.weight *= this.refDecayRate;
+        }
+        // Prune entries below threshold
+        this.recentRefBoosts = this.recentRefBoosts.filter(rb => rb.weight >= 0.1);
+    }
+    // --- Auto-retrieval (called before each turn) ---
+    async autoRetrieve(messages) {
+        if (!this.autoEnabled || this.searchIndex.size === 0)
+            return null;
+        const query = buildQuery(messages);
+        if (!query)
+            return null;
+        // Skip if query hasn't changed (e.g. during tool loops)
+        const hash = hashText(query);
+        if (hash === this.lastQueryHash)
+            return null;
+        this.lastQueryHash = hash;
+        try {
+            const results = await this.searchIndex.search(query, 3, this.autoThreshold);
+            if (results.length === 0)
+                return null;
+            // Filter out already-loaded pages (dedup with @@ref@@)
+            const activeIds = new Set(this.memory.getActivePageIds());
+            const unloaded = results.filter(r => !activeIds.has(r.pageId));
+            if (unloaded.length === 0)
+                return null;
+            // Load the best match (cap: maxAutoPages per turn)
+            const toLoad = unloaded.slice(0, this.maxAutoPages);
+            for (const r of toLoad) {
+                this.memory.ref(r.pageId);
+                Logger.telemetry(`[SemanticRetrieval] Auto-loading page ${r.pageId} (${r.label}, score=${r.score.toFixed(3)})`);
+            }
+            return toLoad[0].pageId;
+        }
+        catch (err) {
+            Logger.warn(`[SemanticRetrieval] Auto-retrieval error: ${err}`);
+            return null;
+        }
+    }
+    // --- Auto-fill page slots (replaces autoRetrieve at call site) ---
+    /**
+     * Multi-phase page slot filling:
+     * 1. Inline ref harvesting — scan working memory for @@ref('id')@@ patterns
+     * 2. Semantic budget fill — load additional pages by similarity to frontal context
+     *
+     * Respects unref history, page slot token budget, and change detection.
+     */
+    async autoFillPageSlots(messages) {
+        if (!this.autoEnabled)
+            return null;
+        // Decay ref-feedback boosts each cycle
+        this.decayRefBoosts();
+        // Change detection: skip if working memory hasn't changed
+        const contentSample = messages.slice(-6).map(m => String(m.content ?? "").slice(0, 200)).join("|");
+        const fillHash = hashText(contentSample);
+        if (fillHash === this.lastFillHash)
+            return null;
+        this.lastFillHash = fillHash;
+        const activeIds = new Set(this.memory.getActivePageIds());
+        const unrefHistory = this.memory.getUnrefHistory();
+        const allPages = this.memory.getPages();
+        const pageMap = new Map(allPages.map(p => [p.id, p]));
+        let budgetRemaining = this.memory.getPageSlotBudgetRemaining() * this.autoFillBudgetFraction;
+        const harvestedIds = [];
+        const semanticIds = [];
+        let totalLoaded = 0;
+        // --- Phase 1: Inline ref harvesting ---
+        // Scan working memory for @@ref('id')@@ patterns embedded in compaction summaries.
+        // If a summary mentions a page, that page is likely relevant — auto-ref it.
+        const refPattern = /@@ref\('([^']+)'\)@@/g;
+        const referencedIds = new Set();
+        for (const msg of messages) {
+            const content = String(msg.content ?? "");
+            let match;
+            while ((match = refPattern.exec(content)) !== null) {
+                const ids = match[1].split(",").map(s => s.trim()).filter(Boolean);
+                for (const id of ids) {
+                    if (!id.startsWith("?"))
+                        referencedIds.add(id);
+                }
+            }
+        }
+        const phase1Cap = Math.max(1, this.maxAutoFillPages - 1); // Reserve ≥1 slot for semantic search
+        for (const id of referencedIds) {
+            if (activeIds.has(id))
+                continue;
+            if (unrefHistory.has(id))
+                continue;
+            if (totalLoaded >= phase1Cap)
+                break;
+            const page = pageMap.get(id);
+            if (!page)
+                continue;
+            if (page.tokens > budgetRemaining)
+                continue;
+            this.memory.ref(id);
+            activeIds.add(id);
+            budgetRemaining -= page.tokens;
+            totalLoaded++;
+            harvestedIds.push(id);
+            Logger.telemetry(`[AutoFill] Inline harvest: ${id} (${page.label})`);
+        }
+        // --- Phase 2: Semantic budget fill ---
+        if (totalLoaded < this.maxAutoFillPages && budgetRemaining > 0 && this.searchIndex.size > 0) {
+            const query = buildQuery(messages);
+            if (query) {
+                const queryHash = hashText(query);
+                // Only search if the query is fresh (different from last autoRetrieve)
+                if (queryHash !== this.lastQueryHash) {
+                    this.lastQueryHash = queryHash;
+                    try {
+                        const maxSemantic = this.maxAutoFillPages - totalLoaded;
+                        const rawResults = await this.searchIndex.searchWithRefBoosts(query, maxSemantic + 3, // over-fetch for filtering
+                        this.autoThreshold, this.recentRefBoosts);
+                        // Recency decay: boost recent pages, decay stale ones (2h half-life)
+                        const now = Date.now();
+                        const HALF_LIFE_MS = 8 * 60 * 60 * 1000; // 8 hours — gentler decay for long sessions
+                        const results = rawResults.map(r => {
+                            const page = pageMap.get(r.pageId);
+                            const createdAt = page?.createdAt ? new Date(page.createdAt).getTime() : 0;
+                            const ageMs = createdAt ? Math.max(0, now - createdAt) : HALF_LIFE_MS * 4;
+                            const recency = 1 / (1 + ageMs / HALF_LIFE_MS);
+                            return { ...r, score: r.score * (0.3 + 0.7 * recency) };
+                        }).sort((a, b) => b.score - a.score);
+                        for (const r of results) {
+                            if (totalLoaded >= this.maxAutoFillPages)
+                                break;
+                            if (activeIds.has(r.pageId))
+                                continue;
+                            if (unrefHistory.has(r.pageId))
+                                continue;
+                            const page = pageMap.get(r.pageId);
+                            if (!page)
+                                continue;
+                            if (page.tokens > budgetRemaining)
+                                continue;
+                            this.memory.ref(r.pageId);
+                            activeIds.add(r.pageId);
+                            budgetRemaining -= page.tokens;
+                            totalLoaded++;
+                            semanticIds.push(r.pageId);
+                            Logger.telemetry(`[AutoFill] Semantic fill: ${r.pageId} (${r.label}, score=${r.score.toFixed(3)})`);
+                        }
+                    }
+                    catch (err) {
+                        Logger.warn(`[AutoFill] Semantic fill error: ${err}`);
+                    }
+                }
+            }
+        }
+        if (totalLoaded === 0)
+            return null;
+        return { harvestedIds, semanticIds };
+    }
+    // --- Explicit search (triggered by @@ref('?query')@@) ---
+    async search(query) {
+        try {
+            const results = await this.searchIndex.search(query, this.searchMaxResults, this.searchThreshold);
+            // Load unloaded results
+            const activeIds = new Set(this.memory.getActivePageIds());
+            for (const r of results) {
+                if (!activeIds.has(r.pageId)) {
+                    this.memory.ref(r.pageId);
+                }
+            }
+            return results;
+        }
+        catch (err) {
+            Logger.warn(`[SemanticRetrieval] Search error: ${err}`);
+            return [];
+        }
+    }
+    // --- Live indexing hook ---
+    async onPageCreated(pageId, summary, label) {
+        await this.searchIndex.indexPage(pageId, summary, label);
+    }
+    // --- Backfill existing pages ---
+    async backfill() {
+        if (this._batchRunning) {
+            Logger.telemetry("[SemanticRetrieval] Backfill skipped — batch re-summarization in progress");
+            return 0;
+        }
+        const allPages = this.memory.getPages();
+        const allIds = allPages.map(p => p.id);
+        const missing = this.searchIndex.getMissingPageIds(allIds);
+        if (missing.length === 0)
+            return 0;
+        const missingSet = new Set(missing);
+        const toIndex = [];
+        let skipped = 0;
+        for (const page of allPages) {
+            if (!missingSet.has(page.id))
+                continue;
+            // Only embed pages with coherent summaries — skip broken/incomplete pages
+            if (!page.summary) {
+                skipped++;
+                continue;
+            }
+            toIndex.push({ pageId: page.id, text: page.summary, label: page.label });
+        }
+        if (toIndex.length > 0) {
+            await this.searchIndex.indexPages(toIndex);
+            this.searchIndex.save();
+        }
+        if (skipped > 0) {
+            Logger.telemetry(`[SemanticRetrieval] Backfill: skipped ${skipped} pages without summaries`);
+        }
+        return toIndex.length;
+    }
+    // --- Persistence ---
+    saveIndex() {
+        this.searchIndex.save();
+    }
+}

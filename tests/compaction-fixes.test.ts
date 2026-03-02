@@ -135,7 +135,7 @@ describe("ThinkingLoopDetector", () => {
 describe("VirtualMemory Protected Messages", () => {
   // Dynamically import VirtualMemory since it has Node dependencies
   it("protectMessage prevents messages from being paged out during compaction", async () => {
-    const { VirtualMemory } = await import("../src/memory/virtual-memory.js");
+    const { VirtualMemory } = await import("../src/memory/virtual/virtual-memory.js");
 
     // Create a mock driver that returns a summary
     const mockDriver = {
@@ -193,7 +193,7 @@ describe("VirtualMemory Protected Messages", () => {
   });
 
   it("clearProtectedMessages removes all protections", async () => {
-    const { VirtualMemory } = await import("../src/memory/virtual-memory.js");
+    const { VirtualMemory } = await import("../src/memory/virtual/virtual-memory.js");
 
     const vm = new VirtualMemory({
       workingMemoryTokens: 2000,
@@ -212,7 +212,7 @@ describe("VirtualMemory Protected Messages", () => {
 
 describe("VirtualMemory Pre-Tool Compaction", () => {
   it("preToolCompact returns false when under threshold", async () => {
-    const { VirtualMemory } = await import("../src/memory/virtual-memory.js");
+    const { VirtualMemory } = await import("../src/memory/virtual/virtual-memory.js");
 
     const vm = new VirtualMemory({
       workingMemoryTokens: 50000, // Very high budget
@@ -227,7 +227,7 @@ describe("VirtualMemory Pre-Tool Compaction", () => {
   });
 
   it("preToolCompact triggers compaction when over threshold", async () => {
-    const { VirtualMemory } = await import("../src/memory/virtual-memory.js");
+    const { VirtualMemory } = await import("../src/memory/virtual/virtual-memory.js");
 
     const mockDriver = {
       chat: async () => ({
@@ -262,7 +262,7 @@ describe("VirtualMemory Pre-Tool Compaction", () => {
   });
 
   it("currentTokenUsage returns reasonable values", async () => {
-    const { VirtualMemory } = await import("../src/memory/virtual-memory.js");
+    const { VirtualMemory } = await import("../src/memory/virtual/virtual-memory.js");
 
     const vm = new VirtualMemory({
       workingMemoryTokens: 18000,
@@ -283,7 +283,7 @@ describe("VirtualMemory Pre-Tool Compaction", () => {
 describe("Updated Defaults", () => {
   it("tool weight defaults to 3", async () => {
     // Verify by checking that the default stats show appropriate tool lane allocation
-    const { VirtualMemory } = await import("../src/memory/virtual-memory.js");
+    const { VirtualMemory } = await import("../src/memory/virtual/virtual-memory.js");
     const vm = new VirtualMemory();
     const stats = vm.getStats();
 
@@ -293,7 +293,7 @@ describe("Updated Defaults", () => {
   });
 
   it("highRatio defaults to 0.65", async () => {
-    const { VirtualMemory } = await import("../src/memory/virtual-memory.js");
+    const { VirtualMemory } = await import("../src/memory/virtual/virtual-memory.js");
     const vm = new VirtualMemory();
     const stats = vm.getStats() as any;
     assert.strictEqual(stats.highRatio, 0.65);
@@ -306,7 +306,7 @@ describe("Updated Defaults", () => {
 
 describe("AgentMemory base class protection methods", () => {
   it("base class methods are no-ops that do not throw", async () => {
-    const { AgentMemory } = await import("../src/memory/agent-memory.js");
+    const { AgentMemory } = await import("../src/memory/lib/agent-memory.js");
 
     // Create a minimal concrete subclass
     class TestMemory extends AgentMemory {

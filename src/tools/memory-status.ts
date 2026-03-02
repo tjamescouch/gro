@@ -3,8 +3,8 @@
  * Shows pages, loaded pages, token usage per lane, and context size.
  * When PerfectMemory is active, also shows fork chain info.
  */
-import type { AgentMemory } from "../memory/agent-memory.js";
-import { VirtualMemory } from "../memory/virtual-memory.js";
+import type { AgentMemory } from "../memory/lib/agent-memory.js";
+import { VirtualMemory } from "../memory/virtual/virtual-memory.js";
 
 export function memoryStatusToolDefinition(): any {
   return {

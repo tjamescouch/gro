@@ -1,4 +1,4 @@
-import { VirtualMemory } from "../memory/virtual-memory.js";
+import { VirtualMemory } from "../memory/virtual/virtual-memory.js";
 export function memoryReportToolDefinition() {
     return {
         type: "function",

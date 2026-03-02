@@ -11,7 +11,7 @@
  *   ANTHROPIC_API_KEY=... QUEUE_PATH=... PAGES_DIR=... node dist/batch-worker-standalone.js
  */
 
-import { BatchWorker } from "./memory/batch-worker.js";
+import { BatchWorker } from "./memory/virtual/batch-worker.js";
 import { Logger } from "./logger.js";
 import { readFileSync } from "node:fs";
 

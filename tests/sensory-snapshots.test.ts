@@ -8,13 +8,13 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert";
-import { ContextMapSource } from "../src/memory/context-map-source.js";
-import { TemporalSource } from "../src/memory/temporal-source.js";
-import { SelfSource } from "../src/memory/self-source.js";
-import { SimpleMemory } from "../src/memory/simple-memory.js";
-import { SensoryMemory } from "../src/memory/sensory-memory.js";
-import { SensoryViewFactory, createDefaultFactory, type ViewDeps } from "../src/memory/sensory-view-factory.js";
-import { W } from "../src/memory/box.js";
+import { ContextMapSource } from "../src/memory/sensory/context-map-source.js";
+import { TemporalSource } from "../src/memory/sensory/temporal-source.js";
+import { SelfSource } from "../src/memory/sensory/self-source.js";
+import { SimpleMemory } from "../src/memory/simple/simple-memory.js";
+import { SensoryMemory } from "../src/memory/sensory/sensory-memory.js";
+import { SensoryViewFactory, createDefaultFactory, type ViewDeps } from "../src/memory/sensory/sensory-view-factory.js";
+import { W } from "../src/memory/sensory/box.js";
 
 // --- Helpers ---
 

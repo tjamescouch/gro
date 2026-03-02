@@ -1,4 +1,4 @@
-import { AgentMemory } from "../agent-memory.js";
+import { AgentMemory } from "../lib/agent-memory.js";
 import { saveSession, loadSession, ensureGroDir } from "../../session.js";
 /**
  * AdvancedMemory — swim-lane summarization with token budgeting.

@@ -15,8 +15,8 @@ import { promises as fs } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { Logger } from "../logger.js";
-import { memoryRegistry } from "../memory/memory-registry.js";
-import type { AgentMemory } from "../memory/agent-memory.js";
+import { memoryRegistry } from "../memory/lib/memory-registry.js";
+import type { AgentMemory } from "../memory/lib/agent-memory.js";
 import type { ChatDriver } from "../drivers/types.js";
 
 export interface RuntimeConfig {

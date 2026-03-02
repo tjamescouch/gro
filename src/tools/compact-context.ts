@@ -3,7 +3,7 @@
  * Call this before starting a large task to free up working memory budget.
  * Supports optional single-shot hints for fine-grained control over compaction.
  */
-import type { AgentMemory, CompactionHints } from "../memory/agent-memory.js";
+import type { AgentMemory, CompactionHints } from "../memory/lib/agent-memory.js";
 
 export function compactContextToolDefinition(): any {
   return {

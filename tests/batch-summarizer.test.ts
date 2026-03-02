@@ -7,10 +7,10 @@ import {
   unlinkSync, utimesSync,
 } from "node:fs";
 import { randomBytes } from "node:crypto";
-import type { EmbeddingProvider } from "../src/memory/embedding-provider.js";
-import { PageSearchIndex } from "../src/memory/page-search-index.js";
-import { SemanticRetrieval } from "../src/memory/semantic-retrieval.js";
-import { BatchSummarizer, type BatchResult } from "../src/memory/batch-summarizer.js";
+import type { EmbeddingProvider } from "../src/memory/lib/embedding-provider.js";
+import { PageSearchIndex } from "../src/memory/virtual/page-search-index.js";
+import { SemanticRetrieval } from "../src/memory/virtual/semantic-retrieval.js";
+import { BatchSummarizer, type BatchResult } from "../src/memory/virtual/batch-summarizer.js";
 
 // ---------------------------------------------------------------------------
 // Mock embedding provider

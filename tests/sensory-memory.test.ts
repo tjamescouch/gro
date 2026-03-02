@@ -5,9 +5,9 @@
 import { test, describe } from "node:test";
 import assert from "node:assert";
 import type { ChatMessage } from "../src/drivers/types.js";
-import { SimpleMemory } from "../src/memory/simple-memory.js";
-import { SensoryMemory, type SensoryChannel, type SensorySource } from "../src/memory/sensory-memory.js";
-import { ContextMapSource } from "../src/memory/context-map-source.js";
+import { SimpleMemory } from "../src/memory/simple/simple-memory.js";
+import { SensoryMemory, type SensoryChannel, type SensorySource } from "../src/memory/sensory/sensory-memory.js";
+import { ContextMapSource } from "../src/memory/sensory/context-map-source.js";
 
 function msg(role: string, content: string, from?: string): ChatMessage {
   return { role, content, from: from ?? role };

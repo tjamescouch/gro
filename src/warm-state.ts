@@ -7,7 +7,7 @@
  */
 
 import type { ChatMessage } from "./drivers/types.js";
-import type { ContextPage } from "./memory/virtual-memory.js";
+import type { ContextPage } from "./memory/virtual/virtual-memory.js";
 import type { SensoryState } from "./session.js";
 import type { SpendSnapshot } from "./spend-meter.js";
 import type { ViolationSnapshot } from "./violations.js";

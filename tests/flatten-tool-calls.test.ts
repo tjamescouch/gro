@@ -9,7 +9,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert";
 import type { ChatDriver, ChatMessage, ChatOutput } from "../src/drivers/types.js";
-import { VirtualMemory } from "../src/memory/virtual-memory.js";
+import { VirtualMemory } from "../src/memory/virtual/virtual-memory.js";
 
 /** Mock driver that returns a canned summary */
 function mockDriver(response = "Summary."): ChatDriver {

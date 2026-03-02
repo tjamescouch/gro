@@ -5,7 +5,7 @@
  * the outer grid dimensions. No schema enforcement on the content.
  */
 
-import type { SelfSource } from "../memory/self-source.js";
+import type { SelfSource } from "../memory/sensory/self-source.js";
 
 export const writeSelfToolDefinition: any = {
   type: "function",

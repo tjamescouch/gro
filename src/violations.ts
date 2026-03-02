@@ -12,7 +12,7 @@
  */
 
 import { Logger } from "./logger.js";
-import type { AgentMemory } from "./memory/agent-memory.js";
+import type { AgentMemory } from "./memory/lib/agent-memory.js";
 
 export type ViolationType = "plain_text" | "idle" | "same_tool_loop" | "context_pressure" | "read_only_drift";
 

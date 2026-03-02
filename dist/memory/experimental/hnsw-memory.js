@@ -1,4 +1,4 @@
-import { VirtualMemory } from "../virtual-memory.js";
+import { VirtualMemory } from "../virtual/virtual-memory.js";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";

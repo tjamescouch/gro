@@ -2,10 +2,10 @@
  * Register all built-in memory types.
  * Import this module once during startup to populate the memory registry.
  */
-import { memoryRegistry } from "./memory-registry.js";
-import { SimpleMemory } from "./simple-memory.js";
+import { memoryRegistry } from "./lib/memory-registry.js";
+import { SimpleMemory } from "./simple/simple-memory.js";
 import { AdvancedMemory } from "./experimental/advanced-memory.js";
-import { VirtualMemory } from "./virtual-memory.js";
+import { VirtualMemory } from "./virtual/virtual-memory.js";
 import { FragmentationMemory } from "./experimental/fragmentation-memory.js";
 // --- Simple Memory ---
 memoryRegistry.register({

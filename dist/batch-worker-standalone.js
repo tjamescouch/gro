@@ -10,7 +10,7 @@
  * Or set via environment:
  *   ANTHROPIC_API_KEY=... QUEUE_PATH=... PAGES_DIR=... node dist/batch-worker-standalone.js
  */
-import { BatchWorker } from "./memory/batch-worker.js";
+import { BatchWorker } from "./memory/virtual/batch-worker.js";
 import { Logger } from "./logger.js";
 const args = process.argv.slice(2);
 function getArg(flag, envVar) {

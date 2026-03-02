@@ -20,7 +20,7 @@ import { randomUUID } from "node:crypto";
 
 describe("forceCompact sentinel cleanup", () => {
   it("removes noop sentinel even when onAfterAdd throws", async () => {
-    const { VirtualMemory } = await import("../src/memory/virtual-memory.js");
+    const { VirtualMemory } = await import("../src/memory/virtual/virtual-memory.js");
 
     // Create a driver that throws during summarization (triggered by onAfterAdd)
     const throwingDriver = {
@@ -63,7 +63,7 @@ describe("forceCompact sentinel cleanup", () => {
 
 describe("createPageFromMessages always calls onPageCreated", () => {
   it("calls onPageCreated even when summarization throws", async () => {
-    const { VirtualMemory } = await import("../src/memory/virtual-memory.js");
+    const { VirtualMemory } = await import("../src/memory/virtual/virtual-memory.js");
 
     const throwingDriver = {
       chat: async () => { throw new Error("summarization failure"); },
@@ -103,7 +103,7 @@ describe("createPageFromMessages always calls onPageCreated", () => {
 
 describe("buildPageSlot stops loading when budget exceeded", () => {
   it("does not skip large pages to load smaller ones behind them", async () => {
-    const { VirtualMemory } = await import("../src/memory/virtual-memory.js");
+    const { VirtualMemory } = await import("../src/memory/virtual/virtual-memory.js");
 
     const vm = new VirtualMemory({
       workingMemoryTokens: 50000,

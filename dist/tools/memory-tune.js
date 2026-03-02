@@ -1,5 +1,5 @@
-import { MemoryMetricsCollector } from "../memory/memory-metrics.js";
-import { MemoryTuner } from "../memory/memory-tuner.js";
+import { MemoryMetricsCollector } from "../memory/lib/memory-metrics.js";
+import { MemoryTuner } from "../memory/lib/memory-tuner.js";
 export function memoryTuneToolDefinition() {
     return {
         type: "function",

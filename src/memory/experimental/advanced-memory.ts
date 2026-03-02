@@ -1,5 +1,5 @@
 import type { ChatDriver, ChatMessage } from "../../drivers/types.js";
-import { AgentMemory } from "../agent-memory.js";
+import { AgentMemory } from "../lib/agent-memory.js";
 import { saveSession, loadSession, ensureGroDir } from "../../session.js";
 
 /**

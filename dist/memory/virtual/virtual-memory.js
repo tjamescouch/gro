@@ -1,0 +1,1887 @@
+import { AgentMemory } from "../lib/agent-memory.js";
+import { saveSession, loadSession, ensureGroDir } from "../../session.js";
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import { userInfo, hostname, homedir } from "node:os";
+import { SummarizationQueue } from "./summarization-queue.js";
+import { BatchWorkerManager } from "./batch-worker-manager.js";
+import { Logger } from "../../logger.js";
+import { PhantomBuffer } from "../lib/phantom-buffer.js";
+import { MemoryMetricsCollector } from "../lib/memory-metrics.js";
+// Load summarizer system prompt from markdown file (next to this module)
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SUMMARIZER_PROMPT_PATH = join(__dirname, "summarizer-prompt.md");
+let _summarizerPromptBase = null;
+function getSummarizerPromptBase() {
+    if (_summarizerPromptBase === null) {
+        try {
+            _summarizerPromptBase = readFileSync(SUMMARIZER_PROMPT_PATH, "utf-8").trim();
+        }
+        catch {
+            // Fallback if file is missing
+            _summarizerPromptBase = "You are a precise summarizer. Output concise bullet points preserving facts, tasks, file paths, commands, and decisions. Messages marked 🧠 MUST be reproduced verbatim. Messages marked 🧠 can be omitted entirely.";
+        }
+    }
+    return _summarizerPromptBase;
+}
+/**
+ * Truncate text preserving both head and tail.
+ * If text fits within limit, return as-is.
+ * Otherwise, keep 70% head + 30% tail with a gap marker.
+ */
+function smartTruncate(text, limit) {
+    if (text.length <= limit)
+        return text;
+    const headSize = Math.floor(limit * 0.7);
+    const tailSize = limit - headSize - 40; // 40 chars for the gap marker
+    if (tailSize <= 0)
+        return text.slice(0, limit);
+    const head = text.slice(0, headSize);
+    const tail = text.slice(-tailSize);
+    return head + "\n\n[... truncated middle ...]\n\n" + tail;
+}
+const DEFAULTS = {
+    pagesDir: join(process.env.HOME ?? "/tmp", ".gro", "pages"),
+    pageSlotTokens: parseInt(process.env.GRO_PAGE_SLOT_TOKENS ?? "18000"),
+    workingMemoryTokens: parseInt(process.env.GRO_WORKING_MEMORY_TOKENS ?? "18000"),
+    assistantWeight: parseInt(process.env.GRO_ASSISTANT_WEIGHT ?? "8"),
+    userWeight: parseInt(process.env.GRO_USER_WEIGHT ?? "4"),
+    systemWeight: parseInt(process.env.GRO_SYSTEM_WEIGHT ?? "3"),
+    toolWeight: parseInt(process.env.GRO_TOOL_WEIGHT ?? "3"),
+    avgCharsPerToken: parseFloat(process.env.GRO_AVG_CHARS_PER_TOKEN ?? "2.8"),
+    minRecentPerLane: parseInt(process.env.GRO_MIN_RECENT_PER_LANE ?? "4"),
+    highRatio: parseFloat(process.env.GRO_HIGH_RATIO ?? "0.65"),
+    lowRatio: parseFloat(process.env.GRO_LOW_RATIO ?? "0.50"),
+    systemPrompt: "",
+    summarizerModel: "claude-haiku-4-5",
+    enableBatchSummarization: false,
+    enablePhantomCompaction: process.env.GRO_PHANTOM_COMPACTION === "true",
+    queuePath: join(process.env.HOME ?? "/tmp", ".gro", "summarization-queue.jsonl"),
+    sessionId: "",
+};
+// --- VirtualMemory ---
+/** Messages with importance >= this threshold are promoted to the keep set during paging */
+const IMPORTANCE_KEEP_THRESHOLD = 0.7;
+export class VirtualMemory extends AgentMemory {
+    constructor(config = {}) {
+        super(config.systemPrompt);
+        /** All known pages */
+        this.pages = new Map();
+        /** Currently loaded page IDs (in the page slot) */
+        this.activePageIds = new Set();
+        /** Pages requested by the model via @@ref markers */
+        this.pendingRefs = new Set();
+        /** Pages to unload */
+        this.pendingUnrefs = new Set();
+        /** Load order for eviction (oldest first) */
+        this.loadOrder = [];
+        /** Frequency counter — tracks how many times each page is referenced */
+        this.pageRefCount = new Map();
+        /** Pinned pages — never evicted */
+        this.pinnedPageIds = new Set();
+        /** Pages the agent explicitly unref'd — auto-fill should not reload these */
+        this.unrefHistory = new Set();
+        this.model = "unknown";
+        this.provider = "unknown";
+        /** Summarization queue (if batch mode enabled) */
+        this.summaryQueue = null;
+        /** Batch worker manager (spawns background worker if batch mode enabled) */
+        this.batchWorkerManager = null;
+        // Phantom compaction state
+        this.phantomBuffer = null;
+        // Memory performance instrumentation
+        this.metricsCollector = null;
+        /** Messages protected from compaction (current-turn tool results + their assistant messages) */
+        this.protectedMessages = new Set();
+        /** Cryptographic integrity status from last load() */
+        this.integrityResult = null;
+        /** Environment fields that changed between save and load (empty = same machine) */
+        this.envMismatches = [];
+        /**
+         * Adjust compaction aggressiveness based on the current thinking budget.
+         *
+         * Low budget (cheap model, small context) → compact aggressively, keep less.
+         * High budget (expensive model, big context) → keep more history for richer reasoning.
+         *
+         * Scales workingMemoryTokens, highRatio, and minRecentPerLane around their
+         * configured baselines. Called each round from the execution loop.
+         */
+        this.baseWorkingMemoryTokens = null;
+        this.baseHighRatio = null;
+        this.baseMinRecentPerLane = null;
+        this.currentThinkingBudget = null;
+        this.forceCompactPending = false;
+        this.pendingCompactionHints = null;
+        this.overrideImportanceThreshold = null;
+        const pagesDir = config.sessionId
+            ? join(DEFAULTS.pagesDir, config.sessionId)
+            : (config.pagesDir ?? DEFAULTS.pagesDir);
+        this.cfg = {
+            pagesDir,
+            pageSlotTokens: config.pageSlotTokens ?? DEFAULTS.pageSlotTokens,
+            workingMemoryTokens: config.workingMemoryTokens ?? DEFAULTS.workingMemoryTokens,
+            assistantWeight: config.assistantWeight ?? DEFAULTS.assistantWeight,
+            userWeight: config.userWeight ?? DEFAULTS.userWeight,
+            systemWeight: config.systemWeight ?? DEFAULTS.systemWeight,
+            toolWeight: config.toolWeight ?? DEFAULTS.toolWeight,
+            avgCharsPerToken: config.avgCharsPerToken ?? DEFAULTS.avgCharsPerToken,
+            minRecentPerLane: config.minRecentPerLane ?? DEFAULTS.minRecentPerLane,
+            highRatio: config.highRatio ?? DEFAULTS.highRatio,
+            lowRatio: config.lowRatio ?? DEFAULTS.lowRatio,
+            systemPrompt: config.systemPrompt ?? DEFAULTS.systemPrompt,
+            driver: config.driver ?? null,
+            summarizerModel: config.summarizerModel ?? DEFAULTS.summarizerModel,
+            enableBatchSummarization: config.enableBatchSummarization ?? DEFAULTS.enableBatchSummarization,
+            enablePhantomCompaction: config.enablePhantomCompaction ?? DEFAULTS.enablePhantomCompaction,
+            queuePath: config.queuePath ?? DEFAULTS.queuePath,
+            sessionId: config.sessionId ?? DEFAULTS.sessionId,
+        };
+        mkdirSync(this.cfg.pagesDir, { recursive: true });
+        // Initialize summarization queue if batch mode enabled
+        if (this.cfg.enableBatchSummarization) {
+            this.summaryQueue = new SummarizationQueue(this.cfg.queuePath);
+            this.startBatchWorker();
+        }
+        // Initialize phantom buffer if enabled
+        if (this.cfg.enablePhantomCompaction) {
+            this.phantomBuffer = new PhantomBuffer({ avgCharsPerToken: this.cfg.avgCharsPerToken });
+        }
+        // Initialize metrics collector
+        const sessionId = process.env.GRO_SESSION_ID || `session-${Date.now()}`;
+        const metricsPath = join(this.cfg.pagesDir, "memory-metrics.json");
+        this.metricsCollector = new MemoryMetricsCollector(sessionId, metricsPath);
+    }
+    setProvider(provider) {
+        this.provider = provider;
+        // Calibrate avgCharsPerToken per provider (unless user set GRO_AVG_CHARS_PER_TOKEN explicitly)
+        if (!process.env.GRO_AVG_CHARS_PER_TOKEN) {
+            const PROVIDER_CHARS_PER_TOKEN = {
+                anthropic: 3.0,
+                openai: 2.8,
+                google: 2.9,
+                xai: 2.8,
+            };
+            const calibrated = PROVIDER_CHARS_PER_TOKEN[provider];
+            if (calibrated) {
+                this.cfg.avgCharsPerToken = calibrated;
+                Logger.debug(`[VM] Calibrated avgCharsPerToken to ${calibrated} for provider '${provider}'`);
+            }
+        }
+    }
+    setModel(model) {
+        this.model = model;
+    }
+    setThinkingBudget(budget) {
+        this.currentThinkingBudget = budget;
+        // Capture baselines on first call
+        if (this.baseWorkingMemoryTokens === null) {
+            this.baseWorkingMemoryTokens = this.cfg.workingMemoryTokens;
+            this.baseHighRatio = this.cfg.highRatio;
+            this.baseMinRecentPerLane = this.cfg.minRecentPerLane;
+        }
+        // Scale factor: 0.6x at budget=0, 1.0x at budget=0.5, 1.6x at budget=1.0
+        const scale = 0.6 + budget * 1.0;
+        // Working memory: scale token budget (cheap models get less context)
+        this.cfg.workingMemoryTokens = Math.round(this.baseWorkingMemoryTokens * scale);
+        // High watermark: lower = more aggressive compaction
+        // At budget=0: 0.55 (compact early). At budget=1: 0.90 (keep more before compacting)
+        this.cfg.highRatio = Math.min(0.95, this.baseHighRatio * (0.75 + budget * 0.5));
+        // Min recent per lane: keep fewer messages on cheap models
+        this.cfg.minRecentPerLane = Math.max(2, Math.round(this.baseMinRecentPerLane * scale));
+    }
+    /**
+     * Hot-tune VirtualMemory parameters at runtime.
+     * Supports: working, page, high, low, min_recent, assistant_weight, etc.
+     * Example: tune({ working: 8000, page: 6000 })
+     */
+    tune(params) {
+        const keys = Object.keys(params);
+        for (const key of keys) {
+            const val = params[key];
+            if (val <= 0)
+                continue; // Ignore non-positive values
+            switch (key.toLowerCase()) {
+                case "working":
+                case "working_memory":
+                case "workingmemory":
+                    this.cfg.workingMemoryTokens = val;
+                    this.baseWorkingMemoryTokens = val;
+                    Logger.telemetry(`VirtualMemory: workingMemoryTokens → ${val}`);
+                    break;
+                case "page":
+                case "page_slot":
+                case "pageslot":
+                    this.cfg.pageSlotTokens = val;
+                    Logger.telemetry(`VirtualMemory: pageSlotTokens → ${val}`);
+                    break;
+                case "high":
+                case "high_ratio":
+                    if (val >= 0 && val <= 1) {
+                        this.cfg.highRatio = val;
+                        Logger.telemetry(`VirtualMemory: highRatio → ${val}`);
+                    }
+                    break;
+                case "low":
+                case "low_ratio":
+                    if (val >= 0 && val <= 1) {
+                        this.cfg.lowRatio = val;
+                        Logger.telemetry(`VirtualMemory: lowRatio → ${val}`);
+                    }
+                    break;
+                case "min_recent":
+                case "minrecent":
+                    if (val >= 1) {
+                        this.cfg.minRecentPerLane = Math.round(val);
+                        Logger.telemetry(`VirtualMemory: minRecentPerLane → ${Math.round(val)}`);
+                    }
+                    break;
+                case "assistant_weight":
+                case "assistantweight":
+                    this.cfg.assistantWeight = val;
+                    Logger.telemetry(`VirtualMemory: assistantWeight → ${val}`);
+                    break;
+                case "user_weight":
+                case "userweight":
+                    this.cfg.userWeight = val;
+                    Logger.telemetry(`VirtualMemory: userWeight → ${val}`);
+                    break;
+                case "system_weight":
+                case "systemweight":
+                    this.cfg.systemWeight = val;
+                    Logger.telemetry(`VirtualMemory: systemWeight → ${val}`);
+                    break;
+                case "tool_weight":
+                case "toolweight":
+                    this.cfg.toolWeight = val;
+                    Logger.telemetry(`VirtualMemory: toolWeight → ${val}`);
+                    break;
+                default:
+                    Logger.warn(`VirtualMemory.tune: unknown parameter '${key}'`);
+            }
+        }
+    }
+    /**
+     * Hot-reload memory configuration from marker (e.g. @@working:8k,page:12k@@).
+     * Parses numeric k-suffix (e.g. "8k" → 8000) and applies to working/page token budgets.
+     * Does NOT trigger compaction — preserves all loaded pages.
+     */
+    hotReloadConfig(config) {
+        const changes = [];
+        if (config.workingMemoryTokens !== undefined) {
+            const old = this.cfg.workingMemoryTokens;
+            const oldBase = this.baseWorkingMemoryTokens;
+            this.cfg.workingMemoryTokens = config.workingMemoryTokens;
+            this.baseWorkingMemoryTokens = config.workingMemoryTokens; // Reset baseline
+            changes.push(`workingMemoryTokens: ${old} → ${config.workingMemoryTokens} (baseline: ${oldBase} → ${config.workingMemoryTokens})`);
+        }
+        if (config.pageSlotTokens !== undefined) {
+            const old = this.cfg.pageSlotTokens;
+            this.cfg.pageSlotTokens = config.pageSlotTokens;
+            changes.push(`pageSlotTokens: ${old} → ${config.pageSlotTokens}`);
+        }
+        return changes.length > 0 ? changes.join("; ") : "No config changes";
+    }
+    // --- Protected Messages (current-turn tool results immune from compaction) ---
+    /** Mark a message as protected from compaction. */
+    protectMessage(msg) {
+        this.protectedMessages.add(msg);
+    }
+    /** Remove protection from a message. */
+    unprotectMessage(msg) {
+        this.protectedMessages.delete(msg);
+    }
+    /** Clear all message protections (call at start of each turn). */
+    clearProtectedMessages() {
+        this.protectedMessages.clear();
+    }
+    // --- Pre-Tool Compaction ---
+    /**
+     * Proactively compact if working memory usage exceeds a threshold.
+     * Call before tool execution to ensure tool results have room to land.
+     * Returns true if compaction was triggered.
+     */
+    async preToolCompact(threshold = 0.80) {
+        if (!this.cfg.driver)
+            return false;
+        const usage = this.currentTokenUsage();
+        const budget = this.cfg.workingMemoryTokens;
+        if (usage / budget >= threshold) {
+            Logger.telemetry(`[VM] Pre-tool compaction: ${usage}/${budget} tokens (${((usage / budget) * 100).toFixed(0)}% >= ${(threshold * 100).toFixed(0)}%)`);
+            this.forceCompactPending = true;
+            await this.onAfterAdd();
+            return true;
+        }
+        return false;
+    }
+    /** Sum of tokens across all non-system working memory messages. */
+    currentTokenUsage() {
+        const nonSystem = this.messagesBuffer.filter(m => m.role !== "system" || m.from !== "System");
+        return this.msgTokens(nonSystem);
+    }
+    // --- Persistence ---
+    async load(id) {
+        const session = loadSession(id);
+        if (session) {
+            this.messagesBuffer = session.messages;
+        }
+        this.loadPageIndex();
+        this.verifyIntegrity(id);
+    }
+    async save(id) {
+        ensureGroDir();
+        saveSession(id, this.messagesBuffer, {
+            id,
+            provider: this.provider,
+            model: this.model,
+            createdAt: new Date().toISOString(),
+        });
+        this.savePageIndex();
+        this.saveIntegrityHash(id);
+    }
+    /**
+     * Force immediate context compaction regardless of watermark level.
+     * Use before starting a large task when you want to free up working memory.
+     * Returns a summary of what was compacted.
+     */
+    async forceCompact() {
+        if (!this.cfg.driver) {
+            return "Error: no driver configured, cannot compact";
+        }
+        const before = this.messagesBuffer.filter(m => m.role !== "system");
+        const beforeTokens = this.msgTokens(before);
+        const beforeCount = before.length;
+        if (beforeCount === 0) {
+            return "Nothing to compact — context is empty.";
+        }
+        // Set flag so onAfterAdd bypasses watermark check this one time.
+        this.forceCompactPending = true;
+        // Trigger via add of a no-op system note (drives onAfterAdd).
+        // We'll remove it immediately after compaction.
+        const noop = {
+            role: "system",
+            content: "<!-- compact -->",
+            from: "System",
+        };
+        this.messagesBuffer.push(noop);
+        try {
+            await this.onAfterAdd();
+        }
+        finally {
+            // Always remove the noop sentinel, even if onAfterAdd throws
+            const idx = this.messagesBuffer.indexOf(noop);
+            if (idx !== -1)
+                this.messagesBuffer.splice(idx, 1);
+        }
+        const after = this.messagesBuffer.filter(m => m.role !== "system");
+        const afterTokens = this.msgTokens(after);
+        const afterCount = after.length;
+        const pageCount = this.getPageCount();
+        return `Compacted: ${beforeCount} → ${afterCount} messages, ${beforeTokens} → ${afterTokens} tokens. Total pages: ${pageCount}.`;
+    }
+    /** Run compaction with single-shot hints that temporarily adjust budgets/thresholds. */
+    async compactWithHints(hints) {
+        this.pendingCompactionHints = Object.keys(hints).length > 0 ? hints : null;
+        return await this.forceCompact();
+    }
+    // --- Phantom Compaction API ---
+    /**
+     * Get phantom buffer status (memory usage, snapshots).
+     */
+    getPhantomStatus() {
+        return this.phantomBuffer?.getMemoryUsage() ?? null;
+    }
+    /**
+     * List available phantom snapshots.
+     */
+    listPhantomSnapshots() {
+        return this.phantomBuffer?.listSnapshots() ?? [];
+    }
+    /**
+     * Recall (inject) a phantom snapshot into working memory.
+     * Returns the snapshot messages or null if not found/disabled.
+     */
+    recallPhantom(snapshotId) {
+        if (!this.phantomBuffer)
+            return null;
+        const snap = snapshotId
+            ? this.phantomBuffer.getSnapshot(snapshotId)
+            : this.phantomBuffer.getLatest();
+        return snap?.messages ?? null;
+    }
+    // --- Page Index (persisted metadata) ---
+    indexPath() {
+        return join(this.cfg.pagesDir, "index.json");
+    }
+    loadPageIndex() {
+        const p = this.indexPath();
+        if (!existsSync(p))
+            return;
+        try {
+            const data = JSON.parse(readFileSync(p, "utf8"));
+            this.pages.clear();
+            for (const page of data.pages ?? [])
+                this.pages.set(page.id, page);
+            this.activePageIds = new Set(data.activePageIds ?? []);
+            this.loadOrder = data.loadOrder ?? [];
+            this.pageRefCount = new Map(data.pageRefCount ?? []);
+            this.pinnedPageIds = new Set(data.pinnedPageIds ?? []);
+            this.unrefHistory = new Set(data.unrefHistory ?? []);
+        }
+        catch {
+            this.pages.clear();
+        }
+    }
+    savePageIndex() {
+        try {
+            mkdirSync(this.cfg.pagesDir, { recursive: true });
+            writeFileSync(this.indexPath(), JSON.stringify({
+                pages: Array.from(this.pages.values()),
+                activePageIds: Array.from(this.activePageIds),
+                loadOrder: this.loadOrder,
+                pageRefCount: Array.from(this.pageRefCount.entries()),
+                pinnedPageIds: Array.from(this.pinnedPageIds),
+                unrefHistory: Array.from(this.unrefHistory),
+                savedAt: new Date().toISOString(),
+            }, null, 2) + "\n");
+        }
+        catch (err) {
+            Logger.error(`[VirtualMemory] Failed to save page index to ${this.indexPath()}: ${err}`);
+        }
+    }
+    /** Capture the current environment fingerprint. */
+    static envFingerprint() {
+        return {
+            user: userInfo().username,
+            hostname: hostname(),
+            home: homedir(),
+        };
+    }
+    integrityHashPath() {
+        return join(this.cfg.pagesDir, "integrity.json");
+    }
+    /**
+     * Compute a deterministic SHA-256 hash over the full session state:
+     * version prefix, session ID (salt), messages (in order),
+     * page contents (sorted by ID), active page set.
+     *
+     * The session ID acts as a source-bound salt — the hash can only be
+     * reproduced by someone who possesses the original session directory,
+     * preventing integrity.json from being transplanted between sessions.
+     */
+    computeIntegrityHash(sessionId) {
+        const hash = createHash("sha256");
+        // Version prefix — detects algorithm changes across gro versions
+        hash.update(VirtualMemory.INTEGRITY_VERSION);
+        // Session ID as salt — binds hash to this specific session
+        if (sessionId)
+            hash.update(sessionId);
+        // Environment fingerprint — binds hash to this machine/user
+        hash.update(JSON.stringify(VirtualMemory.envFingerprint()));
+        // Messages in order — hash role + content + tool_call_id
+        for (const msg of this.messagesBuffer) {
+            hash.update(msg.role);
+            hash.update(msg.content ?? "");
+            if (msg.tool_call_id)
+                hash.update(msg.tool_call_id);
+        }
+        // Page contents sorted by ID (deterministic)
+        const sortedPageIds = [...this.pages.keys()].sort();
+        for (const id of sortedPageIds) {
+            const page = this.pages.get(id);
+            hash.update(page.id);
+            hash.update(page.content);
+        }
+        // Active page IDs (sorted)
+        hash.update([...this.activePageIds].sort().join(","));
+        return hash.digest("hex").slice(0, 16);
+    }
+    saveIntegrityHash(sessionId) {
+        try {
+            mkdirSync(this.cfg.pagesDir, { recursive: true });
+            const h = this.computeIntegrityHash(sessionId);
+            writeFileSync(this.integrityHashPath(), JSON.stringify({
+                version: VirtualMemory.INTEGRITY_VERSION,
+                hash: h,
+                env: VirtualMemory.envFingerprint(),
+                savedAt: new Date().toISOString(),
+            }) + "\n");
+        }
+        catch (err) {
+            Logger.error(`[VirtualMemory] Failed to save integrity hash: ${err}`);
+        }
+    }
+    verifyIntegrity(sessionId) {
+        const p = this.integrityHashPath();
+        if (!existsSync(p)) {
+            this.integrityResult = "new_session";
+            return;
+        }
+        try {
+            const data = JSON.parse(readFileSync(p, "utf-8"));
+            // Version mismatch → treat as new (algorithm changed, old hash meaningless)
+            if (data.version !== VirtualMemory.INTEGRITY_VERSION) {
+                Logger.info(`[Integrity] Hash version changed (${data.version} → ${VirtualMemory.INTEGRITY_VERSION}), skipping check`);
+                this.integrityResult = "new_session";
+                return;
+            }
+            // Environment fingerprint comparison (independent of hash)
+            this.envMismatches = [];
+            if (data.env) {
+                const current = VirtualMemory.envFingerprint();
+                for (const key of Object.keys(current)) {
+                    if (data.env[key] !== undefined && data.env[key] !== current[key]) {
+                        this.envMismatches.push(key);
+                    }
+                }
+                if (this.envMismatches.length > 0) {
+                    Logger.warn(`[Integrity] Environment changed: ${this.envMismatches.join(", ")}`);
+                }
+            }
+            // State hash comparison
+            const stored = data.hash;
+            const computed = this.computeIntegrityHash(sessionId);
+            this.integrityResult = computed === stored ? "verified" : "mismatch";
+            if (this.integrityResult === "mismatch") {
+                Logger.warn(`[Integrity] State hash mismatch: stored=${stored} computed=${computed}`);
+            }
+            else {
+                Logger.info(`[Integrity] State hash verified: ${computed}`);
+            }
+        }
+        catch {
+            this.integrityResult = "new_session";
+        }
+    }
+    /** Get the result of the last integrity check (set during load). */
+    getIntegrityStatus() {
+        return this.integrityResult;
+    }
+    /** Get environment fields that differ from when the session was saved. */
+    getEnvironmentMismatches() {
+        return this.envMismatches;
+    }
+    // --- Page Storage ---
+    pagePath(id) {
+        return join(this.cfg.pagesDir, `${id}.json`);
+    }
+    savePage(page) {
+        try {
+            mkdirSync(this.cfg.pagesDir, { recursive: true });
+            writeFileSync(this.pagePath(page.id), JSON.stringify(page, null, 2) + "\n");
+            this.pages.set(page.id, page);
+        }
+        catch (err) {
+            Logger.error(`[VirtualMemory] Failed to save page ${page.id} to ${this.pagePath(page.id)}: ${err}`);
+        }
+    }
+    loadPageContent(id) {
+        const cached = this.pages.get(id);
+        if (cached)
+            return cached.content;
+        const p = this.pagePath(id);
+        if (!existsSync(p))
+            return null;
+        try {
+            const page = JSON.parse(readFileSync(p, "utf8"));
+            this.pages.set(id, page);
+            return page.content;
+        }
+        catch (err) {
+            Logger.error(`[VirtualMemory] Failed to load page ${id} from ${p}: ${err}`);
+            return null;
+        }
+    }
+    // --- Token Math ---
+    tokensFor(text) {
+        return Math.ceil(text.length / this.cfg.avgCharsPerToken);
+    }
+    /** Normalize weights and compute per-lane token budgets */
+    computeLaneBudgets() {
+        const totalWeight = this.cfg.assistantWeight + this.cfg.userWeight + this.cfg.systemWeight + this.cfg.toolWeight;
+        const wmBudget = this.cfg.workingMemoryTokens;
+        return {
+            assistant: Math.floor((this.cfg.assistantWeight / totalWeight) * wmBudget),
+            user: Math.floor((this.cfg.userWeight / totalWeight) * wmBudget),
+            system: Math.floor((this.cfg.systemWeight / totalWeight) * wmBudget),
+            tool: Math.floor((this.cfg.toolWeight / totalWeight) * wmBudget),
+        };
+    }
+    msgTokens(msgs) {
+        let chars = 0;
+        for (const m of msgs) {
+            const s = String(m.content ?? "");
+            // No per-message cap — use full length for accurate estimation.
+            // A cap here caused severe under-counting: a 300K-char tool output was
+            // estimated as ~8K tokens but sent ~107K actual tokens, allowing 7+ such
+            // messages through the wmBudget * 2 window guard → context_length_exceeded.
+            chars += s.length + 32;
+            // Include tool_calls arguments in token estimation.
+            // Assistant messages with tool_calls often have empty content but large
+            // function arguments (e.g. agentchat_send messages, file writes, patches).
+            // Without counting these, the windowing loop and compaction triggers
+            // massively underestimate assistant message sizes → context_length_exceeded.
+            const tc = m.tool_calls;
+            if (Array.isArray(tc)) {
+                for (const call of tc) {
+                    const fn = call?.function;
+                    if (fn) {
+                        chars += (fn.name?.length ?? 0) + (fn.arguments?.length ?? 0) + 32;
+                    }
+                }
+            }
+        }
+        return Math.ceil(chars / this.cfg.avgCharsPerToken);
+    }
+    // --- Page Creation ---
+    generatePageId(content) {
+        return "pg_" + createHash("sha256").update(content).digest("hex").slice(0, 12);
+    }
+    /**
+     * Create a page from raw messages and return a summary with embedded ref.
+     * The raw content is saved to disk; the returned summary replaces it in working memory.
+     */
+    async createPageFromMessages(messages, label, lane) {
+        // Build raw content for the page
+        const rawContent = messages.map(m => `[${m.role}${m.from ? ` (${m.from})` : ""}]: ${String(m.content ?? "").slice(0, 8000)}`).join("\n\n");
+        // Track max importance across messages in this page
+        const maxImportance = messages.reduce((max, m) => Math.max(max, m.importance ?? 0), 0);
+        // Derive dominant lane from messages
+        const roleCounts = {};
+        for (const m of messages) {
+            roleCounts[m.role] = (roleCounts[m.role] ?? 0) + 1;
+        }
+        const roles = Object.keys(roleCounts);
+        let dominantLane = "mixed";
+        if (roles.length === 1) {
+            dominantLane = roles[0];
+        }
+        else if (roles.length > 1) {
+            const sorted = roles.sort((a, b) => roleCounts[b] - roleCounts[a]);
+            if (roleCounts[sorted[0]] > messages.length * 0.6) {
+                dominantLane = sorted[0];
+            }
+        }
+        const page = {
+            id: this.generatePageId(rawContent),
+            label,
+            content: rawContent,
+            createdAt: new Date().toISOString(),
+            messageCount: messages.length,
+            tokens: this.tokensFor(rawContent),
+            ...(maxImportance > 0 ? { maxImportance } : {}),
+            lane: dominantLane,
+        };
+        this.savePage(page);
+        // Track page creation
+        if (this.metricsCollector) {
+            this.metricsCollector.onPageCreated(page.id, lane ?? 'mixed', page.tokens);
+        }
+        // Generate summary with embedded ref
+        let summary;
+        try {
+            if (this.cfg.enableBatchSummarization && this.summaryQueue) {
+                // Queue page for async batch summarization
+                this.summaryQueue.enqueue({
+                    pageId: page.id,
+                    label,
+                    lane,
+                    queuedAt: Date.now(),
+                });
+                // Return placeholder summary immediately (non-blocking)
+                summary = `[Pending summary: ${messages.length} messages, ${label}] `;
+            }
+            else if (this.cfg.driver) {
+                summary = await this.summarizeWithRef(messages, page.id, label, lane);
+            }
+            else {
+                // Fallback: simple label + ref without LLM
+                summary = `[Summary of ${messages.length} messages: ${label}] `;
+            }
+        }
+        catch (err) {
+            const emsg = err instanceof Error ? err.message : String(err);
+            Logger.warn(`[VirtualMemory] summarization failed: ${emsg}`);
+            summary = `[Summary of ${messages.length} messages: ${label}] `;
+        }
+        // Store summary on page for semantic indexing and re-save
+        page.summary = summary;
+        this.savePage(page);
+        // Notify semantic retrieval (if connected)
+        if (this.onPageCreated) {
+            this.onPageCreated(page.id, summary, label);
+        }
+        return { page, summary };
+    }
+    async summarizeWithRef(messages, pageId, label, lane) {
+        // Extract importance-tagged content for special handling
+        const importantLines = [];
+        const transcript = messages.map(m => {
+            const raw = String(m.content ?? "");
+            // Hard-strip 🧠 lines before summarization
+            const stripped = raw.split("\n")
+                .filter(line => !/🧠/i.test(line))
+                .join("\n");
+            const c = stripped.slice(0, m.role === "tool" ? 1500 : 4000);
+            // Collect 🧠 lines verbatim for the summarizer header
+            for (const line of raw.split("\n")) {
+                if (/🧠/i.test(line)) {
+                    importantLines.push(line.replace(/🧠/gi, "").trim());
+                }
+            }
+            // Tag messages with importance field for the summarizer
+            const imp = (m.importance ?? 0) >= IMPORTANCE_KEEP_THRESHOLD
+                ? ` [IMPORTANT=${m.importance}]` : "";
+            return `${m.role.toUpperCase()}${imp}: ${c}`;
+        }).join("\n");
+        const importantNote = importantLines.length > 0
+            ? `\n\nIMPORTANT — preserve these verbatim in the summary:\n${importantLines.map(l => `  • ${l}`).join("\n")}`
+            : "";
+        const laneNote = lane
+            ? `\n\n## Active Lane: ${lane}\nApply the lane-specific focus rules for the "${lane}" lane from the rules above.`
+            : "";
+        const sys = {
+            role: "system",
+            from: "System",
+            content: getSummarizerPromptBase() + laneNote,
+        };
+        const usr = {
+            role: "user",
+            from: "User",
+            content: `Summarize this conversation segment (${label}):${importantNote}\n\n${smartTruncate(transcript, 12000)}`,
+        };
+        const MAX_RETRIES = 2;
+        let lastErr;
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            try {
+                if (attempt > 0) {
+                    // Exponential backoff: 2s, 4s
+                    await new Promise(r => setTimeout(r, 2000 * attempt));
+                    Logger.info(`[VirtualMemory] summarizeWithRef retry ${attempt}/${MAX_RETRIES - 1} for page ${pageId}`);
+                }
+                const out = await this.cfg.driver.chat([sys, usr], { model: this.cfg.summarizerModel });
+                let text = String(out?.text ?? "").trim();
+                // Ensure ref is present
+                if (!text.includes(``)) {
+                    text += `\n`;
+                }
+                return text;
+            }
+            catch (err) {
+                lastErr = err;
+            }
+        }
+        const emsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+        Logger.warn(`[VirtualMemory] summarizeWithRef failed after ${MAX_RETRIES} attempts: ${emsg}`);
+        return `[Summary of ${messages.length} messages: ${label}] `;
+    }
+    // --- Context Assembly ---
+    messages() {
+        // Resolve pending refs/unrefs
+        for (const id of this.pendingUnrefs) {
+            this.activePageIds.delete(id);
+            this.loadOrder = this.loadOrder.filter(x => x !== id);
+        }
+        for (const id of this.pendingRefs) {
+            const exists = this.pages.has(id) || existsSync(this.pagePath(id));
+            if (exists) {
+                this.activePageIds.add(id);
+                if (!this.loadOrder.includes(id))
+                    this.loadOrder.push(id);
+            }
+            // Track reference attempt
+            if (this.metricsCollector) {
+                this.metricsCollector.onPageReferenced(id, exists);
+            }
+        }
+        this.pendingRefs.clear();
+        this.pendingUnrefs.clear();
+        // Evict oldest pages if slot is over budget
+        this.evictPages();
+        const result = [];
+        let usedTokens = 0;
+        // 1. System prompt
+        const sysMsg = this.messagesBuffer.find(m => m.role === "system");
+        if (sysMsg) {
+            result.push(sysMsg);
+            usedTokens += this.msgTokens([sysMsg]);
+        }
+        // 2. Page slot — loaded pages (capped to leave room for working memory)
+        const wmBudget = this.cfg.workingMemoryTokens;
+        const hardCap = wmBudget * 4;
+        // Ensure pages don't consume so much that WM has no room under the hard cap.
+        // Reserve at least wmBudget for working memory.
+        const maxPageBudget = Math.max(0, hardCap - usedTokens - wmBudget);
+        const effectivePageBudget = Math.min(this.cfg.pageSlotTokens, maxPageBudget);
+        const pageMessages = this.buildPageSlot(effectivePageBudget);
+        if (pageMessages.length > 0) {
+            result.push(...pageMessages);
+            usedTokens += this.msgTokens(pageMessages);
+        }
+        // 3. Working memory — recent messages within budget
+        const nonSystem = this.messagesBuffer.filter(m => m !== sysMsg);
+        const window = [];
+        let wmTokens = 0;
+        for (let i = nonSystem.length - 1; i >= 0; i--) {
+            const msg = nonSystem[i];
+            const mt = this.msgTokens([msg]);
+            if (wmTokens + mt > wmBudget && window.length >= this.cfg.minRecentPerLane * 4)
+                break;
+            window.unshift(msg);
+            wmTokens += mt;
+            if (wmTokens > wmBudget * 2)
+                break;
+        }
+        // Sanitize window front: strip orphan tool results and unpaired assistant tool_calls.
+        // When the budget cut severs a tool_call/tool_result pair, the window can start with
+        // a 'tool' role message that has no preceding assistant+tool_calls — causing a 400.
+        while (window.length > 0) {
+            const first = window[0];
+            if (first.role === 'tool') {
+                // Orphaned tool result — its assistant message was paged out. Drop it.
+                window.shift();
+            }
+            else if (first.role === 'assistant' &&
+                Array.isArray(first.tool_calls) &&
+                first.tool_calls.length > 0) {
+                // Dangling tool_calls with no following tool results. Drop it.
+                const hasResults = window.length > 1 && window[1].role === 'tool';
+                if (!hasResults) {
+                    window.shift();
+                }
+                else {
+                    break;
+                }
+            }
+            else {
+                break;
+            }
+        }
+        // Sanitize window back: ensure it doesn't end with an assistant message whose
+        // tool_calls have no following tool results (causes "prefill" / orphaned tool_use errors).
+        while (window.length > 0) {
+            const last = window[window.length - 1];
+            if (last.role === 'assistant' &&
+                Array.isArray(last.tool_calls) &&
+                last.tool_calls.length > 0) {
+                // Assistant with tool_calls at end of window — its results were cut off. Drop it.
+                window.pop();
+            }
+            else {
+                break;
+            }
+        }
+        result.push(...window);
+        // Safety cap: verify total context size doesn't exceed a hard limit.
+        // Even with accurate token estimation, defend against edge cases where
+        // system prompt + pages + working memory combine to exceed provider limits.
+        let totalTokens = usedTokens + wmTokens;
+        if (totalTokens > hardCap) {
+            Logger.warn(`[VM] Total context ${totalTokens} tokens exceeds hard cap ${hardCap} (sys+pages=${usedTokens}, wm=${wmTokens}) — trimming`);
+            const excess = totalTokens - wmBudget * 2; // trim back to 2x budget for safety
+            let trimmed = 0;
+            // Remove oldest working memory messages (from front of window, after system+pages).
+            // Use tool-pair-safe removal: never remove a tool_result without its assistant tool_use,
+            // and never remove an assistant tool_use without its subsequent tool_results.
+            let wmStart = result.length - window.length;
+            while (trimmed < excess && result.length > wmStart + this.cfg.minRecentPerLane * 4) {
+                const msg = result[wmStart];
+                // If this is an assistant message with tool_calls, remove it AND all following tool results
+                const tc = msg.tool_calls;
+                if (msg.role === "assistant" && Array.isArray(tc) && tc.length > 0) {
+                    let groupSize = 1;
+                    while (wmStart + groupSize < result.length && result[wmStart + groupSize].role === "tool") {
+                        groupSize++;
+                    }
+                    const removed = result.splice(wmStart, groupSize);
+                    trimmed += this.msgTokens(removed);
+                }
+                else if (msg.role === "tool") {
+                    // Orphaned tool result at start of window — safe to remove
+                    const removed = result.splice(wmStart, 1);
+                    trimmed += this.msgTokens(removed);
+                }
+                else {
+                    const removed = result.splice(wmStart, 1);
+                    trimmed += this.msgTokens(removed);
+                }
+            }
+            // If still over hard cap after WM trimming (system+pages alone exceed cap),
+            // evict page messages from result to prevent death spiral.
+            totalTokens = this.msgTokens(result);
+            if (totalTokens > hardCap && wmStart > 1) {
+                Logger.warn(`[VM] Still over hard cap after WM trim (${totalTokens} > ${hardCap}) — evicting pages from context`);
+                // Remove pages from the end (most recently loaded) working backward toward index 1
+                while (totalTokens > hardCap * 0.8 && wmStart > 1) {
+                    wmStart--;
+                    const removed = result.splice(wmStart, 1);
+                    totalTokens -= this.msgTokens(removed);
+                }
+            }
+        }
+        return result;
+    }
+    buildPageSlot(budgetOverride) {
+        const budget = budgetOverride ?? this.cfg.pageSlotTokens;
+        const msgs = [];
+        let slotTokens = 0;
+        for (const id of this.loadOrder) {
+            if (!this.activePageIds.has(id))
+                continue;
+            const content = this.loadPageContent(id);
+            if (!content)
+                continue;
+            const page = this.pages.get(id);
+            const tokens = this.tokensFor(content);
+            if (slotTokens + tokens > budget) {
+                Logger.debug(`[VM buildPageSlot] Skipped page '${id}' (${tokens}t) — would exceed budget (${slotTokens}+${tokens} > ${budget})`);
+                continue; // skip oversized page, try smaller ones
+            }
+            msgs.push({
+                role: "system",
+                from: "VirtualMemory",
+                content: `--- Loaded Page: ${id} (${page?.label ?? "unknown"}) ---\n${content}\n--- End Page: ${id} (use  to release) ---`,
+            });
+            slotTokens += tokens;
+        }
+        return msgs;
+    }
+    evictPages() {
+        let slotTokens = 0;
+        for (const id of this.loadOrder) {
+            const page = this.pages.get(id);
+            if (page)
+                slotTokens += page.tokens;
+        }
+        const EVICT_HALF_LIFE_MS = 3_600_000; // 1 hour — pages lose half their time-bonus per hour
+        const now = Date.now();
+        while (slotTokens > this.cfg.pageSlotTokens && this.loadOrder.length > 0) {
+            // Score-based eviction: lower score = evict first.
+            // Score = frequency * 10 + recency_position + time_decay_bonus
+            // time_decay_bonus: pages created recently get up to +20 bonus,
+            // decaying with a 1-hour half-life. This ensures stale pages
+            // from hours ago naturally lose priority vs fresh pages.
+            let evictIdx = -1;
+            let lowestScore = Infinity;
+            for (let i = 0; i < this.loadOrder.length; i++) {
+                const id = this.loadOrder[i];
+                if (this.pinnedPageIds.has(id))
+                    continue; // Skip pinned
+                const freq = this.pageRefCount.get(id) ?? 0;
+                // recency: loadOrder[0] is oldest → position 0 = low recency score
+                const recencyScore = i; // higher index = more recent = higher score
+                // Time decay: bonus based on page creation time
+                const page = this.pages.get(id);
+                const createdAt = page?.createdAt ? new Date(page.createdAt).getTime() : 0;
+                const ageMs = Math.max(0, now - createdAt);
+                const timeBonus = 20 / (1 + ageMs / EVICT_HALF_LIFE_MS);
+                const score = freq * 10 + recencyScore + timeBonus;
+                if (score < lowestScore) {
+                    lowestScore = score;
+                    evictIdx = i;
+                }
+            }
+            // No evictable pages found (all pinned?) — bail to prevent infinite loop
+            if (evictIdx === -1) {
+                Logger.warn(`[VM evict] All loaded pages are pinned; cannot free space`);
+                break;
+            }
+            const evictId = this.loadOrder[evictIdx];
+            this.loadOrder.splice(evictIdx, 1);
+            this.activePageIds.delete(evictId);
+            const page = this.pages.get(evictId);
+            if (page) {
+                slotTokens -= page.tokens;
+                Logger.debug(`[VM evict] Evicted '${evictId}' (freq=${this.pageRefCount.get(evictId) ?? 0}, score=${lowestScore}; freed ${page.tokens} tokens)`);
+            }
+        }
+    }
+    // --- Importance-Aware Partitioning ---
+    /**
+     * Split a lane's messages into "page out" and "keep" sets, respecting importance.
+     * Messages with importance >= IMPORTANCE_KEEP_THRESHOLD are always kept (promoted),
+     * plus the most recent tailN messages. Everything else gets paged out.
+     */
+    partitionByImportance(messages, tailN, shouldPage) {
+        if (!shouldPage)
+            return { older: [], keep: messages };
+        // Start with the tail (most recent) as the base keep set
+        const cutoff = Math.max(0, messages.length - tailN);
+        const candidatesForPaging = messages.slice(0, cutoff);
+        const recentKeep = messages.slice(cutoff);
+        // Promote high-importance and protected messages from the paging candidates
+        const older = [];
+        const promoted = [];
+        for (const m of candidatesForPaging) {
+            const threshold = this.overrideImportanceThreshold ?? IMPORTANCE_KEEP_THRESHOLD;
+            if (this.protectedMessages.has(m) || (m.importance ?? 0) >= threshold) {
+                promoted.push(m);
+            }
+            else {
+                older.push(m);
+            }
+        }
+        // Combine promoted + recent, preserving original order
+        const keepSet = new Set([...promoted, ...recentKeep]);
+        const keep = messages.filter(m => keepSet.has(m));
+        return { older, keep };
+    }
+    // --- Swimlane Partitioning ---
+    /**
+     * Partition messages into swimlanes by role, respecting the first system message.
+     * Similar to AdvancedMemory's approach.
+     */
+    partition() {
+        const assistant = [];
+        const user = [];
+        const system = [];
+        const tool = [];
+        const other = [];
+        for (const m of this.messagesBuffer) {
+            switch (m.role) {
+                case "assistant":
+                    assistant.push(m);
+                    break;
+                case "user":
+                    user.push(m);
+                    break;
+                case "system":
+                    system.push(m);
+                    break;
+                case "tool":
+                    tool.push(m);
+                    break;
+                default:
+                    other.push(m);
+                    break;
+            }
+        }
+        const firstSystemIndex = this.messagesBuffer.findIndex(x => x.role === "system");
+        return { firstSystemIndex, assistant, user, system, tool, other };
+    }
+    // --- Background Summarization ---
+    /**
+     * Flatten compacted tool calls into plain assistant+tool message pairs.
+     *
+     * After lane-based compaction, assistant messages with tool_calls may have
+     * lost their matching tool results (or vice versa). Instead of inserting
+     * synthetic stubs (which still carry tool_calls that OpenAI validates),
+     * this converts every broken tool call into:
+     *   1. A plain "assistant" message with summarized content + metadata (no tool_calls)
+     *   2. A matching "tool" message with the result snippet
+     *
+     * This eliminates the tool_calls field from compacted messages entirely,
+     * so OpenAI's strict "tool must follow tool_calls" rule cannot be violated
+     * regardless of how paging fragments message order.
+     *
+     * Rules:
+     * - Properly split pairs (all tool results adjacent) → leave alone
+     * - Broken/missing pairs → flatten to summarized assistant + tool
+     * - Dangling tool results (no matching tool_calls) → log warning, skip
+     */
+    flattenCompactedToolCalls(pagedToolCallIds) {
+        const buf = this.messagesBuffer;
+        // --- Pre-index ---
+        // Map tool_call_id → tool result message
+        const toolResultMap = new Map();
+        for (const m of buf) {
+            if (m.role === "tool" && m.tool_call_id) {
+                toolResultMap.set(m.tool_call_id, m);
+            }
+        }
+        // Collect all call IDs from assistant tool_calls
+        const allCallIds = new Set();
+        for (const m of buf) {
+            const tc = m.tool_calls;
+            if (m.role === "assistant" && Array.isArray(tc)) {
+                for (const c of tc)
+                    if (c?.id)
+                        allCallIds.add(c.id);
+            }
+        }
+        // --- Pass 1: Classify each assistant+tool_calls ---
+        const properlySplitIndices = new Set(); // assistant indices that are properly split
+        const properlySplitToolIndices = new Set(); // tool result indices in proper pairs
+        const consumedToolCallIds = new Set(); // IDs consumed by flattening
+        for (let i = 0; i < buf.length; i++) {
+            const msg = buf[i];
+            const tc = msg.tool_calls;
+            if (msg.role !== "assistant" || !Array.isArray(tc) || tc.length === 0)
+                continue;
+            // CRITICAL: Never flatten protected messages — they are in-flight current-turn
+            // messages whose tool results may not have arrived yet. Flattening them would
+            // destroy the tool_calls field, orphaning tool results added later.
+            if (this.protectedMessages.has(msg)) {
+                properlySplitIndices.add(i);
+                const expectedIds = tc.map((c) => c?.id).filter(Boolean);
+                for (let j = i + 1; j < buf.length && buf[j].role === "tool"; j++) {
+                    if (buf[j].tool_call_id && expectedIds.includes(buf[j].tool_call_id)) {
+                        properlySplitToolIndices.add(j);
+                    }
+                }
+                continue;
+            }
+            const expectedIds = tc.map((c) => c?.id).filter(Boolean);
+            // Check: are ALL matching tool results consecutively after this assistant?
+            const followingTools = [];
+            for (let j = i + 1; j < buf.length && buf[j].role === "tool"; j++) {
+                if (buf[j].tool_call_id) {
+                    followingTools.push({ id: buf[j].tool_call_id, idx: j });
+                }
+            }
+            const followingIds = new Set(followingTools.map(t => t.id));
+            const allPresentAndAdjacent = expectedIds.length > 0 &&
+                expectedIds.every((id) => followingIds.has(id)) &&
+                followingTools.length >= expectedIds.length;
+            if (allPresentAndAdjacent) {
+                // Properly split — mark for pass-through
+                properlySplitIndices.add(i);
+                for (const t of followingTools) {
+                    if (expectedIds.includes(t.id)) {
+                        properlySplitToolIndices.add(t.idx);
+                    }
+                }
+            }
+            else {
+                // Will be flattened — mark all tool_call_ids as consumed
+                for (const id of expectedIds) {
+                    consumedToolCallIds.add(id);
+                }
+            }
+        }
+        // --- Pass 2: Build output ---
+        const output = [];
+        let flattenCount = 0;
+        for (let i = 0; i < buf.length; i++) {
+            const msg = buf[i];
+            // Properly split assistant → pass through as-is
+            if (properlySplitIndices.has(i)) {
+                output.push(msg);
+                continue;
+            }
+            // Properly split tool result → pass through as-is
+            if (properlySplitToolIndices.has(i)) {
+                output.push(msg);
+                continue;
+            }
+            const tc = msg.tool_calls;
+            if (msg.role === "assistant" && Array.isArray(tc) && tc.length > 0) {
+                // Flatten each tool call into a summarized assistant + tool pair
+                for (const call of tc) {
+                    const callId = call.id || `flatten_${flattenCount}`;
+                    const fnName = call.function?.name || "unknown_tool";
+                    const fnArgs = call.function?.arguments || "{}";
+                    // Find matching tool result (may be anywhere in the buffer)
+                    const toolResult = toolResultMap.get(callId);
+                    const rawResult = toolResult ? String(toolResult.content ?? "") : "";
+                    const resultSnippet = rawResult
+                        ? (rawResult.length > 500 ? rawResult.slice(0, 500) + "..." : rawResult)
+                        : "[result truncated during compaction]";
+                    // Determine page ref: either from a lane page that contains this call/result,
+                    // or create a mini-page for large results being truncated
+                    let refTag = "";
+                    const existingPageId = pagedToolCallIds?.get(callId);
+                    if (existingPageId) {
+                        refTag = ` <ref id="${existingPageId}"/>`;
+                    }
+                    else if (rawResult.length > 500) {
+                        // Result is large and being truncated — save full content to a retrievable page
+                        const miniContent = `[tool result from ${fnName}]:\n${rawResult}`;
+                        const miniPage = {
+                            id: this.generatePageId(miniContent),
+                            label: `tool result: ${fnName}`,
+                            content: miniContent,
+                            createdAt: new Date().toISOString(),
+                            messageCount: 1,
+                            tokens: this.tokensFor(miniContent),
+                        };
+                        this.savePage(miniPage);
+                        if (this.onPageCreated) {
+                            this.onPageCreated(miniPage.id, `Full result of ${fnName} call`, miniPage.label);
+                        }
+                        refTag = ` <ref id="${miniPage.id}"/>`;
+                    }
+                    const argsSnippet = fnArgs.length > 200 ? fnArgs.slice(0, 200) + "..." : fnArgs;
+                    // Summarized assistant message (no tool_calls field!)
+                    const flatAssistant = {
+                        role: "assistant",
+                        from: msg.from || "VirtualMemory",
+                        content: `I called ${fnName}(${argsSnippet}) → returned ${resultSnippet}${refTag}`,
+                    };
+                    let parsedArgs = {};
+                    try {
+                        parsedArgs = JSON.parse(fnArgs);
+                    }
+                    catch { /* keep empty */ }
+                    flatAssistant.metadata = {
+                        summarized_tool_call: {
+                            id: callId,
+                            function: fnName,
+                            args: parsedArgs,
+                            result: resultSnippet,
+                        },
+                    };
+                    // Matching tool message — marked as flattened so future compaction
+                    // cycles don't re-process or drop it as "dangling"
+                    const flatTool = {
+                        role: "tool",
+                        from: fnName,
+                        content: `${resultSnippet}${refTag}`,
+                        tool_call_id: callId,
+                        name: fnName,
+                    };
+                    flatTool._flattened = true;
+                    output.push(flatAssistant, flatTool);
+                    flattenCount++;
+                }
+                continue;
+            }
+            // Tool message handling
+            if (msg.role === "tool" && msg.tool_call_id) {
+                // Consumed by flattening → skip (already represented in the flattened pair)
+                if (consumedToolCallIds.has(msg.tool_call_id)) {
+                    continue;
+                }
+                // Protected tool results are in-flight — their assistant may not have tool_calls yet
+                if (this.protectedMessages.has(msg)) {
+                    output.push(msg);
+                    continue;
+                }
+                // Previously flattened tool results are already summarized — pass through
+                if (msg._flattened) {
+                    output.push(msg);
+                    continue;
+                }
+                // Dangling tool result — no matching assistant tool_calls anywhere. Drop it.
+                if (!allCallIds.has(msg.tool_call_id)) {
+                    Logger.debug(`[VM] flattenCompactedToolCalls: dangling tool result (tool_call_id=${msg.tool_call_id}, name=${msg.name}) — dropped`);
+                    continue;
+                }
+                // Belongs to a properly-split pair not yet reached, or other valid state
+                output.push(msg);
+                continue;
+            }
+            // All other messages → pass through unchanged
+            output.push(msg);
+        }
+        if (flattenCount > 0) {
+            Logger.telemetry(`[VM] flattenCompactedToolCalls: flattened ${flattenCount} tool call(s) into summarized pairs`);
+        }
+        buf.splice(0, buf.length, ...output);
+    }
+    /**
+     * Find a safe boundary for chunking messages that doesn't split tool call/result pairs.
+     * Scans backward from the proposed chunkSize to find a position where the next message
+     * is NOT a tool result (role !== "tool"), ensuring we don't orphan tool messages.
+     */
+    findSafeBoundary(messages, proposedSize) {
+        if (proposedSize >= messages.length)
+            return proposedSize;
+        if (proposedSize === 0)
+            return 0;
+        // Scan backward from proposed boundary to find a safe split point
+        for (let i = proposedSize; i > 0; i--) {
+            // Check if the message immediately after position i is a tool message
+            if (i < messages.length && messages[i].role === "tool") {
+                // Not safe - this would orphan tool results. Try one position earlier.
+                continue;
+            }
+            // Safe boundary found
+            return i;
+        }
+        // Fallback: if we can't find a safe boundary, take minimum chunk (2 messages)
+        // This ensures we always make progress even if the entire buffer is tool messages
+        return Math.min(2, proposedSize);
+    }
+    async onAfterAdd() {
+        if (!this.cfg.driver)
+            return;
+        // Compute normalized per-lane budgets
+        const budgets = this.computeLaneBudgets();
+        // Partition messages to check per-lane budgets
+        const { assistant, user, system, tool } = this.partition();
+        // Calculate per-lane token usage, excluding protected messages from watermark
+        // Protected messages are current-turn tool results that must not trigger compaction
+        const unprotectedAssistant = assistant.filter(m => !this.protectedMessages.has(m));
+        const unprotectedTool = tool.filter(m => !this.protectedMessages.has(m));
+        const assistantTokens = this.msgTokens(unprotectedAssistant);
+        const userTokens = this.msgTokens(user);
+        const systemTokens = this.msgTokens(system.slice(1)); // Exclude system prompt
+        const toolTokens = this.msgTokens(unprotectedTool);
+        // Check if any lane exceeds its budget
+        const toolOverBudget = toolTokens > budgets.tool * this.cfg.highRatio;
+        // If tool lane is over budget, assistant must page too (tool results pair with tool calls in assistant lane)
+        const assistantOverBudget = assistantTokens > budgets.assistant * this.cfg.highRatio || toolOverBudget;
+        const userOverBudget = userTokens > budgets.user * this.cfg.highRatio;
+        const systemOverBudget = systemTokens > budgets.system * this.cfg.highRatio;
+        // VM diagnostics logging (if GRO_VM_DEBUG=true)
+        if (process.env.GRO_VM_DEBUG === "true") {
+            Logger.telemetry(`[VM] A:${assistantTokens}/${budgets.assistant} U:${userTokens}/${budgets.user} S:${systemTokens}/${budgets.system} T:${toolTokens}/${budgets.tool} paging=[A:${assistantOverBudget} U:${userOverBudget} S:${systemOverBudget} T:${toolOverBudget}]`);
+        }
+        // If no lane is over budget, nothing to do (unless forced)
+        const forced = this.forceCompactPending;
+        this.forceCompactPending = false;
+        if (!forced && !assistantOverBudget && !userOverBudget && !systemOverBudget)
+            return;
+        await this.runOnce(async () => {
+            // Compute normalized budgets
+            // Snapshot to phantom buffer before compaction (if enabled)
+            if (this.phantomBuffer) {
+                const reason = forced ? "manual forceCompact()" : "automatic watermark trigger";
+                this.phantomBuffer.snapshot(this.messagesBuffer, reason);
+            }
+            // --- Apply single-shot compaction hints (if any) ---
+            const hints = this.pendingCompactionHints;
+            this.pendingCompactionHints = null;
+            // Save original cfg values that hints may override
+            const savedAssistantWeight = this.cfg.assistantWeight;
+            const savedUserWeight = this.cfg.userWeight;
+            const savedSystemWeight = this.cfg.systemWeight;
+            const savedToolWeight = this.cfg.toolWeight;
+            const savedMinRecent = this.cfg.minRecentPerLane;
+            const savedImportanceOverride = this.overrideImportanceThreshold;
+            try {
+                if (hints) {
+                    // Apply lane_weights
+                    if (hints.lane_weights) {
+                        const lw = hints.lane_weights;
+                        if (lw.assistant !== undefined)
+                            this.cfg.assistantWeight = lw.assistant;
+                        if (lw.user !== undefined)
+                            this.cfg.userWeight = lw.user;
+                        if (lw.system !== undefined)
+                            this.cfg.systemWeight = lw.system;
+                        if (lw.tool !== undefined)
+                            this.cfg.toolWeight = lw.tool;
+                    }
+                    // Apply min_recent
+                    if (hints.min_recent !== undefined) {
+                        this.cfg.minRecentPerLane = Math.max(1, Math.round(hints.min_recent));
+                    }
+                    // Apply aggressiveness: 0.0 = keep 12, 1.0 = keep 2
+                    if (hints.aggressiveness !== undefined) {
+                        const a = Math.max(0, Math.min(1, hints.aggressiveness));
+                        this.cfg.minRecentPerLane = Math.round(12 - a * 10);
+                    }
+                    // Apply importance_threshold
+                    if (hints.importance_threshold !== undefined) {
+                        this.overrideImportanceThreshold = Math.max(0, Math.min(1, hints.importance_threshold));
+                    }
+                }
+                const budgets = this.computeLaneBudgets();
+                // Re-partition to get fresh data
+                const { firstSystemIndex, assistant, user, system, tool, other } = this.partition();
+                const tailN = this.cfg.minRecentPerLane;
+                // Calculate metrics before cleanup
+                const nonSys = this.messagesBuffer.filter(m => m.role !== "system");
+                const beforeTokens = this.msgTokens(nonSys);
+                const beforeMB = (beforeTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
+                const beforeMsgCount = nonSys.length;
+                // Protect the original system prompt (set by constructor, identified by from === "System").
+                // Cannot rely on firstSystemIndex === 0 because after compaction, summaries are prepended
+                // and the system prompt may no longer be at index 0.
+                const originalSysPrompt = this.messagesBuffer.find(m => m.role === "system" && m.from === "System");
+                const sysHead = originalSysPrompt ? [originalSysPrompt] : [];
+                const remainingSystem = system.filter(m => m !== originalSysPrompt);
+                // Recalculate per-lane token usage
+                const assistantTok = this.msgTokens(assistant);
+                const userTok = this.msgTokens(user);
+                const systemTok = this.msgTokens(remainingSystem);
+                const toolTok = this.msgTokens(tool);
+                // Determine which lanes to page based on normalized budget (forced = page all non-empty lanes)
+                const shouldPageTool = forced ? tool.length > tailN : toolTok > budgets.tool * this.cfg.highRatio;
+                // If tool lane needs paging, assistant must page too (tool results pair with tool calls)
+                const shouldPageAssistant = forced ? assistant.length > tailN : (assistantTok > budgets.assistant * this.cfg.highRatio || shouldPageTool);
+                const shouldPageUser = forced ? user.length > tailN : userTok > budgets.user * this.cfg.highRatio;
+                const shouldPageSystem = forced ? remainingSystem.length > 0 : systemTok > budgets.system * this.cfg.highRatio;
+                // Determine which messages to page out vs keep per lane.
+                // High-importance messages (>= IMPORTANCE_KEEP_THRESHOLD) are promoted to
+                // the keep set even if they're older than the tail window.
+                const { older: olderAssistant, keep: keepAssistant } = this.partitionByImportance(assistant, tailN, shouldPageAssistant);
+                const { older: olderUser, keep: keepUser } = this.partitionByImportance(user, tailN, shouldPageUser);
+                const { older: olderSystem, keep: keepSystem } = this.partitionByImportance(remainingSystem, tailN, shouldPageSystem);
+                // CRITICAL: Tool lane must be partitioned in coordination with the assistant
+                // lane to preserve tool_call/tool_result pairing. We first identify which
+                // tool_call_ids belong to KEPT assistant messages, then force-keep matching
+                // tool results regardless of their position in the tool lane.
+                const keptToolCallIds = new Set();
+                for (const m of keepAssistant) {
+                    const tc = m.tool_calls;
+                    if (Array.isArray(tc)) {
+                        for (const c of tc) {
+                            if (c?.id)
+                                keptToolCallIds.add(c.id);
+                        }
+                    }
+                }
+                let olderTool;
+                let keepTools;
+                if (!shouldPageTool) {
+                    olderTool = [];
+                    keepTools = tool;
+                }
+                else {
+                    // Start with the standard tail-based partition
+                    const { older: candidateOlderTool, keep: baseKeepTools } = this.partitionByImportance(tool, tailN, true);
+                    // Promote tool results from "older" that pair with kept assistant tool_calls
+                    const promotedFromOlder = [];
+                    const actualOlderTool = [];
+                    for (const m of candidateOlderTool) {
+                        if (m.tool_call_id && keptToolCallIds.has(m.tool_call_id)) {
+                            promotedFromOlder.push(m);
+                        }
+                        else {
+                            actualOlderTool.push(m);
+                        }
+                    }
+                    // Also ensure we keep tool results from the base keep set that pair with
+                    // PAGED assistant tool_calls' results don't get orphaned — the flattener
+                    // will handle those. We only need to ensure kept assistant → kept tool.
+                    olderTool = actualOlderTool;
+                    // Merge promoted + base keep, preserving original order
+                    const keepSet = new Set([...promotedFromOlder, ...baseKeepTools]);
+                    keepTools = tool.filter(m => keepSet.has(m));
+                }
+                // Reverse coordination: if any kept tool results belong to PAGED assistant
+                // messages, promote those assistant messages back to keep set to prevent
+                // the flattener from having to synthesize pairs unnecessarily.
+                const keptToolResultIds = new Set();
+                for (const m of keepTools) {
+                    if (m.tool_call_id)
+                        keptToolResultIds.add(m.tool_call_id);
+                }
+                const promotedAssistant = [];
+                const finalOlderAssistant = [];
+                for (const m of olderAssistant) {
+                    const tc = m.tool_calls;
+                    if (Array.isArray(tc) && tc.some((c) => c?.id && keptToolResultIds.has(c.id))) {
+                        promotedAssistant.push(m);
+                    }
+                    else {
+                        finalOlderAssistant.push(m);
+                    }
+                }
+                // Replace olderAssistant/keepAssistant if we promoted anything
+                const finalKeepAssistant = promotedAssistant.length > 0
+                    ? assistant.filter(m => keepAssistant.includes(m) || promotedAssistant.includes(m))
+                    : keepAssistant;
+                // Create pages for each lane with older messages
+                const summaries = [];
+                // Track which tool_call_ids ended up in which pages so the flattener
+                // can embed <ref> pointers instead of discarding data
+                const pagedToolCallIds = new Map();
+                if (finalOlderAssistant.length >= 2) {
+                    const label = `assistant lane ${new Date().toISOString().slice(0, 16)} (${finalOlderAssistant.length} msgs)`;
+                    const { page, summary } = await this.createPageFromMessages(finalOlderAssistant, label, "assistant");
+                    for (const m of finalOlderAssistant) {
+                        const tc = m.tool_calls;
+                        if (Array.isArray(tc)) {
+                            for (const c of tc) {
+                                if (c?.id)
+                                    pagedToolCallIds.set(c.id, page.id);
+                            }
+                        }
+                    }
+                    summaries.push({
+                        role: "assistant",
+                        from: "VirtualMemory",
+                        content: `ASSISTANT LANE SUMMARY:\n${summary}`,
+                    });
+                }
+                if (olderUser.length >= 2) {
+                    const label = `user lane ${new Date().toISOString().slice(0, 16)} (${olderUser.length} msgs)`;
+                    const { summary } = await this.createPageFromMessages(olderUser, label, "user");
+                    summaries.push({
+                        role: "user",
+                        from: "VirtualMemory",
+                        content: `USER LANE SUMMARY:\n${summary}`,
+                    });
+                }
+                if (olderSystem.length >= 2) {
+                    const label = `system lane ${new Date().toISOString().slice(0, 16)} (${olderSystem.length} msgs)`;
+                    const { summary } = await this.createPageFromMessages(olderSystem, label, "system");
+                    summaries.push({
+                        role: "system",
+                        from: "VirtualMemory",
+                        content: `SYSTEM LANE SUMMARY:\n${summary}`,
+                    });
+                }
+                if (olderTool.length >= 2) {
+                    const label = `tool lane ${new Date().toISOString().slice(0, 16)} (${olderTool.length} msgs)`;
+                    const { page, summary } = await this.createPageFromMessages(olderTool, label);
+                    for (const m of olderTool) {
+                        if (m.tool_call_id)
+                            pagedToolCallIds.set(m.tool_call_id, page.id);
+                    }
+                    summaries.push({
+                        role: "system",
+                        from: "VirtualMemory",
+                        content: `TOOL LANE SUMMARY:\n${summary}`,
+                    });
+                }
+                // Rebuild message buffer: summaries + system prompt + recent messages from each lane
+                // We need to preserve the original message order for kept messages
+                const keptSet = new Set([
+                    ...sysHead,
+                    ...finalKeepAssistant,
+                    ...keepUser,
+                    ...keepSystem,
+                    ...keepTools,
+                    ...other,
+                ]);
+                const orderedKept = [];
+                // Collect messages added DURING compaction (not in any lane) so they aren't lost.
+                // Messages can be added via memory.add() while summarization API calls are in flight.
+                const allLaneMessages = new Set([...sysHead, ...assistant, ...user, ...system, ...tool, ...other]);
+                for (const m of this.messagesBuffer) {
+                    if (keptSet.has(m)) {
+                        orderedKept.push(m);
+                    }
+                    else if (!allLaneMessages.has(m)) {
+                        // Message was added after partition() ran — preserve it
+                        orderedKept.push(m);
+                    }
+                }
+                // Insert summaries at the beginning (after system prompt if present)
+                const rebuilt = [...summaries, ...orderedKept];
+                this.messagesBuffer.splice(0, this.messagesBuffer.length, ...rebuilt);
+                // Flatten broken tool call/result pairs into summarized assistant+tool messages.
+                // This eliminates tool_calls from compacted messages so OpenAI's strict
+                // pairing validation cannot fail regardless of paging fragmentation order.
+                this.flattenCompactedToolCalls(pagedToolCallIds);
+                // Calculate metrics after cleanup
+                const afterNonSys = this.messagesBuffer.filter(m => m.role !== "system");
+                const afterTokens = this.msgTokens(afterNonSys);
+                const afterMB = (afterTokens * this.cfg.avgCharsPerToken / 1024 / 1024).toFixed(2);
+                const afterMsgCount = afterNonSys.length;
+                const reclaimedMB = (parseFloat(beforeMB) - parseFloat(afterMB)).toFixed(2);
+                // Log cleanup event with per-lane paging info
+                Logger.telemetry(`[VM cleaned] before=${beforeMB}MB after=${afterMB}MB reclaimed=${reclaimedMB}MB messages=${beforeMsgCount}→${afterMsgCount} paged=[A:${finalOlderAssistant.length} U:${olderUser.length} S:${olderSystem.length} T:${olderTool.length}]`);
+            }
+            finally {
+                // Restore original cfg values (single-shot semantics)
+                this.cfg.assistantWeight = savedAssistantWeight;
+                this.cfg.userWeight = savedUserWeight;
+                this.cfg.systemWeight = savedSystemWeight;
+                this.cfg.toolWeight = savedToolWeight;
+                this.cfg.minRecentPerLane = savedMinRecent;
+                this.overrideImportanceThreshold = savedImportanceOverride;
+            }
+        });
+    }
+    /**
+     * Request a page to be loaded into the page slot.
+     * Can be called by stream marker handler or explicitly.
+     */
+    ref(id) {
+        if (this.pendingRefs.has(id))
+            return; // Already pending
+        this.pendingRefs.add(id);
+        // Track reference frequency for smarter eviction
+        const count = (this.pageRefCount.get(id) ?? 0) + 1;
+        this.pageRefCount.set(id, count);
+        Logger.debug(`[VM] ref('${id}'): frequency now ${count}`);
+    }
+    /**
+     * Request a page to be unloaded from the page slot.
+     */
+    unref(id) {
+        if (this.pinnedPageIds.has(id)) {
+            Logger.warn(`[VM] unref('${id}'): page is pinned, ignoring`);
+            return;
+        }
+        this.pendingUnrefs.add(id);
+        this.unrefHistory.add(id);
+        Logger.debug(`[VM] unref('${id}'): marked for eviction`);
+    }
+    /**
+     * Pin a page to prevent eviction, even if slot is full.
+     * Useful for high-value reference materials.
+     */
+    pinPage(id) {
+        if (!this.pages.has(id) && !existsSync(this.pagePath(id))) {
+            Logger.warn(`[VM] pinPage('${id}'): page not found`);
+            return;
+        }
+        this.pinnedPageIds.add(id);
+        // Ensure it's loaded
+        if (!this.activePageIds.has(id)) {
+            this.pendingRefs.add(id);
+        }
+        Logger.telemetry(`[VM] pinPage('${id}'): pinned`);
+    }
+    /**
+     * Unpin a page, making it eligible for LRU/frequency eviction again.
+     */
+    unpinPage(id) {
+        this.pinnedPageIds.delete(id);
+        Logger.telemetry(`[VM] unpinPage('${id}'): unpinned`);
+    }
+    /**
+     * Get list of pinned page IDs.
+     */
+    getPinnedPageIds() {
+        return Array.from(this.pinnedPageIds);
+    }
+    // --- Accessors ---
+    getPages() { return Array.from(this.pages.values()); }
+    getActivePageIds() { return Array.from(this.activePageIds); }
+    getPageCount() { return this.pages.size; }
+    hasPage(id) { return this.pages.has(id); }
+    getPagesDir() { return this.cfg.pagesDir; }
+    /**
+     * Import an external page into the index without activating it.
+     * Used by PLASTIC mode to inject source pages.
+     */
+    importPage(page) {
+        if (this.pages.has(page.id))
+            return; // Already known
+        this.savePage(page);
+        this.savePageIndex();
+    }
+    /** Remaining token budget in the page slot (total - currently loaded). */
+    getPageSlotBudgetRemaining() {
+        let used = 0;
+        for (const id of this.activePageIds) {
+            const page = this.pages.get(id);
+            if (page)
+                used += page.tokens;
+        }
+        return Math.max(0, this.cfg.pageSlotTokens - used);
+    }
+    /** Capture full page state for warm state transfer (no disk I/O). */
+    getPageState() {
+        return {
+            pages: Object.fromEntries(this.pages),
+            activePageIds: [...this.activePageIds],
+            loadOrder: [...this.loadOrder],
+            pinnedPageIds: [...this.pinnedPageIds],
+            pageRefCount: Object.fromEntries(this.pageRefCount),
+            unrefHistory: [...this.unrefHistory],
+        };
+    }
+    /** Restore page state from a warm state snapshot (no disk I/O). */
+    restorePageState(state) {
+        this.pages = new Map(Object.entries(state.pages));
+        this.activePageIds = new Set(state.activePageIds);
+        this.loadOrder = [...state.loadOrder];
+        this.pinnedPageIds = new Set(state.pinnedPageIds);
+        this.pageRefCount = new Map(Object.entries(state.pageRefCount).map(([k, v]) => [k, Number(v)]));
+        if (state.unrefHistory)
+            this.unrefHistory = new Set(state.unrefHistory);
+    }
+    /** Pages the agent explicitly unref'd — auto-fill should skip these. */
+    getUnrefHistory() {
+        return new Set(this.unrefHistory);
+    }
+    /**
+     * Search page content by regex pattern.
+     * Lazy-loads content from disk as needed.
+     */
+    grepPages(pattern, options) {
+        const flags = (options?.caseInsensitive ?? true) ? "gi" : "g";
+        const maxResults = options?.maxResults ?? 10;
+        const contextChars = options?.contextChars ?? 150;
+        let regex;
+        try {
+            regex = new RegExp(pattern, flags);
+        }
+        catch {
+            regex = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+        }
+        const results = [];
+        for (const [id, page] of this.pages) {
+            const content = this.loadPageContent(id);
+            if (!content)
+                continue;
+            // Reset regex state for each page
+            regex.lastIndex = 0;
+            const matches = [];
+            let m;
+            while ((m = regex.exec(content)) !== null) {
+                matches.push(m);
+                if (matches.length > 100)
+                    break; // safety cap
+            }
+            if (matches.length === 0)
+                continue;
+            // Extract snippets (first 3 matches)
+            const snippets = matches.slice(0, 3).map(match => {
+                const start = Math.max(0, match.index - contextChars);
+                const end = Math.min(content.length, match.index + match[0].length + contextChars);
+                const snippet = content.slice(start, end);
+                return (start > 0 ? "..." : "") + snippet + (end < content.length ? "..." : "");
+            });
+            results.push({
+                pageId: id,
+                label: page.label,
+                tokens: page.tokens,
+                loaded: this.activePageIds.has(id),
+                matchCount: matches.length,
+                snippets,
+            });
+            if (results.length >= maxResults)
+                break;
+        }
+        results.sort((a, b) => b.matchCount - a.matchCount);
+        return results;
+    }
+    /**
+     * Summarize raw text content using the summarizer model.
+     * Used by BatchSummarizer for re-summarizing page content.
+     */
+    async summarizeText(content, label) {
+        const sys = {
+            role: "system",
+            from: "System",
+            content: getSummarizerPromptBase(),
+        };
+        const usr = {
+            role: "user",
+            from: "User",
+            content: `Summarize this conversation segment (${label}):\n\n${content.slice(0, 12000)}`,
+        };
+        const MAX_RETRIES = 2;
+        let lastErr;
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            try {
+                if (attempt > 0) {
+                    await new Promise(r => setTimeout(r, 2000 * attempt));
+                    Logger.info(`[VirtualMemory] summarizeText retry ${attempt}/${MAX_RETRIES - 1} for ${label}`);
+                }
+                const out = await this.cfg.driver.chat([sys, usr], { model: this.cfg.summarizerModel });
+                return String(out?.text ?? "").trim();
+            }
+            catch (err) {
+                lastErr = err;
+            }
+        }
+        const emsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+        Logger.warn(`[VirtualMemory] summarizeText failed after ${MAX_RETRIES} attempts for ${label}: ${emsg}`);
+        return `[Summary of page: ${label}]`;
+    }
+    getStats() {
+        // System prompt tokens (first message if system role)
+        const sysMsg = this.messagesBuffer.length > 0 && this.messagesBuffer[0].role === "system"
+            ? this.messagesBuffer[0] : null;
+        const systemTokens = sysMsg ? this.msgTokens([sysMsg]) : 0;
+        // Partition non-system messages by role for lane stats
+        const laneCounts = {};
+        let pinnedCount = 0;
+        for (const m of this.messagesBuffer) {
+            if (m === sysMsg)
+                continue; // skip system prompt
+            const role = m.role;
+            if (!laneCounts[role])
+                laneCounts[role] = { count: 0, chars: 0 };
+            laneCounts[role].count++;
+            laneCounts[role].chars += String(m.content ?? "").length + 32;
+            if ((m.importance ?? 0) >= 0.7)
+                pinnedCount++;
+        }
+        const lanes = Object.entries(laneCounts).map(([role, data]) => ({
+            role,
+            tokens: Math.ceil(data.chars / this.cfg.avgCharsPerToken),
+            count: data.count,
+        }));
+        const wmUsed = this.msgTokens(this.messagesBuffer.filter(m => m !== sysMsg));
+        // Compute actual page slot usage from loaded page metadata
+        let pageSlotUsed = 0;
+        for (const id of this.activePageIds) {
+            const page = this.pages.get(id);
+            if (page)
+                pageSlotUsed += page.tokens;
+        }
+        // Build page digest: short summary for each page so the agent can browse
+        const pageDigest = Array.from(this.pages.values()).map(page => {
+            // Truncate summary to ~80 chars for compact display
+            const raw = page.summary || page.label || "";
+            // Strip embedded @@ref(...)@@ markers from summary text
+            const cleaned = raw.replace(/@@\w+\('[^']*'\)@@/g, "").trim();
+            const summary = cleaned.length > 80 ? cleaned.slice(0, 77) + "..." : cleaned;
+            return {
+                id: page.id,
+                label: page.label,
+                tokens: page.tokens,
+                loaded: this.activePageIds.has(page.id),
+                pinned: this.pinnedPageIds.has(page.id),
+                summary,
+                createdAt: page.createdAt,
+                messageCount: page.messageCount,
+                maxImportance: page.maxImportance ?? 0,
+                lane: page.lane ?? "mixed",
+            };
+        });
+        return {
+            type: "virtual",
+            totalMessages: this.messagesBuffer.length,
+            totalTokensEstimate: this.msgTokens(this.messagesBuffer),
+            bufferMessages: this.messagesBuffer.length,
+            systemTokens,
+            workingMemoryBudget: this.cfg.workingMemoryTokens,
+            workingMemoryUsed: wmUsed,
+            pageSlotBudget: this.cfg.pageSlotTokens,
+            pageSlotUsed,
+            pagesAvailable: this.pages.size,
+            pagesLoaded: this.activePageIds.size,
+            highRatio: this.cfg.highRatio,
+            compactionActive: this.isSummarizing,
+            thinkingBudget: this.currentThinkingBudget,
+            lanes,
+            pinnedMessages: pinnedCount,
+            model: this.model,
+            pageDigest,
+        };
+    }
+    /**
+     * Start the batch worker subprocess.
+     */
+    startBatchWorker() {
+        // Only start if driver is available (we need API key)
+        if (!this.cfg.driver) {
+            Logger.warn("[VirtualMemory] Cannot start batch worker: driver not configured");
+            return;
+        }
+        // Extract API key from driver (assumes AnthropicDriver)
+        const apiKey = this.cfg.driver.apiKey;
+        if (!apiKey) {
+            Logger.warn("[VirtualMemory] Cannot start batch worker: API key not found in driver");
+            return;
+        }
+        this.batchWorkerManager = new BatchWorkerManager({
+            queuePath: this.cfg.queuePath,
+            pagesDir: this.cfg.pagesDir,
+            apiKey,
+            pollInterval: 60000,
+            batchPollInterval: 300000,
+            batchSize: 10000,
+            model: this.cfg.summarizerModel,
+        });
+        this.batchWorkerManager.start();
+        Logger.telemetry("[VirtualMemory] Batch worker started");
+    }
+    /**
+     * Stop the batch worker subprocess (if running).
+     */
+    stopBatchWorker() {
+        if (this.batchWorkerManager) {
+            this.batchWorkerManager.stop();
+            this.batchWorkerManager = null;
+        }
+    }
+    /**
+     * Generate a memory performance metrics report.
+     * Returns markdown report with lane metrics, recall rates, and tuning recommendations.
+     */
+    generateMetricsReport() {
+        if (!this.metricsCollector)
+            return null;
+        // Save current state before generating report
+        this.metricsCollector.save();
+        return this.metricsCollector.generateReport();
+    }
+}
+// --- State Integrity Hash ---
+/** Hash version — bump when changing what gets fed into the digest. */
+VirtualMemory.INTEGRITY_VERSION = "v2";

@@ -4,10 +4,10 @@
 import { Logger, C } from "../logger.js";
 import { createDriverForModel, defaultBaseUrl, resolveApiKey } from "../drivers/driver-factory.js";
 import { inferProvider } from "../model-config.js";
-import { SimpleMemory } from "./simple-memory.js";
-import { VirtualMemory } from "./virtual-memory.js";
-import { SensoryMemory } from "./sensory-memory.js";
-import { createDefaultFactory } from "./sensory-view-factory.js";
+import { SimpleMemory } from "./simple/simple-memory.js";
+import { VirtualMemory } from "./virtual/virtual-memory.js";
+import { SensoryMemory } from "./sensory/sensory-memory.js";
+import { createDefaultFactory } from "./sensory/sensory-view-factory.js";
 import { spendMeter } from "../spend-meter.js";
 import { injectSourcePages } from "../plastic/init.js";
 import { saveSensoryState, loadSensoryState } from "../session.js";

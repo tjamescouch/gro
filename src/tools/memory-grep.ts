@@ -2,8 +2,8 @@
  * Built-in memory_grep tool — search page content by regex or literal string.
  * Returns matching pages with context snippets so the agent can decide what to @@ref.
  */
-import type { AgentMemory } from "../memory/agent-memory.js";
-import { VirtualMemory } from "../memory/virtual-memory.js";
+import type { AgentMemory } from "../memory/lib/agent-memory.js";
+import { VirtualMemory } from "../memory/virtual/virtual-memory.js";
 
 export function memoryGrepToolDefinition(): any {
   return {

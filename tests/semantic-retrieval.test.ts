@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import type { EmbeddingProvider } from "../src/memory/embedding-provider.js";
-import { PageSearchIndex, type PageSearchResult } from "../src/memory/page-search-index.js";
-import { SemanticRetrieval } from "../src/memory/semantic-retrieval.js";
+import type { EmbeddingProvider } from "../src/memory/lib/embedding-provider.js";
+import { PageSearchIndex, type PageSearchResult } from "../src/memory/virtual/page-search-index.js";
+import { SemanticRetrieval } from "../src/memory/virtual/semantic-retrieval.js";
 
 // ---------------------------------------------------------------------------
 // Mock embedding provider

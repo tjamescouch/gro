@@ -13,7 +13,7 @@
  */
 
 import type { ChatDriver, ChatMessage } from "../../drivers/types.js";
-import { VirtualMemory, type VirtualMemoryConfig, type ContextPage } from "../virtual-memory.js";
+import { VirtualMemory, type VirtualMemoryConfig, type ContextPage } from "../virtual/virtual-memory.js";
 import { RandomSamplingFragmenter, type Fragmenter, type FragmenterConfig } from "./random-sampling-fragmenter.js";
 import { Logger } from "../../logger.js";
 import { createHash } from "node:crypto";

@@ -7,8 +7,8 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert";
-import { SensoryMemory } from "../src/memory/sensory-memory.js";
-import { SimpleMemory } from "../src/memory/simple-memory.js";
+import { SensoryMemory } from "../src/memory/sensory/sensory-memory.js";
+import { SimpleMemory } from "../src/memory/simple/simple-memory.js";
 
 // --- Helpers ---
 

@@ -2,8 +2,8 @@
  * Built-in memory-report tool for gro — generates performance metrics report.
  * Shows recall rates, lane-specific metrics, compression ratios, and tuning recommendations.
  */
-import type { AgentMemory } from "../memory/agent-memory.js";
-import { VirtualMemory } from "../memory/virtual-memory.js";
+import type { AgentMemory } from "../memory/lib/agent-memory.js";
+import { VirtualMemory } from "../memory/virtual/virtual-memory.js";
 
 export function memoryReportToolDefinition(): any {
   return {

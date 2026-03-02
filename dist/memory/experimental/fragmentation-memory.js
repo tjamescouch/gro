@@ -11,7 +11,7 @@
  * - Fragmenter is pluggable (e.g., RandomSamplingFragmenter, ImportanceFragmenter)
  * - Faster paging (no API latency)
  */
-import { VirtualMemory } from "../virtual-memory.js";
+import { VirtualMemory } from "../virtual/virtual-memory.js";
 import { RandomSamplingFragmenter } from "./random-sampling-fragmenter.js";
 import { Logger } from "../../logger.js";
 import { createHash } from "node:crypto";

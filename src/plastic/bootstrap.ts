@@ -28,6 +28,19 @@ function readVersionFrom(dir: string): string | null {
 export async function boot(): Promise<void> {
   mkdirSync(PLASTIC_DIR, { recursive: true });
 
+  // Force reset: GRO_PLASTIC_RESET=1 or --plastic-reset wipes the overlay
+  // so stock code is re-deployed. Use when the agent's version bump blocks upgrades.
+  const forceReset = process.env.GRO_PLASTIC_RESET === "1" || process.argv.includes("--plastic-reset");
+  if (forceReset && existsSync(OVERLAY_DIR)) {
+    console.log("[PLASTIC] Force reset requested — exporting changes and wiping overlay.");
+    try {
+      const { exportChanges } = await import("./export.js");
+      const { patchPath, fileCount } = exportChanges();
+      if (fileCount > 0) console.log(`[PLASTIC] Saved ${fileCount} file diff(s) to ${patchPath}`);
+    } catch { /* best effort */ }
+    try { rmSync(OVERLAY_DIR, { recursive: true, force: true }); } catch {}
+  }
+
   // Check if overlay is stale (stock version upgraded since overlay was created).
   // Stock dist/ is one level up from this file (dist/plastic/bootstrap.js → dist/).
   const stockDir = dirname(dirname(fileURLToPath(import.meta.url)));

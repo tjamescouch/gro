@@ -1125,11 +1125,15 @@ export class VirtualMemory extends AgentMemory {
       if (page) slotTokens += page.tokens;
     }
 
+    const EVICT_HALF_LIFE_MS = 3_600_000; // 1 hour — pages lose half their time-bonus per hour
+    const now = Date.now();
+
     while (slotTokens > this.cfg.pageSlotTokens && this.loadOrder.length > 0) {
       // Score-based eviction: lower score = evict first.
-      // Score = frequency * 10 + recency_position
-      // This means frequently-referenced pages survive longer, with
-      // recency as a tiebreaker among same-frequency pages.
+      // Score = frequency * 10 + recency_position + time_decay_bonus
+      // time_decay_bonus: pages created recently get up to +20 bonus,
+      // decaying with a 1-hour half-life. This ensures stale pages
+      // from hours ago naturally lose priority vs fresh pages.
       let evictIdx = -1;
       let lowestScore = Infinity;
       for (let i = 0; i < this.loadOrder.length; i++) {
@@ -1138,7 +1142,12 @@ export class VirtualMemory extends AgentMemory {
         const freq = this.pageRefCount.get(id) ?? 0;
         // recency: loadOrder[0] is oldest → position 0 = low recency score
         const recencyScore = i; // higher index = more recent = higher score
-        const score = freq * 10 + recencyScore;
+        // Time decay: bonus based on page creation time
+        const page = this.pages.get(id);
+        const createdAt = page?.createdAt ? new Date(page.createdAt).getTime() : 0;
+        const ageMs = Math.max(0, now - createdAt);
+        const timeBonus = 20 / (1 + ageMs / EVICT_HALF_LIFE_MS);
+        const score = freq * 10 + recencyScore + timeBonus;
         if (score < lowestScore) {
           lowestScore = score;
           evictIdx = i;

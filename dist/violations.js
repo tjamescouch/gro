@@ -24,6 +24,8 @@ const WRITE_TOOLS = new Set([
     // when the agent is actively remediating memory pressure.
     "compact_context",
     "memory_tune",
+    // Send tools count as productive output (conversation is work)
+    "agentchat_send",
 ]);
 export class ViolationTracker {
     constructor(opts) {

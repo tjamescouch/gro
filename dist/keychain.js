@@ -8,6 +8,9 @@
  * Falls back to environment variables on non-macOS platforms.
  */
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 const ACCOUNT = "gro";
 function service(provider) {
     return `gro-${provider}`;
@@ -125,5 +128,15 @@ export function resolveProxy(provider) {
         return null;
     if (!proxy.providers.includes(provider))
         return null;
-    return { baseUrl: `${proxy.url}/${provider}`, apiKey: "proxy-managed" };
+    // Read session token from agentauth proxy (or env var fallback for containers)
+    let token = process.env.AGENTAUTH_TOKEN || "";
+    if (!token) {
+        try {
+            token = readFileSync(join(homedir(), ".thesystem", "agentauth-token"), "utf-8").trim();
+        }
+        catch {
+            // Token file not found — proxy may not require auth (legacy)
+        }
+    }
+    return { baseUrl: `${proxy.url}/${provider}`, apiKey: token || "proxy-managed" };
 }

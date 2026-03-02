@@ -1851,11 +1851,10 @@ async function interactive(cfg, driver, mcp, sessionId) {
         _pendingWarmState = null; // Consume it
         warmRestored = true;
         Logger.info(`[supervised] restoring warm state: ${ws.messages.length} messages`);
-        // Restore messages into memory
+        // Restore messages into memory — bulk-load to avoid triggering compaction.
+        // The warm snapshot is already a compacted state from the previous process.
         const inner = unwrapMemory(memory);
-        for (const msg of ws.messages) {
-            await inner.add(msg);
-        }
+        inner.restoreMessages(ws.messages);
         // Restore VirtualMemory page state
         if (ws.pageState && inner instanceof VirtualMemory) {
             inner.restorePageState(ws.pageState);

@@ -24,6 +24,27 @@ export class AgentMemory {
             await this.onAfterAdd();
         }
     }
+    /**
+     * Bulk-restore messages without triggering onAfterAdd (no compaction).
+     * Used by warm state restore where messages are pre-compacted snapshots.
+     * Preserves any existing system prompt as the first message.
+     */
+    restoreMessages(msgs) {
+        // Keep the system prompt (first message) if present, then replace the rest
+        const sysPrompt = this.messagesBuffer.length > 0 && this.messagesBuffer[0].role === "system"
+            ? this.messagesBuffer[0]
+            : null;
+        // If incoming messages include their own system prompt, use them as-is
+        if (msgs.length > 0 && msgs[0].role === "system") {
+            this.messagesBuffer = [...msgs];
+        }
+        else if (sysPrompt) {
+            this.messagesBuffer = [sysPrompt, ...msgs];
+        }
+        else {
+            this.messagesBuffer = [...msgs];
+        }
+    }
     /** Update the active provider (used for session metadata persistence). */
     setProvider(_provider) { }
     /** Update the active model (used by stream markers to persist model changes across turns). */

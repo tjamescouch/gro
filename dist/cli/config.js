@@ -198,7 +198,7 @@ export function loadConfig() {
         else if (arg === "--show-diffs") {
             flags.showDiffs = "true";
         }
-        else if (arg === "--plastic") { /* handled at boot, before main() */ }
+        else if (arg === "--plastic" || arg === "--plastic-reset") { /* handled at boot/supervisor, before main() */ }
         else if (arg === "--name") {
             flags.name = args[++i];
         }

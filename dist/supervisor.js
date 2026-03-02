@@ -17,6 +17,26 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 const __dirname = dirname(fileURLToPath(import.meta.url));
+// Ensure GRO_PLASTIC env var is set early so both the supervisor and forked
+// child see it. main.ts sets this from --plastic in argv, but the supervisor
+// needs it before forking.
+if (process.argv.includes("--plastic") && !process.env.GRO_PLASTIC) {
+    process.env.GRO_PLASTIC = "1";
+}
+/** Handle --plastic-reset before resolving overlay — wipe it so stock is re-deployed. */
+import { rmSync } from "node:fs";
+function handlePlasticReset() {
+    const forceReset = process.env.GRO_PLASTIC_RESET === "1" || process.argv.includes("--plastic-reset");
+    if (!forceReset || !process.env.GRO_PLASTIC)
+        return;
+    const overlayDir = join(homedir(), ".gro", "plastic", "overlay");
+    if (!existsSync(overlayDir))
+        return;
+    process.stderr.write("[supervisor] PLASTIC reset — wiping overlay\n");
+    rmSync(overlayDir, { recursive: true, force: true });
+    process.stderr.write("[supervisor] Overlay wiped, will re-deploy from stock\n");
+}
+handlePlasticReset();
 /** In PLASTIC mode, fork from the overlay's main.js if it exists. */
 function resolveMainScript() {
     if (process.env.GRO_PLASTIC) {
@@ -40,7 +60,7 @@ class Supervisor {
         this.crashTimestamps = [];
         this.RAPID_CRASH_WINDOW_MS = 5000;
         this.RAPID_CRASH_THRESHOLD = 3;
-        this.childArgs = [...args.filter(a => a !== "--supervisor"), "--supervised"];
+        this.childArgs = [...args.filter(a => a !== "--supervisor" && a !== "--plastic-reset"), "--supervised"];
     }
     start() {
         this.spawnChild();

@@ -8,7 +8,7 @@
  *
  * Supersets the claude CLI flags for drop-in compatibility.
  */
-import { readFileSync, existsSync, appendFileSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync, unlinkSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { Logger, C } from "./logger.js";
@@ -924,33 +924,7 @@ async function executeTurn(driver, memory, mcp, cfg, sessionId, violations, turn
                 }
             }
             else if (marker.name === "reboot") {
-                if (!process.env.GRO_PLASTIC) {
-                    Logger.warn("Stream marker: @@reboot@@ — ignored (not in PLASTIC mode)");
-                }
-                else {
-                    Logger.telemetry("Stream marker: @@reboot@@ — saving state and exiting for restart");
-                    const sid = sessionId ?? "plastic";
-                    // When supervised, send warm state via IPC for lossless restart
-                    if (cfg.supervised && typeof process.send === "function") {
-                        sendWarmSnapshot(memory, sid, cfg, violations, "reload_request");
-                    }
-                    try {
-                        saveSensorySnapshot(memory, sid);
-                    }
-                    catch { }
-                    // Write rapid-resume marker so the next boot auto-fires a turn
-                    try {
-                        const rebootMarker = join(homedir(), ".gro", "plastic", "reboot-pending");
-                        writeFileSync(rebootMarker, new Date().toISOString());
-                    }
-                    catch { }
-                    memory.save(sid).finally(() => process.exit(75));
-                    // Safety: exit even if save() never settles
-                    setTimeout(() => {
-                        Logger.warn("@@reboot@@ save timed out — forcing exit");
-                        process.exit(75);
-                    }, 3000);
-                }
+                Logger.warn("Stream marker: @@reboot@@ is deprecated — use the reboot tool instead");
             }
             else if (marker.name === "export") {
                 if (!process.env.GRO_PLASTIC) {

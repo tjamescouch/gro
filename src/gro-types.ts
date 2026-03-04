@@ -45,6 +45,8 @@ export interface GroConfig {
   noRelay: boolean;
   /** Disable Anthropic prompt caching (--no-cache). Default: caching enabled. */
   enablePromptCaching: boolean;
+  /** Skip tool approval prompts (--yes flag). When false, dangerous tools prompt y/n/a in interactive mode. */
+  autoApprove: boolean;
 }
 
 /**

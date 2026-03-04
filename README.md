@@ -208,11 +208,12 @@ See [`STREAM_MARKERS.md`](./STREAM_MARKERS.md) for the complete reference.
 
 ## MCP Support
 
-gro discovers MCP servers from Claude Code's config (`~/.claude/settings.json`) automatically. Provide an explicit config with `--mcp-config`.
+MCP tools are opt-in. Pass `--mcp-config` with a JSON file or `--autodiscover-mcp` to load servers from `~/.gro/mcp.json`. No MCP servers are loaded by default.
 
 ```sh
 gro --mcp-config ./my-servers.json "use the filesystem tool to list files"
-gro --no-mcp                       "no tools"
+gro --autodiscover-mcp             # also check ~/.gro/mcp.json
+gro --no-mcp                       # override: disable even if --mcp-config was passed
 ```
 
 ---
@@ -302,6 +303,54 @@ PLASTIC mode is **training-only infrastructure**. It is designed for supervised 
 
 ---
 
+## Security Model
+
+> **gro gives the LLM direct access to your filesystem.** Built-in tools (`Read`, `Write`, `Glob`, `Grep`, `apply_patch`) operate with the same permissions as the user running gro. There is no path sandboxing. For untrusted workloads, run gro inside a container (see [Containerized Deployment](#containerized-deployment)).
+
+### Tool Approval Prompts
+
+In interactive mode, gro prompts for confirmation before executing tools that can modify your system:
+
+```
+  → Write('src/config.ts')
+  ? Write 340 B → src/config.ts  [y]es / [n]o / [a]lways
+```
+
+**Gated tools:** `Write`, `apply_patch`, `shell`
+**Ungated tools:** `Read`, `Glob`, `Grep`, memory introspection tools
+
+| Response | Effect |
+|----------|--------|
+| `y` / Enter | Allow this tool call |
+| `n` / Escape | Deny — the LLM is told the tool was blocked |
+| `a` | Allow all future calls to this tool for the rest of the session |
+
+Approval prompts are active by default in interactive mode (TTY). They are skipped in non-interactive/piped mode (no TTY to prompt). Use `--yes` to auto-approve all tools:
+
+```sh
+gro -i --yes   # trust the model, skip all prompts
+```
+
+### What gro can and cannot do
+
+| Capability | Without `--bash` | With `--bash` |
+|-----------|-----------------|---------------|
+| Read any file | Yes (approval-free) | Yes |
+| Write/patch files | Yes (prompted) | Yes (prompted) |
+| Execute shell commands | No | Yes (prompted) |
+| Make network requests | Only via MCP tools | Yes |
+| Install software | No | Yes |
+
+**MCP tools** inherit whatever capabilities their servers provide. If you connect an MCP server that exposes shell execution or network access, the LLM can use those capabilities. MCP tool calls are not currently subject to approval prompts. Use `--no-mcp` to disable all MCP tools.
+
+### Recommendations
+
+- **Development on your machine:** Use gro interactively (default). Approval prompts will catch unintended writes. Avoid `--bash` unless you need it.
+- **Untrusted prompts / automation:** Run inside a container via `thesystem gro`. Never pipe untrusted input to gro with `--yes` or `--bash` on a host machine.
+- **Persistent agents:** Use `--yes` only if the agent is containerized or operating in a trusted environment.
+
+---
+
 ## Shell Tool
 
 Enable a built-in `shell` tool for executing commands:
@@ -316,15 +365,15 @@ Commands run with a 120s timeout and 30 KB output cap. The tool is opt-in and no
 
 ## Built-in Tools
 
-These tools are always available (no flags required):
+These tools are always available (no flags required). Tools marked with a lock require user approval in interactive mode.
 
 | Tool | Description |
 |------|-------------|
 | `Read` | Read file contents with optional line range |
-| `Write` | Write content to a file (creates parent dirs) |
+| `Write` | Write content to a file (creates parent dirs) :lock: |
 | `Glob` | Find files by glob pattern (`.gitignore`-aware) |
 | `Grep` | Search file contents with POSIX regex |
-| `apply_patch` | Apply unified diffs to files |
+| `apply_patch` | Apply unified diffs to files :lock: |
 | `gro_version` | Runtime identity and version info |
 | `memory_status` | VirtualMemory statistics |
 | `memory_report` | Memory performance and tuning recommendations |
@@ -352,6 +401,7 @@ These tools are always available (no flags required):
 --no-mcp                        Disable MCP server connections
 --no-prompt-caching             Disable Anthropic prompt caching
 --bash                          Enable built-in shell tool
+--yes, -y                       Auto-approve all tool calls (skip prompts)
 --persistent                    Persistent agent mode (continuous loop)
 --output-format                 text | json | stream-json (default: text)
 -p, --print                     Print response and exit (non-interactive)

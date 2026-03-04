@@ -58,6 +58,7 @@ import { writeSourceToolDefinition, handleWriteSource } from "./plastic/write-so
 import { editSourceToolDefinition, handleEditSource } from "./plastic/edit-source.js";
 import { exportChanges, exportChangesToolDefinition, handleExportChanges } from "./plastic/export.js";
 import { rebootToolDefinition, handleReboot } from "./plastic/reboot.js";
+import { createApprovalGate } from "./tool-approval.js";
 import { toolRegistry } from "./plugins/tool-registry.js";
 import { ViolationTracker, ThinkingLoopDetector } from "./violations.js";
 import { thinkingTierModel as selectTierModel, selectMultiProviderTierModel, inferModelTier } from "./tier-loader.js";
@@ -367,6 +368,7 @@ async function executeTurn(
   sessionId?: string,
   violations?: ViolationTracker,
   turnAbortSignal?: AbortSignal,
+  approvalFn?: (fnName: string, fnArgs: Record<string, unknown>) => Promise<"yes" | "no" | "always">,
 ): Promise<{ text: string; memory: AgentMemory }> {
   const tools = mcp.getToolDefinitions();
   tools.push(agentpatchToolDefinition());
@@ -1510,6 +1512,20 @@ async function executeTurn(
       }
       Logger.debug(`[Tool call] ${toolCallDisplay}`);
 
+      // --- Tool approval gate ---
+      if (approvalFn) {
+        const approval = await approvalFn(fnName, fnArgs);
+        if (approval === "no") {
+          const denial = `Tool "${fnName}" was denied by the user.`;
+          const toolResultMsg: import("./drivers/types.js").ChatMessage = {
+            role: "tool", from: fnName, content: denial, tool_call_id: tc.id, name: fnName,
+          };
+          memory.protectMessage(toolResultMsg);
+          await memory.add(toolResultMsg);
+          continue;
+        }
+      }
+
       let result: string;
       try {
         if (fnName === "apply_patch") {
@@ -2088,13 +2104,18 @@ async function interactive(
     });
   }
 
+  // Tool approval gate — prompts y/n/a before dangerous tools in interactive mode
+  const approvalFn = cfg.autoApprove ? undefined
+    : isTerminal ? createApprovalGate({ sessionAllowlist: new Set<string>(), outputFormat: cfg.outputFormat })
+    : undefined;
+
   /** Run a turn with abort support, auto-save, and cleanup. */
   async function runTurn(input: string, role: "user" | "system" = "user"): Promise<void> {
     turnRunning = true;
     turnAbortController = new AbortController();
     try {
       await memory.add({ role, from: role === "user" ? "User" : "System", content: input });
-      const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, turnAbortController.signal);
+      const result = await executeTurn(driver, memory, mcp, cfg, sessionId, tracker, turnAbortController.signal, approvalFn);
       memory = result.memory;
       _shutdownMemory = memory;
     } catch (e: unknown) {

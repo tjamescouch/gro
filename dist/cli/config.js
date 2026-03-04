@@ -171,6 +171,9 @@ export function loadConfig() {
         else if (arg === "--no-relay") {
             flags.noRelay = "true";
         }
+        else if (arg === "--yes" || arg === "-y") {
+            flags.yes = "true";
+        }
         else if (arg === "-i" || arg === "--interactive") {
             flags.interactive = "true";
         }
@@ -319,7 +322,7 @@ export function loadConfig() {
         supervised: flags.supervised === "true" || typeof process.send === "function",
         persistentPolicy: flags.persistentPolicy || "listen-only",
         maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
-        bash: flags.bash === "true" || interactiveMode,
+        bash: flags.bash === "true",
         lfs: flags.lfs || process.env.GRO_LFS || null,
         summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
         outputFormat: flags.outputFormat || "text",
@@ -338,6 +341,7 @@ export function loadConfig() {
         toolRoles: { idleTool: null, idleToolDefaultArgs: {}, idleToolArgStrategy: "last-call", sendTool: null, sendToolMessageField: "message" },
         noRelay: flags.noRelay === "true",
         enablePromptCaching: flags.noCache !== "true",
+        autoApprove: flags.yes === "true",
     };
 }
 export function usage() {
@@ -376,6 +380,7 @@ options:
   --autodiscover-mcp     also load ~/.gro/mcp.json if it exists
   --max-cost             alias for --max-budget-usd
   --no-cache             disable Anthropic prompt caching
+  --yes, -y              auto-approve all tool calls (skip confirmation prompts)
   --no-relay             disable auto-relay of LLM narration to agentchat channels
   --no-mcp               disable MCP server connections
   --no-session-persistence  don't save sessions to .gro/

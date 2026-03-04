@@ -242,7 +242,7 @@ export function loadConfig(): GroConfig {
     supervised: flags.supervised === "true" || typeof process.send === "function",
     persistentPolicy: (flags.persistentPolicy as "listen-only" | "work-first") || "listen-only",
     maxIdleNudges: parseInt(flags.maxIdleNudges || "10"),
-    bash: flags.bash === "true" || interactiveMode,
+    bash: flags.bash === "true",
     lfs: flags.lfs || process.env.GRO_LFS || null,
     summarizerModel: flags.summarizerModel || process.env.AGENT_SUMMARIZER_MODEL || null,
     outputFormat: (flags.outputFormat as GroConfig["outputFormat"]) || "text",

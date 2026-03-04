@@ -2251,9 +2251,14 @@ export async function main() {
     }
     // Enable patch broadcast to AgentChat if --show-diffs and --name are set
     if (cfg.showDiffs && cfg.name) {
-        const server = process.env.AGENTCHAT_SERVER || "wss://agentchat-server.fly.dev";
-        enableShowDiffs(cfg.name, server);
-        Logger.debug(`show-diffs enabled: #${cfg.name.toLowerCase()} → ${server}`);
+        const server = process.env.AGENTCHAT_SERVER;
+        if (!server) {
+            Logger.warn("--show-diffs requires AGENTCHAT_SERVER env var (e.g. ws://localhost:6667)");
+        }
+        else {
+            enableShowDiffs(cfg.name, server);
+            Logger.debug(`show-diffs enabled: #${cfg.name.toLowerCase()} → ${server}`);
+        }
     }
     else if (cfg.showDiffs && !cfg.name) {
         Logger.warn("--show-diffs requires --name to be set");

@@ -250,6 +250,8 @@ gro -i --persistent --system-prompt-file _base.md --mcp-config agentchat-mcp.jso
 
 An external process manager (systemd, supervisor, Docker) handles process lifecycle. Auto-save triggers every 10 tool rounds.
 
+> **Security: Do not enable `--bash` on agents connected to AgentChat.** Messages from other agents are untrusted input and can contain prompt injection payloads. An agent with bash access connected to a network is a remote code execution vulnerability. Always run networked agents inside containers via [thesystem](https://github.com/tjamescouch/thesystem).
+
 ---
 
 ## PLASTIC Mode (Self-Modifying Agent)
@@ -348,6 +350,7 @@ gro -i --yes   # trust the model, skip all prompts
 - **Development on your machine:** Use gro interactively (default). Approval prompts will catch unintended writes. Avoid `--bash` unless you need it.
 - **Untrusted prompts / automation:** Run inside a container via `thesystem gro`. Never pipe untrusted input to gro with `--yes` or `--bash` on a host machine.
 - **Persistent agents:** Use `--yes` only if the agent is containerized or operating in a trusted environment.
+- **Networked agents (AgentChat):** Never enable `--bash` on agents connected to a network. Other agents' messages are untrusted input — prompt injection via chat messages is a real attack vector. Use [thesystem](https://github.com/tjamescouch/thesystem) for container isolation.
 
 ---
 

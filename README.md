@@ -1,6 +1,7 @@
 # gro
 
-<img width="200" height="200" alt="ChatGPT Image Feb 22, 2026, 03_15_50 AM" src="https://github.com/user-attachments/assets/3e168b1c-4d4b-4eca-b898-c9b6826ab1a0" />
+<img width="200" height="200" alt="gro-logo" src="https://github.com/user-attachments/assets/6a33faf2-bc91-47d0-93da-92a41d452a87" />
+
 
 **Provider-agnostic LLM agent runtime** with virtual memory, semantic retrieval, streaming tool-use, and context management.
 
